@@ -1,4 +1,4 @@
-+++
+---
 description = "Classify an input document"
 model = "qwen-fast"
 
@@ -8,7 +8,7 @@ mode = "stdin_or_file"
 [output]
 format = "json"
 schema = "schemas/classification.json"
-+++
+---
 
 You are a deterministic classifier.
 

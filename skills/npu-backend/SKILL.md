@@ -1,11 +1,11 @@
 ---
 name: npu-backend
-description: Writes and fixes `npu` backend files (`.npu/backends/*.toml`) — the `id`, `type`, `base_url` and `[operations.<name>]` tables that tell `npu` where to send requests and on which HTTP path. Covers the constraints enforced at load time — `openai-compatible` is the only supported type, `POST` the only supported method, unknown keys are rejected rather than ignored, and `[timeouts]` is not implemented. Use it whenever a backend declaration is created, changed or rejected.
+description: Writes and fixes `npu` backend files (`.npu/backends/*.toml`) — the `id`, `type`, `base_url` and `[operations.<name>]` tables that tell `npu` where to send requests and on which HTTP path, plus the optional `[docker]` table `npu serve` uses to start the runtime. Covers the constraints enforced at load time — `openai-compatible` is the only supported type, `POST` the only supported method, unknown keys are rejected rather than ignored, and `[timeouts]` is not implemented. Use it whenever a backend declaration is created, changed or rejected.
 when_to_use: >
   Trigger on "add an npu backend", "point npu at my model server / OVMS /
-  llama.cpp / Ollama", "change the base_url", "add an operation", or on any
-  npu error mentioning a backend id, `base_url`, `type`, `method` or an
-  operation name.
+  llama.cpp / Ollama", "change the base_url", "add an operation", "make npu
+  start OVMS with Docker", or on any npu error mentioning a backend id,
+  `base_url`, `type`, `method`, an operation name or a `[docker]` key.
 model: sonnet
 effort: low
 allowed-tools: Read Write Edit Glob Grep Bash(npu:*)
@@ -40,6 +40,7 @@ next reader.
 | `type` | yes | **`"openai-compatible"` is the only accepted value** |
 | `base_url` | yes | joined with an operation's `path`; a trailing `/` is handled either way |
 | `[operations.<name>]` | at least one | each needs `method` and `path` |
+| `[docker]` | no | `image`, `options`, `args` — how `npu serve` starts this backend |
 
 ## What is rejected at load time
 
@@ -52,7 +53,9 @@ silently ignored:
 - a `[timeouts]` section — **not implemented**; the request timeout is a fixed
   30 seconds. It appears in the original specification but rejecting it is
   deliberate: accepting a timeout and not honouring it would be worse.
-- two files in the same scope sharing an `id`.
+- two files in the same scope sharing an `id`;
+- inside `[docker]`: a placeholder other than `{{ args.model }}` / `{{ env.NAME }}`, and an `id`
+  unusable as a container name (ASCII letters, digits, `_`, `.`, `-`, starting alphanumeric).
 
 ## Operation names are yours
 
@@ -82,11 +85,41 @@ path = "/v1/chat/completions"
 Check the server's own documentation for the path; `npu` joins `base_url` and
 `path` verbatim and does not probe for it.
 
+## Starting the backend: the `[docker]` table
+
+Optional. Declaring it gives this backend a lifecycle — `npu serve <model>`,
+`npu stop <model>`, `npu status`, `npu logs <model>` — and makes Docker a
+prerequisite for those commands alone.
+
+```toml
+[docker]
+image = "openvino/model_server:latest"
+options = ["-p", "8000:8000", "-v", "{{ env.HOME }}/models:/models:rw"]
+args = [
+    "--source_model", "{{ args.model }}",
+    "--model_repository_path", "/models",
+    "--rest_port", "8000",
+]
+```
+
+`options` go **before** the image, `args` **after** it — `docker run [OPTIONS]
+IMAGE [ARG...]`. `npu` adds `-d` and `--name npu-<backend-id>`, nothing else. That name is how
+`stop`, `status` and `logs` find the container afterwards.
+
+Templating is the prompt engine's: `{{ args.model }}` (the served model's
+`model` field, the only argument available here) and `{{ env.NAME }}`.
+`{{ input }}` is rejected — `npu serve` reads no input.
+
+For OVMS on an accelerator: image `openvino/model_server:latest-gpu`, plus
+`--device /dev/dri` and `--group-add <render gid>` in `options` for the GPU,
+or `--device /dev/accel` in `options` and `--target_device NPU` in `args` for
+the NPU.
+
 ## Overriding a backend from a broader scope
 
 Merging is **replacement**: a file in `./.npu` with the same `id` as one in
 `/etc/npu` replaces it whole. Copy every field you still need — nothing is
-inherited.
+inherited, `[docker]` included.
 
 ## Verifying
 
@@ -104,6 +137,10 @@ execution with exit `3`.
 gives `npu doctor` exit code `3`: the configuration is fine, the runtime is
 not started.
 
+`✓ container runtime available` only appears when at least one backend
+declares `[docker]`; it means `docker info` succeeded. Its failure is a
+reachability failure too — exit `3`, never `2`.
+
 ## Reference
 
 This skill is a summary. When a case is not covered here, or when the
@@ -112,8 +149,10 @@ documentation is authoritative:
 
 - [Backends](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#backends)
 - [Scopes and precedence](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#scopes-and-precedence)
+- [Starting a backend with Docker](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#starting-a-backend-with-docker)
 - [`npu doctor`](https://github.com/fmatsos/npu/blob/main/docs/cli.md#npu-doctor)
+- [`npu serve`](https://github.com/fmatsos/npu/blob/main/docs/cli.md#npu-serve)
 
 Related skills: **npu-model**, **npu-config**, **npu-doctor**.
 
-<!-- model/effort: Four keys and a table of operations; the constraints are enumerated above, not inferred. -->
+<!-- model/effort: Five keys and a table of operations; the constraints are enumerated above, not inferred. -->

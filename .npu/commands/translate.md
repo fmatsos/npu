@@ -1,4 +1,4 @@
-+++
+---
 description = "Translate input text"
 model = "qwen-fast"
 
@@ -9,7 +9,7 @@ description = "Target language"
 
 [input]
 mode = "stdin_or_file"
-+++
+---
 
 Translate the following text into {{ args.language }}.
 

@@ -1,4 +1,4 @@
-+++
+---
 description = "Generate a conventional commit message"
 model = "qwen-fast"
 
@@ -8,7 +8,7 @@ mode = "stdin"
 [output]
 format = "text"
 max_lines = 1
-+++
+---
 
 Generate a Conventional Commit message from the supplied diff.
 

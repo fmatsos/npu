@@ -16,6 +16,28 @@ pub struct Operation {
     pub path: String,
 }
 
+/// How to start the runtime of a backend as a container, declared by the
+/// optional `[docker]` table of `backends/*.toml`.
+///
+/// `options` and `args` are two lists rather than one because `docker run`'s
+/// own grammar imposes it (`docker run [OPTIONS] IMAGE [ARG...]`): merging
+/// them would make the position of the image implicit.
+///
+/// Both lists go through `crate::prompt::render` (`{{ args.model }}`,
+/// `{{ env.NAME }}`) — the CLI embeds no container knowledge beyond the
+/// shape of a `docker run` invocation.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Docker {
+    pub image: String,
+    /// Passed to `docker run` BEFORE the image (ports, volumes, devices).
+    #[serde(default)]
+    pub options: Vec<String>,
+    /// Passed to the image AFTER it (the server's own arguments).
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
 /// An AI backend configured in `backends/*.toml`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -26,6 +48,9 @@ pub struct Backend {
     #[serde(rename = "type")]
     pub kind: String,
     pub operations: HashMap<String, Operation>,
+    /// Optional: how `npu serve` starts this backend's runtime.
+    #[serde(default)]
+    pub docker: Option<Docker>,
 }
 
 /// Optional generation parameters for a model.
@@ -61,6 +86,84 @@ const SUPPORTED_BACKEND_KIND: &str = "openai-compatible";
 /// L3).
 const SUPPORTED_METHOD: &str = "POST";
 
+/// The only `{{ args.<name> }}` placeholder a `[docker]` list may reference:
+/// `npu serve` takes a model identifier and nothing else, so `model` is the
+/// only value it can substitute. Any other name is a configuration error
+/// rather than an empty string silently handed to `docker run`.
+const DOCKER_PLACEHOLDER_ARG: &str = "model";
+
+/// Validates one `[docker]` list entry: `{{ input }}` has no meaning here
+/// (`npu serve` reads no input) and `{{ args.<name> }}` is restricted to
+/// [`DOCKER_PLACEHOLDER_ARG`]. `{{ env.NAME }}` passes: it is resolved at
+/// `serve` time, against the environment injected by the caller.
+fn validate_docker_template(template: &str, backend_id: &str, source: &Path) -> crate::Result<()> {
+    for placeholder in crate::prompt::placeholders(template)? {
+        match placeholder {
+            crate::prompt::Placeholder::Env(_) => {}
+            crate::prompt::Placeholder::Arg(name) if name == DOCKER_PLACEHOLDER_ARG => {}
+            crate::prompt::Placeholder::Arg(name) => {
+                return Err(crate::Error::Config(format!(
+                    "{}: backend \"{backend_id}\": [docker] references unknown argument \
+                     \"{name}\" (only \"{DOCKER_PLACEHOLDER_ARG}\" is available here)",
+                    source.display()
+                )));
+            }
+            crate::prompt::Placeholder::Input => {
+                return Err(crate::Error::Config(format!(
+                    "{}: backend \"{backend_id}\": [docker] references {{{{ input }}}}, which \
+                     has no meaning for a runtime start",
+                    source.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Characters Docker accepts in a container name (`[a-zA-Z0-9][a-zA-Z0-9_.-]*`).
+/// `npu serve` derives the container name from the backend identifier, which
+/// is a free-form TOML string: an identifier outside this set is rejected at
+/// load time, naming its file, rather than transformed silently or handed to
+/// `docker run` to fail on its own terms.
+fn is_valid_container_name(id: &str) -> bool {
+    let mut chars = id.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    first.is_ascii_alphanumeric()
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
+}
+
+/// Validates the optional `[docker]` table of a backend: the identifier must
+/// be usable as a container name, and every list entry must only reference
+/// placeholders `serve` can actually resolve.
+fn validate_docker(backend: &Backend, source: &Path) -> crate::Result<()> {
+    let Some(docker) = &backend.docker else {
+        return Ok(());
+    };
+
+    if !is_valid_container_name(&backend.id) {
+        return Err(crate::Error::Config(format!(
+            "{}: backend \"{}\": declaring [docker] requires an identifier usable as a \
+             container name (ASCII letters, digits, \"_\", \".\" and \"-\", starting with a \
+             letter or a digit)",
+            source.display(),
+            backend.id
+        )));
+    }
+
+    for template in docker
+        .options
+        .iter()
+        .chain(docker.args.iter())
+        .chain(std::iter::once(&docker.image))
+    {
+        validate_docker_template(template, &backend.id, source)?;
+    }
+
+    Ok(())
+}
+
 /// Validates that a loaded backend only declares properties honored in
 /// phase 1: `type = "openai-compatible"` and `method = "POST"` for each of
 /// its operations. Any other value is a configuration error detected at
@@ -93,6 +196,8 @@ fn validate_backend(backend: &Backend, source: &Path) -> crate::Result<()> {
             )));
         }
     }
+
+    validate_docker(backend, source)?;
 
     Ok(())
 }
@@ -419,6 +524,172 @@ mod tests {
         assert!(matches!(err, crate::Error::Config(_)));
         let msg = err.to_string();
         assert!(msg.contains("ovms"));
+    }
+
+    #[test]
+    fn load_accepts_a_backend_declaring_docker() {
+        let root = fixture_dir("accept-docker-table");
+        write(
+            &root,
+            "backends/ovms.toml",
+            r#"
+            id = "ovms"
+            base_url = "http://127.0.0.1:8000"
+            type = "openai-compatible"
+
+            [operations.chat]
+            method = "POST"
+            path = "/v3/chat/completions"
+
+            [docker]
+            image = "openvino/model_server:latest"
+            options = ["-p", "8000:8000", "-v", "{{ env.HOME }}/models:/models:rw"]
+            args = ["--source_model", "{{ args.model }}", "--rest_port", "8000"]
+            "#,
+        );
+
+        let config = load(&root).expect("a valid [docker] table must load");
+        let docker = config.backends["ovms"]
+            .docker
+            .as_ref()
+            .expect("the [docker] table must be kept");
+        assert_eq!(docker.image, "openvino/model_server:latest");
+        assert_eq!(docker.options.len(), 4);
+        assert_eq!(docker.args.len(), 4);
+    }
+
+    #[test]
+    fn load_accepts_a_docker_table_reduced_to_its_image() {
+        let root = fixture_dir("accept-docker-image-only");
+        write(
+            &root,
+            "backends/ovms.toml",
+            r#"
+            id = "ovms"
+            base_url = "http://127.0.0.1:8000"
+            type = "openai-compatible"
+
+            [operations.chat]
+            method = "POST"
+            path = "/v3/chat/completions"
+
+            [docker]
+            image = "openvino/model_server:latest"
+            "#,
+        );
+
+        let config = load(&root).expect("[docker] reduced to its image must load");
+        let docker = config.backends["ovms"]
+            .docker
+            .as_ref()
+            .expect("the [docker] table must be kept");
+        assert!(docker.options.is_empty());
+        assert!(docker.args.is_empty());
+    }
+
+    #[test]
+    fn load_rejects_docker_referencing_an_unknown_argument() {
+        let root = fixture_dir("reject-docker-unknown-arg");
+        write(
+            &root,
+            "backends/ovms.toml",
+            r#"
+            id = "ovms"
+            base_url = "http://127.0.0.1:8000"
+            type = "openai-compatible"
+
+            [operations.chat]
+            method = "POST"
+            path = "/v3/chat/completions"
+
+            [docker]
+            image = "openvino/model_server:latest"
+            args = ["--source_model", "{{ args.modle }}"]
+            "#,
+        );
+
+        let err = load(&root).expect_err("a misspelled argument must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        let msg = err.to_string();
+        assert!(msg.contains("ovms.toml"), "the message must name the file");
+        assert!(
+            msg.contains("modle"),
+            "the message must name the placeholder"
+        );
+    }
+
+    #[test]
+    fn load_rejects_docker_referencing_the_input() {
+        let root = fixture_dir("reject-docker-input");
+        write(
+            &root,
+            "backends/ovms.toml",
+            r#"
+            id = "ovms"
+            base_url = "http://127.0.0.1:8000"
+            type = "openai-compatible"
+
+            [operations.chat]
+            method = "POST"
+            path = "/v3/chat/completions"
+
+            [docker]
+            image = "openvino/model_server:latest"
+            options = ["{{ input }}"]
+            "#,
+        );
+
+        let err = load(&root).expect_err("{{ input }} has no meaning in [docker]");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("ovms.toml"));
+    }
+
+    #[test]
+    fn load_rejects_docker_on_a_backend_whose_id_is_not_a_container_name() {
+        let root = fixture_dir("reject-docker-non-ascii-id");
+        write(
+            &root,
+            "backends/cafe.toml",
+            r#"
+            id = "café"
+            base_url = "http://127.0.0.1:8000"
+            type = "openai-compatible"
+
+            [operations.chat]
+            method = "POST"
+            path = "/v3/chat/completions"
+
+            [docker]
+            image = "openvino/model_server:latest"
+            "#,
+        );
+
+        let err = load(&root).expect_err("a non-ASCII id cannot name a container");
+        assert!(matches!(err, crate::Error::Config(_)));
+        let msg = err.to_string();
+        assert!(msg.contains("cafe.toml"), "the message must name the file");
+        assert!(msg.contains("café"), "the message must name the backend");
+    }
+
+    #[test]
+    fn load_accepts_a_non_ascii_backend_id_without_docker() {
+        let root = fixture_dir("accept-non-ascii-id-without-docker");
+        write(
+            &root,
+            "backends/cafe.toml",
+            r#"
+            id = "café"
+            base_url = "http://127.0.0.1:8000"
+            type = "openai-compatible"
+
+            [operations.chat]
+            method = "POST"
+            path = "/v3/chat/completions"
+            "#,
+        );
+
+        let config = load(&root).expect("the container-name constraint only applies to [docker]");
+        assert!(config.backends.contains_key("café"));
     }
 
     #[test]

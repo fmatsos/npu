@@ -126,7 +126,7 @@ fn layered_scopes_local_wins_over_general() {
     write(
         &general,
         "commands/classify.md",
-        "+++\ndescription = \"Classify (general)\"\nmodel = \"qwen-fast\"\n+++\ngeneral prompt\n",
+        "---\ndescription = \"Classify (general)\"\nmodel = \"qwen-fast\"\n---\ngeneral prompt\n",
     );
     write(
         &general,
@@ -156,7 +156,7 @@ fn layered_scopes_local_wins_over_general() {
     write(
         &local,
         "commands/classify.md",
-        "+++\ndescription = \"Classify (local)\"\nmodel = \"qwen-fast\"\n+++\nlocal prompt\n",
+        "---\ndescription = \"Classify (local)\"\nmodel = \"qwen-fast\"\n---\nlocal prompt\n",
     );
     write(
         &local,

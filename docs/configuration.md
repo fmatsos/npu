@@ -4,6 +4,7 @@
 - [Scopes and precedence](#scopes-and-precedence)
 - [Merge semantics](#merge-semantics)
 - [Backends](#backends)
+- [Starting a backend with Docker](#starting-a-backend-with-docker)
 - [Models](#models)
 - [When a broader scope is broken](#when-a-broader-scope-is-broken)
 
@@ -104,6 +105,7 @@ path = "/v3/chat/completions"
 | `type` | yes | `"openai-compatible"` is the only value supported in 0.1.0 |
 | `base_url` | yes | joined with an operation's `path`; a trailing `/` is handled either way |
 | `[operations.<name>]` | at least one | `method` and `path` |
+| `[docker]` | no | how `npu serve` starts this backend — see below |
 
 Unknown keys are rejected, with the file and line. A `type` other than `"openai-compatible"` and
 a `method` other than `POST` are both rejected at load time rather than silently ignored.
@@ -112,6 +114,57 @@ a `method` other than `POST` are both rejected at load time rather than silently
 > The `[timeouts]` section shown in the original specification is **not** implemented in 0.1.0, and
 > is therefore rejected as an unknown key rather than accepted and ignored. The request timeout is
 > currently a fixed 30 seconds.
+
+---
+
+## Starting a backend with Docker
+
+A backend may declare how to start its own runtime. `npu serve <model>` then runs it, and Docker
+becomes a prerequisite — an **optional** one: nothing changes for a configuration without this
+table.
+
+```toml
+# .npu/backends/ovms.toml, continued
+[docker]
+image = "openvino/model_server:latest"
+options = ["-p", "8000:8000", "-v", "{{ env.HOME }}/models:/models:rw"]
+args = [
+    "--source_model", "{{ args.model }}",
+    "--model_repository_path", "/models",
+    "--rest_port", "8000",
+]
+```
+
+| Key | Required | Notes |
+| --- | --- | --- |
+| `image` | yes | the container image to run |
+| `options` | no | passed to `docker run` **before** the image: ports, volumes, devices |
+| `args` | no | passed to the image **after** it: the server's own arguments |
+
+Two lists rather than one because `docker run [OPTIONS] IMAGE [ARG...]` is the grammar; merging
+them would make the position of the image implicit. `npu` adds `-d` and
+`--name npu-<backend-id>` itself, and nothing else — it knows the shape of a `docker run`
+invocation, never what you are running.
+
+Every entry goes through the same templating as a prompt:
+
+- `{{ args.model }}` — the `model` field of the model being served. It is the only argument
+  available here; any other name is rejected at load time, naming the file.
+- `{{ env.NAME }}` — an environment variable, required to be defined at `serve` time.
+- `{{ input }}` — rejected: `npu serve` reads no input.
+
+Declaring `[docker]` also constrains the backend's `id`, which becomes the container name: ASCII
+letters, digits, `_`, `.` and `-`, starting with a letter or a digit. An `id` outside that set is
+rejected — with its file named — rather than mangled into something Docker accepts.
+
+> [!WARNING]
+> Scope replacement is per **whole backend**, never field by field. A project scope that redefines
+> `base_url` for `ovms` replaces the user scope's `ovms` entirely, `[docker]` included. Repeat the
+> table in the local file, or `npu serve` will report that the backend declares none.
+
+For OpenVINO Model Server specifically: `openvino/model_server:latest-gpu` is the image to use for
+accelerators, with `--device /dev/dri` and `--group-add <render gid>` in `options` for the GPU, or
+`--device /dev/accel` plus `--target_device NPU` in `args` for the NPU.
 
 ---
 

@@ -36,7 +36,7 @@ max_tokens = 512
 | `id` | yes | merge key across scopes, and the name commands use |
 | `backend` | yes | must match a backend `id` |
 | `operation` | yes | must be an operation that backend exposes |
-| `model` | yes | the concrete model identifier sent to the backend |
+| `model` | yes | the concrete model identifier sent to the backend, and what `{{ args.model }}` substitutes in a `[docker]` table |
 | `[generation]` | no | `temperature`, `max_tokens` |
 
 `id` and `model` are different things on purpose: `id` is the stable alias
@@ -77,6 +77,8 @@ not.
 ```sh
 npu models    # NAME / BACKEND / OPERATION, sorted by name
 npu doctor    # resolves every model against its backend and operation
+npu serve <id>  # starts the backend's runtime, when it declares [docker]
+npu status      # its state afterwards
 ```
 
 `npu models` lists what actually resolved. A model you just wrote and cannot

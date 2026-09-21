@@ -134,7 +134,7 @@ fn write_healthy_scope(xdg_root: &Path, base_url: &str) {
     write(
         xdg_root,
         "npu/commands/commit-message.md",
-        "+++\ndescription = \"Generate a commit message\"\nmodel = \"qwen-fast\"\n+++\n\
+        "---\ndescription = \"Generate a commit message\"\nmodel = \"qwen-fast\"\n---\n\
          {{ input }}\n",
     );
 }
@@ -142,7 +142,7 @@ fn write_healthy_scope(xdg_root: &Path, base_url: &str) {
 // -- (a)/(b)/(c): broken configuration ---------------------------------------
 
 /// (a) A BROKEN configuration leaves `--help` usable (degraded mode, point 1
-/// of the shared contract): exit 0, stdout lists the three built-ins,
+/// of the shared contract): exit 0, stdout lists the four built-ins,
 /// stderr signals the load failure.
 #[test]
 fn broken_config_help_still_works_and_lists_builtins_with_stderr_signal() {
@@ -167,6 +167,10 @@ fn broken_config_help_still_works_and_lists_builtins_with_stderr_signal() {
     assert!(
         stdout.contains("models"),
         "stdout of --help must list \"models\", got: {stdout}"
+    );
+    assert!(
+        stdout.contains("serve"),
+        "stdout of --help must list \"serve\", got: {stdout}"
     );
     assert!(
         stdout.contains("describe"),
@@ -352,4 +356,146 @@ fn healthy_config_describe_produces_parsable_json_for_a_known_command() {
         serde_json::from_str(stdout.trim()).expect("PROOF (f): stdout must be parsable JSON");
     assert_eq!(value["name"], "commit-message");
     assert_eq!(value["model"], "qwen-fast");
+}
+
+// -- (g)/(h): `npu serve` -----------------------------------------------------
+//
+// None of these scenarios requires Docker: both go through a configuration
+// error, detected before any process is spawned. What is proven here is the
+// exit code and the PURITY of stdout, never the wording of a message.
+
+/// (g) `npu serve` on an unknown model: configuration error (exit 2), and
+/// stdout stays empty — the container identifier is the only thing this
+/// command ever writes there.
+#[test]
+fn healthy_config_serve_unknown_model_exits_two_with_empty_stdout() {
+    let xdg = fixture_dir("serve-unknown-model-xdg");
+    let cwd = fixture_dir("serve-unknown-model-cwd");
+    write_healthy_scope(&xdg, "http://127.0.0.1:1");
+
+    let output = run_npu(&cwd, &xdg, &["serve", "absent"]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "PROOF (g): an unknown model is a configuration error, stderr: {}",
+        stderr_of(&output)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "PROOF (g): stdout must be empty on failure, got: {}",
+        stdout_of(&output)
+    );
+    assert!(
+        stderr_of(&output).contains("absent"),
+        "PROOF (g): the message must name the faulty model"
+    );
+}
+
+/// (h) `npu serve` on a model whose backend declares no `[docker]` table:
+/// configuration error (exit 2), stdout empty, and the message names the
+/// backend that cannot be started. The scope written by
+/// `write_healthy_scope` deliberately has no `[docker]` table.
+#[test]
+fn healthy_config_serve_backend_without_docker_exits_two_with_empty_stdout() {
+    let xdg = fixture_dir("serve-no-docker-xdg");
+    let cwd = fixture_dir("serve-no-docker-cwd");
+    write_healthy_scope(&xdg, "http://127.0.0.1:1");
+
+    let output = run_npu(&cwd, &xdg, &["serve", "qwen-fast"]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "PROOF (h): a backend without [docker] cannot be served, stderr: {}",
+        stderr_of(&output)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "PROOF (h): stdout must be empty on failure, got: {}",
+        stdout_of(&output)
+    );
+    assert!(
+        stderr_of(&output).contains("ovms"),
+        "PROOF (h): the message must name the backend"
+    );
+}
+
+// -- (i)/(j)/(k): lifecycle and verbosity -------------------------------------
+
+/// (i) `npu stop` on a model whose backend declares no `[docker]` table:
+/// configuration error (exit 2), stdout empty. Like (h), nothing is spawned.
+#[test]
+fn healthy_config_stop_backend_without_docker_exits_two_with_empty_stdout() {
+    let xdg = fixture_dir("stop-no-docker-xdg");
+    let cwd = fixture_dir("stop-no-docker-cwd");
+    write_healthy_scope(&xdg, "http://127.0.0.1:1");
+
+    let output = run_npu(&cwd, &xdg, &["stop", "qwen-fast"]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "PROOF (i): npu only manages the containers it starts, stderr: {}",
+        stderr_of(&output)
+    );
+    assert!(output.stdout.is_empty(), "PROOF (i): stdout must be empty");
+    assert!(stderr_of(&output).contains("ovms"));
+}
+
+/// (j) `npu status` on a configuration without a single containerized
+/// backend: exit 0 and a header on stdout — never an empty output, which
+/// would be indistinguishable from a command that did nothing. No container
+/// runtime is contacted, since there is no backend to ask about.
+#[test]
+fn healthy_config_status_without_containerized_backend_still_prints_its_header() {
+    let xdg = fixture_dir("status-empty-xdg");
+    let cwd = fixture_dir("status-empty-cwd");
+    write_healthy_scope(&xdg, "http://127.0.0.1:1");
+
+    let output = run_npu(&cwd, &xdg, &["status"]);
+
+    assert!(
+        output.status.success(),
+        "PROOF (j): npu status must succeed, stderr: {}",
+        stderr_of(&output)
+    );
+    assert!(
+        !stdout_of(&output).trim().is_empty(),
+        "PROOF (j): the header must survive an empty table"
+    );
+}
+
+/// (k) `--verbose` moves the threshold without ever touching stdout: `info`
+/// adds a trace on STDERR, `error` silences the degraded-mode warning that
+/// `warn` (the default) prints. Run against a BROKEN configuration, where
+/// that warning is the observable difference.
+#[test]
+fn verbose_changes_stderr_only_and_never_stdout() {
+    let xdg = fixture_dir("verbose-xdg");
+    let cwd = fixture_dir("verbose-cwd");
+    write_broken_scope(&xdg);
+
+    let default_level = run_npu(&cwd, &xdg, &["--help"]);
+    let silenced = run_npu(&cwd, &xdg, &["--verbose", "error", "--help"]);
+    let verbose = run_npu(&cwd, &xdg, &["--verbose", "info", "--help"]);
+
+    assert!(
+        !stderr_of(&default_level).is_empty(),
+        "PROOF (k): the default threshold keeps the load warning"
+    );
+    assert!(
+        stderr_of(&silenced).is_empty(),
+        "PROOF (k): --verbose error silences the warning, got: {}",
+        stderr_of(&silenced)
+    );
+    assert!(
+        stderr_of(&verbose).len() > stderr_of(&default_level).len(),
+        "PROOF (k): --verbose info adds a trace on stderr"
+    );
+    assert_eq!(
+        stdout_of(&default_level),
+        stdout_of(&verbose),
+        "PROOF (k): stdout must not depend on the verbosity level"
+    );
 }

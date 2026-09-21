@@ -1,6 +1,6 @@
 ---
 name: npu-command
-description: Writes and fixes `npu` command files (`.npu/commands/*.md`) — the Markdown file with TOML frontmatter between `+++` fences whose path becomes the CLI command name. Covers frontmatter keys, input modes, `[args.*]` flags, the three prompt placeholders (`{{ input }}`, `{{ args.x }}`, `{{ env.X }}`), the `[output]` contract with JSON Schema, reserved command names, and the load-time rejections that catch a typo before it silently reaches the model.
+description: Writes and fixes `npu` command files (`.npu/commands/*.md`) — the Markdown file with TOML frontmatter between `---` fences (the `+++` of earlier versions is rejected) whose path becomes the CLI command name. Covers frontmatter keys, input modes, `[args.*]` flags, the three prompt placeholders (`{{ input }}`, `{{ args.x }}`, `{{ env.X }}`), the `[output]` contract with JSON Schema, reserved command names, and the load-time rejections that catch a typo before it silently reaches the model.
 when_to_use: >
   Trigger on "add an npu command", "write a prompt for npu", "add a flag to
   this command", "make this command return JSON", "nest npu commands", or on
@@ -13,7 +13,8 @@ allowed-tools: Read Write Edit Glob Grep Bash(npu:*)
 
 # `npu` commands
 
-A command is a Markdown file: TOML frontmatter between `+++` fences, then the
+A command is a Markdown file: TOML frontmatter between `---` fences (not
+`+++`, which is rejected at load time with a message saying so), then the
 prompt as the body. There is no registration step — **the path under
 `commands/` is the command name**.
 
@@ -27,14 +28,15 @@ Intermediate levels are created automatically and commands sharing a prefix
 merge under the same parent. Running an intermediate level alone (`npu git`)
 is a usage error: its help goes to **stderr**, exit `2`.
 
-`doctor`, `models`, `describe` and `help` are reserved and rejected at load
+`doctor`, `models`, `serve`, `stop`, `status`, `logs`, `describe` and `help`
+are reserved and rejected at load
 time — but **on the first path segment only**, so `commands/git/describe.md`
 is fine.
 
 ## The file
 
 ```markdown
-+++
+---
 description = "Translate input text"
 model = "qwen-fast"
 
@@ -45,7 +47,7 @@ description = "Target language"
 
 [input]
 mode = "stdin_or_file"
-+++
+---
 
 Translate the following text into {{ args.language }}.
 
@@ -95,8 +97,9 @@ The table key is the long flag (`--language`) and the value lands in
 `{{ args.language }}`. Rejected at load time: a `short` longer than one
 character (never silently truncated), `short = "-"`, two arguments sharing a
 short letter, a name that is empty, contains a space, starts with `-` or uses
-characters no placeholder could reference, and the reserved names `help` and
-`version`.
+characters no placeholder could reference, the reserved names `help`,
+`version`, `FILE` and `verbose`, and the short letters `-h` (clap's help) and
+`-v` (the global `--verbose`).
 
 Default values, repeated flags and boolean flags do not exist yet.
 

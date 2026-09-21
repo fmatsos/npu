@@ -13,7 +13,11 @@
       "Bash(cargo modules:*)",
       "Bash(./target/debug/npu:*)",
       "Bash(./target/release/npu:*)",
-      "Bash(npu:*)"
+      "Bash(npu:*)",
+      "Bash(docker ps:*)",
+      "Bash(docker images:*)",
+      "Bash(docker logs:*)",
+      "Bash(docker info:*)"
     ],
     "deny": [
       "Read(./.env)",

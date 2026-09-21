@@ -41,7 +41,31 @@ turn an exit code into SIGABRT), and `doctor` classifies a check by
 `CheckKind`, **never** by the text of its label.
 
 **stdout carries the command result and nothing else** — on every path,
-including failures, where it must be zero bytes.
+including failures, where it must be zero bytes. `--verbose error|warn|info`
+moves a threshold on the DIAGNOSTIC stream (`log.rs`, stderr only); no level
+may ever add or remove a byte on stdout.
+
+## Built-ins and the container lifecycle
+
+Seven built-ins, all listed in `builtin::RESERVED` (a command file whose first
+path segment matches one is rejected at load time): `doctor`, `models`,
+`describe`, and the lifecycle — `serve`, `stop`, `status`, `logs`.
+
+The lifecycle drives Docker, which is an **optional** prerequisite. The core
+knows the shape of a `docker run` invocation and nothing else: image, options
+and arguments come from the backend's optional `[docker]` table, so changing
+image, ports or accelerator is a configuration change, never a rebuild. The
+container is named `npu-<backend-id>`, which is how `stop`/`status`/`logs`
+find it again.
+
+Everything that touches the outside world is **injected**, like `probe` in
+`doctor`: `runner` (captures stdout), `streamer` (inherits both streams, for
+`logs`), `container_probe`. No test in the suite needs Docker installed, and
+`std::process::Command` appears in exactly one module (`builtin.rs`).
+
+`doctor`'s container check only exists when a backend declares `[docker]` — a
+machine that never asked for a container must not be penalized — and it is a
+`Reachability` check, so a missing runtime gives `3`, never `2`.
 
 ## Tests
 
@@ -97,6 +121,18 @@ never translate or reconstruct it by hand.
 
 `IMPLEMENTATION.md` and `npu-cli-spec.md` are local working documents, not in
 the repository and git-ignored. Do not reference them from code or docs.
+
+## Command files
+
+Frontmatter is fenced by `---`, TOML inside. A file still opening with `+++`
+(the delimiter of earlier versions) is rejected with its own message naming
+both delimiters — never diagnosed as "missing frontmatter", which would send
+the author looking for a line that is right there.
+
+Reserved argument names: `help`, `version`, `FILE`, `verbose`. Reserved short
+letters: `-h`, `-v`. `verbose`/`-v` are reserved because `lib.rs` declares a
+GLOBAL `--verbose` on the root command, and a collision makes `clap` panic at
+build time — which is not an acceptable way to report a configuration error.
 
 ## Conventions
 

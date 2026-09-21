@@ -22,6 +22,7 @@
 //! no report"): [`doctor`] therefore NEVER produces a [`Check`] for
 //! this line. This is not an oversight.
 
+use std::collections::BTreeMap;
 use std::net::ToSocketAddrs;
 use std::time::Duration;
 
@@ -63,14 +64,16 @@ pub struct Check {
     pub status: Status,
 }
 
-/// The three built-in names exposed by this CLI, plus `help`, reserved by
+/// The built-in names exposed by this CLI, plus `help`, reserved by
 /// `clap` itself (every `clap::Command` gets an automatic `-h`/`--help`
 /// flag). `command.rs` (`reject_reserved_path`) rejects at load time
 /// any command file whose FIRST path segment matches one of these
 /// values (phase 5, point 2 of the shared contract): without this
 /// rejection, `commands/doctor.md` would be silently shadowed by (or
 /// would shadow) the `doctor` built-in built in `lib.rs`.
-pub const RESERVED: &[&str] = &["doctor", "models", "describe", "help"];
+pub const RESERVED: &[&str] = &[
+    "doctor", "models", "describe", "serve", "stop", "status", "logs", "help",
+];
 
 /// Maximum delay granted to [`tcp_probe`] before considering a backend
 /// unreachable. Short by design (point 4 of the shared contract):
@@ -78,6 +81,11 @@ pub const RESERVED: &[&str] = &["doctor", "models", "describe", "help"];
 /// several backends are queried, never meant to wait out a full
 /// network timeout.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How often [`docker_probe`] checks whether its child has exited, while
+/// waiting out [`PROBE_TIMEOUT`]. Short enough to keep `doctor` responsive,
+/// long enough not to spin.
+const PROBE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Check (a): was the configuration loaded successfully?
 ///
@@ -129,6 +137,42 @@ fn check_backends_reachable(
             }
         })
         .collect()
+}
+
+/// Check (f): is the container runtime usable, when at least one backend
+/// declares a `[docker]` table?
+///
+/// Produces NO check at all when no backend declares one: Docker is an
+/// OPTIONAL prerequisite of this CLI, and a failed check on a machine that
+/// never asked for a container would turn a healthy configuration into a
+/// non-zero exit code.
+///
+/// `CheckKind::Reachability`, like the backend probe and for the same
+/// reason: a missing or stopped container runtime is something to START, not
+/// a file to fix — it must never produce the code that means "your files are
+/// wrong".
+fn check_container_runtime(
+    config: &crate::config::Config,
+    container_probe: &dyn Fn() -> Result<(), String>,
+) -> Vec<Check> {
+    if !config
+        .backends
+        .values()
+        .any(|backend| backend.docker.is_some())
+    {
+        return Vec::new();
+    }
+
+    let status = match container_probe() {
+        Ok(()) => Status::Ok,
+        Err(message) => Status::Failed(message),
+    };
+
+    vec![Check {
+        kind: CheckKind::Reachability,
+        label: "container runtime available".to_string(),
+        status,
+    }]
 }
 
 /// Check (c): for each configured model, does its backend exist,
@@ -271,11 +315,13 @@ pub fn doctor(
     commands: Option<&[crate::command::CommandSpec]>,
     load_error: Option<&crate::Error>,
     probe: &dyn Fn(&str) -> Result<(), String>,
+    container_probe: &dyn Fn() -> Result<(), String>,
 ) -> Vec<Check> {
     let mut checks = vec![check_config_loaded(load_error)];
 
     if let Some(config) = config {
         checks.extend(check_backends_reachable(config, probe));
+        checks.extend(check_container_runtime(config, container_probe));
         checks.extend(check_models(config));
     }
 
@@ -451,10 +497,7 @@ pub fn describe(spec: &crate::command::CommandSpec) -> crate::Result<String> {
         crate::command::InputMode::File => "file",
         crate::command::InputMode::StdinOrFile => "stdin_or_file",
     };
-    let format = match spec.output.format {
-        crate::output::Format::Text => "text",
-        crate::output::Format::Json => "json",
-    };
+    let format = spec.output.format.as_str();
 
     let args = spec
         .args
@@ -620,6 +663,411 @@ pub fn tcp_probe(base_url: &str) -> Result<(), String> {
         .map_err(|err| format!("TCP connection to \"{host}:{port}\" failed: {err}"))
 }
 
+/// The container runtime driven by [`serve`] and probed by
+/// [`docker_probe`]. Hardcoded because it is the shape of the invocation
+/// this CLI knows how to build (`docker run [OPTIONS] IMAGE [ARG...]`), not
+/// a preference about which server to run: WHAT is started stays entirely in
+/// the backend's `[docker]` table.
+const CONTAINER_RUNTIME: &str = "docker";
+
+/// Prefix of the container name derived from the backend identifier, so that
+/// a container started by this CLI is recognizable in `docker ps` and so
+/// that starting the same backend twice fails on an explicit name conflict
+/// rather than silently running a second container fighting for the same
+/// port.
+const CONTAINER_NAME_PREFIX: &str = "npu-";
+
+/// Builds the full `docker run` argument list for `model` on `backend`.
+///
+/// `-d` (detached) is imposed by this CLI rather than left to the
+/// configuration: the command's RESULT is the container identifier, and
+/// stdout carries nothing else — an attached container would write the
+/// server's logs there.
+///
+/// Every element of `options`/`args` goes through `prompt::render`, the
+/// prompt templating engine, so `{{ args.model }}` and `{{ env.NAME }}` work
+/// here exactly as they do in a command file, with the same errors naming
+/// the same things. `config`'s load-time validation has already rejected any
+/// placeholder this function could not resolve.
+fn docker_run_args(
+    backend: &crate::config::Backend,
+    docker: &crate::config::Docker,
+    model: &crate::config::Model,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> crate::Result<Vec<String>> {
+    let mut args = BTreeMap::new();
+    args.insert("model".to_string(), model.model.clone());
+
+    let render = |template: &String| crate::prompt::render(template, "", &args, env);
+
+    let mut out = vec![
+        "run".to_string(),
+        "-d".to_string(),
+        "--name".to_string(),
+        format!("{CONTAINER_NAME_PREFIX}{}", backend.id),
+    ];
+    for option in &docker.options {
+        out.push(render(option)?);
+    }
+    out.push(render(&docker.image)?);
+    for arg in &docker.args {
+        out.push(render(arg)?);
+    }
+
+    Ok(out)
+}
+
+/// `npu serve <model>`: starts the container runtime of the backend the
+/// model points at, and returns the started container's identifier — which
+/// IS this command's result, hence what the caller writes to stdout.
+///
+/// A model names exactly one backend, so the model identifier alone is
+/// unambiguous: several containerized backends coexist without anything to
+/// disambiguate.
+///
+/// `runner` is injected, exactly like `probe` in [`doctor`]: the tests of
+/// this module never need Docker installed, and this module never spawns a
+/// process itself.
+///
+/// # Errors
+///
+/// - `Error::Config` if the model is unknown, if its backend is unknown, or
+///   if that backend declares no `[docker]` table — in every case naming the
+///   identifier at fault;
+/// - whatever `runner` returns otherwise (`Error::Backend` for the real
+///   runner, cf. [`docker_runner`]).
+pub fn serve(
+    config: &crate::config::Config,
+    model_id: &str,
+    env: &dyn Fn(&str) -> Option<String>,
+    runner: &dyn Fn(&[String]) -> crate::Result<String>,
+) -> crate::Result<String> {
+    let (model, backend) = config.resolve(model_id)?;
+
+    let Some(docker) = &backend.docker else {
+        return Err(crate::Error::Config(format!(
+            "backend \"{}\" (used by model \"{model_id}\") declares no [docker] table: \
+             npu cannot start a runtime it was not told how to run",
+            backend.id
+        )));
+    };
+
+    let args = docker_run_args(backend, docker, model, env)?;
+    runner(&args)
+}
+
+/// Resolves the container name of the backend `model_id` points at, for the
+/// lifecycle commands that act on an already-started runtime.
+///
+/// Same errors as [`serve`], for the same reasons: a model that does not
+/// exist, or a backend that was never told how to start, is a configuration
+/// problem naming the identifier at fault. `stop`/`logs` deliberately reject
+/// a backend without `[docker]` rather than guessing a container name: npu
+/// only manages the containers it knows how to create.
+fn container_name(config: &crate::config::Config, model_id: &str) -> crate::Result<String> {
+    let (_model, backend) = config.resolve(model_id)?;
+
+    if backend.docker.is_none() {
+        return Err(crate::Error::Config(format!(
+            "backend \"{}\" (used by model \"{model_id}\") declares no [docker] table: \
+             npu only manages the containers it starts",
+            backend.id
+        )));
+    }
+
+    Ok(format!("{CONTAINER_NAME_PREFIX}{}", backend.id))
+}
+
+/// `npu stop <model>`: removes the container [`serve`] started for that
+/// model's backend, and returns what the runtime printed — the container
+/// name, which is this command's result.
+///
+/// `docker rm --force` rather than `docker stop`: a stopped-but-present
+/// container still owns its name, so the next `npu serve` would fail on a
+/// conflict. Stopping without removing would make the lifecycle a one-way
+/// trip.
+///
+/// # Errors
+///
+/// `Error::Config` for an unknown model or a backend without `[docker]`,
+/// otherwise whatever `runner` returns (`Error::Backend` for the real one) —
+/// including the case where no such container exists, which the runtime
+/// reports itself.
+pub fn stop(
+    config: &crate::config::Config,
+    model_id: &str,
+    runner: &dyn Fn(&[String]) -> crate::Result<String>,
+) -> crate::Result<String> {
+    let name = container_name(config, model_id)?;
+    let printed = runner(&["rm".to_string(), "--force".to_string(), name.clone()])?;
+
+    // `docker rm --force` on a container that does not exist succeeds
+    // silently, which is what makes `stop` idempotent — but it leaves
+    // nothing to write. The container name is the result in both cases:
+    // "this container is now absent", whether it was running or never
+    // started. Returning the empty output instead would put a blank line on
+    // stdout, which carries the RESULT and nothing else.
+    if printed.trim().is_empty() {
+        return Ok(name);
+    }
+    Ok(printed)
+}
+
+/// `npu logs <model>`: streams the container's logs.
+///
+/// Uses `streamer` and not `runner`: the logs ARE this command's result, and
+/// a container writes them to both stdout and stderr. Capturing only stdout
+/// would silently drop half of them — most servers log to stderr — so the
+/// child's streams are inherited and reach the caller's stdout/stderr
+/// unchanged, in order.
+///
+/// # Errors
+///
+/// Same as [`stop`].
+pub fn logs(
+    config: &crate::config::Config,
+    model_id: &str,
+    follow: bool,
+    streamer: &dyn Fn(&[String]) -> crate::Result<()>,
+) -> crate::Result<()> {
+    let name = container_name(config, model_id)?;
+
+    let mut args = vec!["logs".to_string()];
+    if follow {
+        args.push("--follow".to_string());
+    }
+    args.push(name);
+
+    streamer(&args)
+}
+
+/// One line of the [`status`] report: a containerized backend and the state
+/// its runtime is in.
+struct RuntimeStatus {
+    backend: String,
+    container: String,
+    state: String,
+}
+
+/// What [`status`] reports for a backend whose container does not exist.
+/// Not an error: "not started" is a legitimate state of a lifecycle, and a
+/// report that failed on it could never describe a stopped runtime.
+const NOT_STARTED: &str = "not started";
+
+/// `npu status`: for every backend declaring `[docker]`, is its container
+/// running?
+///
+/// Queries the runtime once per backend rather than filtering a single
+/// listing: `docker ps` has no way to say "these names, in this order", and
+/// a report whose lines depend on the runtime's own ordering would not be
+/// deterministic. Backends are iterated sorted by identifier, like every
+/// other report in this module.
+///
+/// A backend the runtime cannot be asked about does not fail the command:
+/// its state becomes the runtime's own message. `status` is a report, and a
+/// report that dies on its first unknown line is not a report.
+///
+/// # Errors
+///
+/// Never returns `Err`; the signature stays `Result` for symmetry with the
+/// other built-ins and so a future stricter mode does not break the caller.
+pub fn status(
+    config: &crate::config::Config,
+    runner: &dyn Fn(&[String]) -> crate::Result<String>,
+) -> crate::Result<String> {
+    let mut ids: Vec<&String> = config
+        .backends
+        .iter()
+        .filter(|(_id, backend)| backend.docker.is_some())
+        .map(|(id, _backend)| id)
+        .collect();
+    ids.sort_unstable();
+
+    let rows: Vec<RuntimeStatus> = ids
+        .into_iter()
+        .map(|id| {
+            let container = format!("{CONTAINER_NAME_PREFIX}{id}");
+            // ponytail: `status` uses the unbounded runner, so a wedged
+            // daemon hangs it — unlike `doctor`, which bounds its probe.
+            // Bound this call the same way if that ever bites; `serve` must
+            // stay unbounded, an image pull takes minutes.
+            let state = match runner(&[
+                "ps".to_string(),
+                "--all".to_string(),
+                "--filter".to_string(),
+                // Docker matches this filter as a REGEX, and `.` is a legal
+                // character in a backend identifier: escaped, so `npu-a.b`
+                // cannot be answered by `npu-axb`.
+                format!("name=^{}$", container.replace('.', "\\.")),
+                "--format".to_string(),
+                "{{.Status}}".to_string(),
+            ]) {
+                Ok(output) if output.trim().is_empty() => NOT_STARTED.to_string(),
+                Ok(output) => output.trim().to_string(),
+                Err(err) => err.to_string(),
+            };
+            RuntimeStatus {
+                backend: id.clone(),
+                container,
+                state,
+            }
+        })
+        .collect();
+
+    Ok(format_status(&rows))
+}
+
+/// Formats the [`status`] table, columns sized to the content like
+/// [`format_models`]. A configuration with no containerized backend still
+/// produces the header: an empty output would be indistinguishable from a
+/// command that did nothing.
+fn format_status(rows: &[RuntimeStatus]) -> String {
+    const BACKEND_HEADER: &str = "BACKEND";
+    const CONTAINER_HEADER: &str = "CONTAINER";
+    const STATE_HEADER: &str = "STATE";
+
+    let backend_width = rows
+        .iter()
+        .map(|row| row.backend.len())
+        .max()
+        .unwrap_or(0)
+        .max(BACKEND_HEADER.len());
+    let container_width = rows
+        .iter()
+        .map(|row| row.container.len())
+        .max()
+        .unwrap_or(0)
+        .max(CONTAINER_HEADER.len());
+
+    let mut lines = Vec::with_capacity(rows.len() + 1);
+    lines.push(format!(
+        "{BACKEND_HEADER:<backend_width$}  {CONTAINER_HEADER:<container_width$}  {STATE_HEADER}"
+    ));
+    for row in rows {
+        lines.push(format!(
+            "{:<backend_width$}  {:<container_width$}  {}",
+            row.backend, row.container, row.state
+        ));
+    }
+
+    lines.join("\n")
+}
+
+/// The real runner behind [`serve`]: runs `docker` with `args` and returns
+/// its stdout (the container identifier), trailing newline removed.
+///
+/// The child's stderr is INHERITED — Docker's own diagnostics belong on this
+/// process's stderr, never on its stdout, which carries the result only.
+///
+/// # Errors
+///
+/// `Error::Backend` if `docker` cannot be spawned (not installed, not on
+/// `PATH`) or exits non-zero: from a calling program's point of view both
+/// mean "the runtime could not be brought up", the same class as an
+/// unreachable backend.
+pub fn docker_runner(args: &[String]) -> crate::Result<String> {
+    let output = std::process::Command::new(CONTAINER_RUNTIME)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .map_err(|err| {
+            crate::Error::Backend(format!("cannot run \"{CONTAINER_RUNTIME}\": {err}"))
+        })?;
+
+    if !output.status.success() {
+        return Err(crate::Error::Backend(format!(
+            "\"{CONTAINER_RUNTIME} {}\" failed ({})",
+            args.join(" "),
+            output.status
+        )));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim_end()
+        .to_string())
+}
+
+/// The real streamer behind [`logs`]: runs `docker` with both streams
+/// INHERITED, so the container's logs reach the caller as the runtime wrote
+/// them, interleaved and unbuffered, instead of being captured and reprinted
+/// in the wrong order.
+///
+/// # Errors
+///
+/// `Error::Backend` if `docker` cannot be spawned or exits non-zero — the
+/// same classification as [`docker_runner`], for the same reason.
+pub fn docker_streamer(args: &[String]) -> crate::Result<()> {
+    let status = std::process::Command::new(CONTAINER_RUNTIME)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .status()
+        .map_err(|err| {
+            crate::Error::Backend(format!("cannot run \"{CONTAINER_RUNTIME}\": {err}"))
+        })?;
+
+    if !status.success() {
+        return Err(crate::Error::Backend(format!(
+            "\"{CONTAINER_RUNTIME} {}\" failed ({status})",
+            args.join(" ")
+        )));
+    }
+
+    Ok(())
+}
+
+/// Probes the container runtime for check (f): runs `docker info`, which
+/// reaches the DAEMON and not merely the binary — a report claiming the
+/// runtime is available while its daemon is dead would be exactly the kind
+/// of lie this module refuses (cf. the module doc).
+///
+/// Bounded by [`PROBE_TIMEOUT`], like the TCP probe and for the same reason:
+/// `doctor` must stay fast, and a wedged daemon would otherwise hang it
+/// indefinitely (`std::process` offers no timeout).
+///
+/// # Errors
+///
+/// Returns `Err` if `docker` cannot be spawned, does not answer within
+/// [`PROBE_TIMEOUT`], or exits non-zero.
+pub fn docker_probe() -> Result<(), String> {
+    let mut child = std::process::Command::new(CONTAINER_RUNTIME)
+        .arg("info")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|err| format!("cannot run \"{CONTAINER_RUNTIME}\": {err}"))?;
+
+    let deadline = std::time::Instant::now() + PROBE_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Err(err) => {
+                return Err(format!(
+                    "waiting for \"{CONTAINER_RUNTIME} info\" failed: {err}"
+                ));
+            }
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => {
+                return Err(format!("\"{CONTAINER_RUNTIME} info\" failed ({status})"));
+            }
+            Ok(None) => {}
+        }
+
+        if std::time::Instant::now() >= deadline {
+            // Best effort: the probe has already made up its mind, and a
+            // child that cannot be killed must not turn a diagnostic into a
+            // failure of its own.
+            drop(child.kill());
+            return Err(format!(
+                "\"{CONTAINER_RUNTIME} info\" did not answer within {} s",
+                PROBE_TIMEOUT.as_secs()
+            ));
+        }
+
+        std::thread::sleep(PROBE_POLL_INTERVAL);
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)] // allowed in tests (cf. Cargo.toml [lints.clippy]).
 mod tests {
@@ -642,7 +1090,26 @@ mod tests {
                     )
                 })
                 .collect(),
+            docker: None,
         }
+    }
+
+    /// Same as [`backend`], plus a `[docker]` table: `options`, `image` and
+    /// `args` are deliberately distinguishable so that a test can assert on
+    /// their ORDER in the built command line.
+    fn containerized_backend(id: &str) -> crate::config::Backend {
+        let mut backend = backend(id, "http://127.0.0.1:8000", &["chat"]);
+        backend.docker = Some(crate::config::Docker {
+            image: "example/server:latest".to_string(),
+            options: vec![
+                "-p".to_string(),
+                "8000:8000".to_string(),
+                "-v".to_string(),
+                "{{ env.NPU_TEST_MODELS }}:/models".to_string(),
+            ],
+            args: vec!["--source_model".to_string(), "{{ args.model }}".to_string()],
+        });
+        backend
     }
 
     fn model(id: &str, backend: &str, operation: &str) -> crate::config::Model {
@@ -681,6 +1148,18 @@ mod tests {
         Err("connection refused".to_string())
     }
 
+    // Same reasoning as `always_ok`/`always_fails`, for the container
+    // runtime probe injected into `doctor` (signature `&dyn Fn() ->
+    // Result<(), String>`): no test of this module ever needs Docker.
+    #[allow(clippy::unnecessary_wraps)]
+    fn container_ok() -> Result<(), String> {
+        Ok(())
+    }
+
+    fn container_fails() -> Result<(), String> {
+        Err("cannot run \"docker\"".to_string())
+    }
+
     // -- doctor: nominal scenario -----------------------------------------
 
     #[test]
@@ -695,7 +1174,13 @@ mod tests {
             .insert("qwen-fast".to_string(), model("qwen-fast", "ovms", "chat"));
         let commands = vec![command_spec(&["classify"], "qwen-fast")];
 
-        let checks = doctor(Some(&config), Some(&commands), None, &always_ok);
+        let checks = doctor(
+            Some(&config),
+            Some(&commands),
+            None,
+            &always_ok,
+            &container_ok,
+        );
 
         assert!(
             checks.iter().all(|c| matches!(c.status, Status::Ok)),
@@ -710,7 +1195,7 @@ mod tests {
     fn doctor_load_error_fails_configuration_check_only_and_exit_code_is_two() {
         let err = crate::Error::Config("broken command file".to_string());
 
-        let checks = doctor(None, None, Some(&err), &always_ok);
+        let checks = doctor(None, None, Some(&err), &always_ok, &container_ok);
 
         assert_eq!(
             checks.len(),
@@ -730,7 +1215,7 @@ mod tests {
             .models
             .insert("gpt".to_string(), model("gpt", "does-not-exist", "chat"));
 
-        let checks = doctor(Some(&config), Some(&[]), None, &always_ok);
+        let checks = doctor(Some(&config), Some(&[]), None, &always_ok, &container_ok);
 
         let model_check = checks
             .iter()
@@ -752,7 +1237,7 @@ mod tests {
             model("whisper", "ovms", "audio_transcriptions"),
         );
 
-        let checks = doctor(Some(&config), Some(&[]), None, &always_ok);
+        let checks = doctor(Some(&config), Some(&[]), None, &always_ok, &container_ok);
 
         let model_check = checks
             .iter()
@@ -772,7 +1257,13 @@ mod tests {
         let config = crate::config::Config::default();
         let commands = vec![command_spec(&["classify"], "does-not-exist")];
 
-        let checks = doctor(Some(&config), Some(&commands), None, &always_ok);
+        let checks = doctor(
+            Some(&config),
+            Some(&commands),
+            None,
+            &always_ok,
+            &container_ok,
+        );
 
         let command_check = checks
             .iter()
@@ -796,7 +1287,13 @@ mod tests {
         };
         let config = crate::config::Config::default();
 
-        let checks = doctor(Some(&config), Some(&[spec]), None, &always_ok);
+        let checks = doctor(
+            Some(&config),
+            Some(&[spec]),
+            None,
+            &always_ok,
+            &container_ok,
+        );
 
         let schema_check = checks
             .iter()
@@ -810,7 +1307,13 @@ mod tests {
         let spec = command_spec(&["commit-message"], "qwen-fast"); // text format by default
         let config = crate::config::Config::default();
 
-        let checks = doctor(Some(&config), Some(&[spec]), None, &always_ok);
+        let checks = doctor(
+            Some(&config),
+            Some(&[spec]),
+            None,
+            &always_ok,
+            &container_ok,
+        );
 
         assert!(
             !checks.iter().any(|c| c.label.contains("schema")),
@@ -828,7 +1331,7 @@ mod tests {
             backend("ovms", "http://127.0.0.1:8000", &["chat"]),
         );
 
-        let checks = doctor(Some(&config), Some(&[]), None, &always_fails);
+        let checks = doctor(Some(&config), Some(&[]), None, &always_fails, &container_ok);
 
         assert_eq!(doctor_exit_code(&checks), 3);
     }
@@ -863,7 +1366,7 @@ mod tests {
         );
 
         // (b) also fails: the probe fails for every backend queried.
-        let checks = doctor(Some(&config), Some(&[]), None, &always_fails);
+        let checks = doctor(Some(&config), Some(&[]), None, &always_fails, &container_ok);
 
         let reachability_failed = checks
             .iter()
@@ -1161,6 +1664,315 @@ mod tests {
         assert!(
             result.is_err(),
             "a closed port must be reported as unreachable"
+        );
+    }
+
+    // -- serve -------------------------------------------------------------
+
+    /// Stub runner: records the argument list it was given, and returns a
+    /// container identifier. `serve` never spawns a process itself, so no
+    /// test of this module needs Docker installed.
+    fn capturing_runner(
+        captured: &std::cell::RefCell<Vec<String>>,
+    ) -> impl Fn(&[String]) -> crate::Result<String> + '_ {
+        move |args: &[String]| {
+            captured.replace(args.to_vec());
+            Ok("3f2a9c1b8e40".to_string())
+        }
+    }
+
+    fn test_env(name: &str) -> Option<String> {
+        match name {
+            "NPU_TEST_MODELS" => Some("/home/tester/models".to_string()),
+            _ => None,
+        }
+    }
+
+    fn containerized_config() -> crate::config::Config {
+        let mut config = crate::config::Config::default();
+        config
+            .backends
+            .insert("ovms".to_string(), containerized_backend("ovms"));
+        config
+            .models
+            .insert("qwen".to_string(), model("qwen", "ovms", "chat"));
+        config
+    }
+
+    #[test]
+    fn serve_builds_docker_run_with_options_then_image_then_args() {
+        let config = containerized_config();
+        let captured = std::cell::RefCell::new(Vec::new());
+
+        let id = serve(&config, "qwen", &test_env, &capturing_runner(&captured))
+            .expect("serving a containerized backend must succeed");
+
+        assert_eq!(id, "3f2a9c1b8e40");
+        assert_eq!(
+            captured.into_inner(),
+            vec![
+                "run",
+                "-d",
+                "--name",
+                "npu-ovms",
+                "-p",
+                "8000:8000",
+                "-v",
+                "/home/tester/models:/models",
+                "example/server:latest",
+                "--source_model",
+                "qwen-underlying",
+            ]
+        );
+    }
+
+    #[test]
+    fn serve_unknown_model_is_a_config_error_naming_the_model() {
+        let config = containerized_config();
+        let captured = std::cell::RefCell::new(Vec::new());
+
+        let err = serve(&config, "absent", &test_env, &capturing_runner(&captured))
+            .expect_err("an unknown model must fail");
+
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(
+            err.to_string().contains("absent"),
+            "the message must name the faulty model"
+        );
+        assert!(
+            captured.into_inner().is_empty(),
+            "no container must be started for an unknown model"
+        );
+    }
+
+    #[test]
+    fn serve_backend_without_docker_table_is_a_config_error_naming_the_backend() {
+        let mut config = crate::config::Config::default();
+        config.backends.insert(
+            "plain".to_string(),
+            backend("plain", "http://127.0.0.1:8000", &["chat"]),
+        );
+        config
+            .models
+            .insert("qwen".to_string(), model("qwen", "plain", "chat"));
+        let captured = std::cell::RefCell::new(Vec::new());
+
+        let err = serve(&config, "qwen", &test_env, &capturing_runner(&captured))
+            .expect_err("a backend without [docker] cannot be served");
+
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(
+            err.to_string().contains("plain"),
+            "the message must name the backend that cannot be started"
+        );
+        assert!(captured.into_inner().is_empty());
+    }
+
+    #[test]
+    fn serve_propagates_the_runner_failure() {
+        let config = containerized_config();
+        let failing = |_args: &[String]| Err(crate::Error::Backend("docker absent".to_string()));
+
+        let err = serve(&config, "qwen", &test_env, &failing)
+            .expect_err("a failing runner must fail the command");
+
+        assert!(matches!(err, crate::Error::Backend(_)));
+        assert_eq!(err.exit_code(), 3);
+    }
+
+    #[test]
+    fn serve_undefined_environment_variable_is_a_config_error_naming_it() {
+        let config = containerized_config();
+        let empty_env = |_name: &str| None;
+        let captured = std::cell::RefCell::new(Vec::new());
+
+        let err = serve(&config, "qwen", &empty_env, &capturing_runner(&captured))
+            .expect_err("an undefined variable referenced by [docker] must fail");
+
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(
+            err.to_string().contains("NPU_TEST_MODELS"),
+            "the message must name the undefined variable"
+        );
+        assert!(captured.into_inner().is_empty());
+    }
+
+    // -- doctor: check (f), container runtime ------------------------------
+
+    #[test]
+    fn doctor_produces_no_container_check_when_no_backend_declares_docker() {
+        let mut config = crate::config::Config::default();
+        config.backends.insert(
+            "plain".to_string(),
+            backend("plain", "http://127.0.0.1:8000", &["chat"]),
+        );
+
+        let checks = doctor(Some(&config), Some(&[]), None, &always_ok, &container_fails);
+
+        assert!(
+            checks
+                .iter()
+                .all(|check| matches!(check.status, Status::Ok)),
+            "a configuration without [docker] must not be penalized by a missing runtime"
+        );
+        assert_eq!(doctor_exit_code(&checks), 0);
+    }
+
+    #[test]
+    fn doctor_container_runtime_failure_is_reachability_and_yields_exit_code_three() {
+        let config = containerized_config();
+
+        let checks = doctor(Some(&config), Some(&[]), None, &always_ok, &container_fails);
+
+        let failed: Vec<&Check> = checks
+            .iter()
+            .filter(|check| matches!(check.status, Status::Failed(_)))
+            .collect();
+        assert_eq!(failed.len(), 1, "only the container check must fail");
+        assert_eq!(failed[0].kind, CheckKind::Reachability);
+        assert_eq!(doctor_exit_code(&checks), 3);
+    }
+
+    #[test]
+    fn doctor_container_runtime_available_passes_when_a_backend_declares_docker() {
+        let config = containerized_config();
+
+        let checks = doctor(Some(&config), Some(&[]), None, &always_ok, &container_ok);
+
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.kind == CheckKind::Reachability
+                    && check.label.contains("container")),
+            "a declared [docker] table must produce its own check"
+        );
+        assert_eq!(doctor_exit_code(&checks), 0);
+    }
+
+    // -- lifecycle: stop / status / logs -----------------------------------
+
+    #[test]
+    fn stop_removes_the_container_named_after_the_backend() {
+        let config = containerized_config();
+        let captured = std::cell::RefCell::new(Vec::new());
+
+        stop(&config, "qwen", &capturing_runner(&captured)).expect("stopping must succeed");
+
+        assert_eq!(
+            captured.into_inner(),
+            vec!["rm", "--force", "npu-ovms"],
+            "stop must REMOVE the container: a stopped one still owns its name"
+        );
+    }
+
+    #[test]
+    fn stop_returns_the_container_name_when_the_runtime_printed_nothing() {
+        let config = containerized_config();
+        // `docker rm --force` on an absent container succeeds without
+        // printing: stdout must still carry a result, never a blank line.
+        let silent = |_args: &[String]| Ok(String::new());
+
+        let result = stop(&config, "qwen", &silent).expect("stopping must stay idempotent");
+
+        assert_eq!(result, "npu-ovms");
+    }
+
+    #[test]
+    fn stop_backend_without_docker_table_is_a_config_error_naming_the_backend() {
+        let mut config = crate::config::Config::default();
+        config.backends.insert(
+            "plain".to_string(),
+            backend("plain", "http://127.0.0.1:8000", &["chat"]),
+        );
+        config
+            .models
+            .insert("qwen".to_string(), model("qwen", "plain", "chat"));
+        let captured = std::cell::RefCell::new(Vec::new());
+
+        let err = stop(&config, "qwen", &capturing_runner(&captured))
+            .expect_err("npu only manages the containers it starts");
+
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("plain"));
+        assert!(captured.into_inner().is_empty());
+    }
+
+    #[test]
+    fn logs_follow_adds_the_flag_and_streams_without_capturing() {
+        let config = containerized_config();
+        let captured = std::cell::RefCell::new(Vec::new());
+        let streamer = |args: &[String]| {
+            captured.replace(args.to_vec());
+            Ok(())
+        };
+
+        logs(&config, "qwen", true, &streamer).expect("streaming must succeed");
+
+        assert_eq!(captured.into_inner(), vec!["logs", "--follow", "npu-ovms"]);
+    }
+
+    #[test]
+    fn logs_without_follow_omits_the_flag() {
+        let config = containerized_config();
+        let captured = std::cell::RefCell::new(Vec::new());
+        let streamer = |args: &[String]| {
+            captured.replace(args.to_vec());
+            Ok(())
+        };
+
+        logs(&config, "qwen", false, &streamer).expect("streaming must succeed");
+
+        assert_eq!(captured.into_inner(), vec!["logs", "npu-ovms"]);
+    }
+
+    #[test]
+    fn status_reports_a_containerized_backend_with_the_runtime_state() {
+        let config = containerized_config();
+        let runner = |_args: &[String]| Ok("Up 3 minutes".to_string());
+
+        let report = status(&config, &runner).expect("status never fails");
+
+        assert!(report.contains("ovms"), "got: {report}");
+        assert!(report.contains("npu-ovms"), "got: {report}");
+        assert!(report.contains("Up 3 minutes"), "got: {report}");
+    }
+
+    #[test]
+    fn status_reports_a_missing_container_as_not_started_rather_than_failing() {
+        let config = containerized_config();
+        let runner = |_args: &[String]| Ok(String::new());
+
+        let report =
+            status(&config, &runner).expect("an absent container is a state, not an error");
+
+        assert!(report.contains(NOT_STARTED), "got: {report}");
+    }
+
+    #[test]
+    fn status_survives_a_runtime_that_cannot_be_asked() {
+        let config = containerized_config();
+        let runner = |_args: &[String]| Err(crate::Error::Backend("docker absent".to_string()));
+
+        let report = status(&config, &runner).expect("a report must not die on its first bad line");
+
+        assert!(report.contains("ovms"), "got: {report}");
+    }
+
+    #[test]
+    fn status_ignores_backends_without_a_docker_table_but_keeps_its_header() {
+        let mut config = crate::config::Config::default();
+        config.backends.insert(
+            "plain".to_string(),
+            backend("plain", "http://127.0.0.1:8000", &["chat"]),
+        );
+        let runner = |_args: &[String]| Ok("Up".to_string());
+
+        let report = status(&config, &runner).expect("status never fails");
+
+        assert!(!report.contains("plain"), "got: {report}");
+        assert!(
+            report.contains("BACKEND"),
+            "the header must survive an empty table"
         );
     }
 }

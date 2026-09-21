@@ -64,7 +64,11 @@ Server](https://github.com/openvinotoolkit/model_server) is the reference target
 exposing `POST /v1/chat/completions` (or an equivalent path you configure) will do.
 
 Without a backend listening, every business command fails with exit code `3`. The built-ins
-(`doctor`, `models`, `describe`) still work.
+(`doctor`, `models`, `serve`, `describe`) still work.
+
+**Docker — optional.** Only the lifecycle commands (`serve`, `stop`, `status`, `logs`) need it: a backend can declare a `[docker]` table saying
+how to start its own runtime, and those commands drive it. Nothing else in the CLI touches
+Docker, and a configuration without that table never asks for it.
 
 ---
 
@@ -159,11 +163,11 @@ temperature = 0.0
 max_tokens = 512
 ```
 
-**`.npu/commands/commit-message.md`** — the command itself. TOML frontmatter between `+++`
+**`.npu/commands/commit-message.md`** — the command itself. TOML frontmatter between `---`
 fences, and the prompt as the body:
 
 ```markdown
-+++
+---
 description = "Generate a conventional commit message"
 model = "qwen-fast"
 
@@ -173,7 +177,7 @@ mode = "stdin"
 [output]
 format = "text"
 max_lines = 1
-+++
+---
 
 Generate a Conventional Commit message from the supplied diff.
 
@@ -194,7 +198,7 @@ git diff --cached | npu commit-message
 Nested directories become nested subcommands: `commands/git/review.md` gives you `npu git review`.
 
 `npu` behaves like a proper Unix tool — **stdout carries the command result and nothing else**,
-diagnostics go to stderr:
+diagnostics go to stderr, at a verbosity you choose (`--verbose error|warn|info`, default `warn`):
 
 ```sh
 npu summarize README.md > summary.txt
@@ -214,7 +218,7 @@ See [Writing commands](docs/commands.md) for arguments, templating and input mod
 
 ## Built-in commands
 
-Three runtime commands ship with the binary. They are not AI commands, and their names are
+Seven runtime commands ship with the binary. They are not AI commands, and their names are
 reserved — a command file called `doctor.md` is rejected at load time.
 
 ```console
@@ -224,9 +228,30 @@ qwen-fast  ovms     chat
 ```
 
 ```console
+$ npu serve qwen-fast
+2ac5416d2aae6769b9c2674ee2e284eaab4be049fa7d02d38146852989c35e35
+```
+
+```console
+$ npu status
+BACKEND  CONTAINER  STATE
+ovms     npu-ovms   not started
+```
+
+```console
+$ npu logs qwen-fast --follow
+[2026-09-21 17:26:44.688][1][serving][info][server.cpp:115] OpenVINO Model Server 2026.4.0.869b2186a
+```
+
+```console
 $ npu describe translate
 {"name":"translate","description":"Translate input text","model":"qwen-fast","input":"stdin_or_file","args":{"language":{"short":"l","required":true,"description":"Target language"}},"output":{"format":"text","schema":null,"max_lines":null}}
 ```
+
+`npu serve`, `npu stop`, `npu status` and `npu logs` are the runtime lifecycle: start a model's
+backend, remove its container, see what is up, read what it printed. What gets started comes from
+the backend's `[docker]` table, so switching image, ports or accelerator is a configuration
+change, not a rebuild.
 
 `npu doctor` reports on configuration, backend reachability and output schemas. It runs **even
 when your configuration is invalid** — that is its whole point. See [Built-in

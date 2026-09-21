@@ -23,6 +23,7 @@ pub fn chat(
     backend: &crate::config::Backend,
     model: &crate::config::Model,
     prompt: &str,
+    logger: crate::log::Logger,
 ) -> crate::Result<String> {
     let operation = backend.operations.get(&model.operation).ok_or_else(|| {
         crate::Error::Config(format!(
@@ -44,6 +45,13 @@ pub fn chat(
         .build()
         .new_agent();
 
+    logger.info(&format!(
+        "POST {url} (model \"{}\", timeout {} s)",
+        model.model,
+        REQUEST_TIMEOUT.as_secs()
+    ));
+
+    let started = std::time::Instant::now();
     let mut response = agent.post(&url).send_json(&body).map_err(|err| {
         crate::Error::Backend(format!(
             "request to backend \"{}\" ({url}) failed: {err}",
@@ -58,6 +66,13 @@ pub fn chat(
             backend.id
         ))
     })?;
+
+    logger.info(&format!(
+        "backend \"{}\" answered {status} in {} ms, {} characters",
+        backend.id,
+        started.elapsed().as_millis(),
+        response_text.chars().count()
+    ));
 
     if !status.is_success() {
         return Err(crate::Error::Backend(format!(
@@ -332,6 +347,7 @@ mod tests {
             )]
             .into_iter()
             .collect(),
+            docker: None,
         };
         let model = crate::config::Model {
             id: "test-model".to_string(),
@@ -341,8 +357,13 @@ mod tests {
             generation: Generation::default(),
         };
 
-        let result = chat(&backend, &model, "hello")
-            .expect("chat() must succeed against the stubbed listener");
+        let result = chat(
+            &backend,
+            &model,
+            "hello",
+            crate::log::Logger::new(crate::log::Level::Error),
+        )
+        .expect("chat() must succeed against the stubbed listener");
         assert_eq!(result, "stubbed reply");
 
         server.join().expect("the server thread must not panic");

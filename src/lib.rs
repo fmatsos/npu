@@ -10,6 +10,7 @@ pub mod command;
 pub mod config;
 pub mod error;
 pub mod input;
+pub mod log;
 pub mod output;
 pub mod prompt;
 pub mod scope;
@@ -114,21 +115,44 @@ fn build_clap_node(name: &str, node: &CommandNode<'_>) -> clap::Command {
     cmd
 }
 
+/// The `--verbose <LEVEL>` argument, declared once on the root and marked
+/// `global`, so it is accepted after any subcommand (`npu classify
+/// --verbose info`) without being redeclared on each of them.
+///
+/// The accepted values come from `log::Level::NAMES`: the CLI cannot offer a
+/// level the logger does not know, nor the reverse. `command.rs` reserves
+/// the name `verbose` and the short letter `v` for the same reason it
+/// reserves `help`/`h` — a command declaring them would collide with this
+/// argument.
+fn verbose_arg() -> clap::Arg {
+    clap::Arg::new("verbose")
+        .long("verbose")
+        .short('v')
+        .global(true)
+        .value_name("LEVEL")
+        .value_parser(log::Level::NAMES)
+        .default_value(log::Level::DEFAULT)
+        .help("Diagnostic verbosity on stderr; stdout always carries the result only")
+}
+
 /// Builds the complete `clap` tree (builder API) from the discovered
 /// commands. Contains ONLY the business
-/// commands: the built-ins (`doctor`/`models`/`describe`) are added
+/// commands: the built-ins (`doctor`/`models`/`serve`/`stop`/`status`/`logs`/`describe`) are added
 /// separately by [`add_builtins`], unconditionally — this function remains
 /// usable with an empty `specs` (degraded mode, cf. `run`).
 fn build_cli(specs: &[command::CommandSpec]) -> clap::Command {
     let tree = build_command_tree(specs);
-    let mut root = clap::Command::new("npu").arg_required_else_help(true);
+    let mut root = clap::Command::new("npu")
+        .arg_required_else_help(true)
+        .arg(verbose_arg());
     for (name, node) in &tree.children {
         root = root.subcommand(build_clap_node(name, node));
     }
     root
 }
 
-/// Adds the CLI's three built-ins (`doctor`, `models`, `describe`) to the
+/// Adds the CLI's built-ins (`doctor`, `models`, `serve`, `stop`, `status`,
+/// `logs`, `describe`) to the
 /// tree already built from the discovered business commands.
 ///
 /// Called UNCONDITIONALLY by `run`, including when loading the
@@ -136,9 +160,9 @@ fn build_cli(specs: &[command::CommandSpec]) -> clap::Command {
 /// contract): a broken configuration must NEVER deprive `--help` of
 /// `doctor`, since `doctor` is precisely the tool meant to diagnose its
 /// cause. `command::reject_reserved_path` already guarantees, upstream at
-/// discovery time, that no business command can carry one of these three
-/// names as its first path segment: these three `subcommand()` calls can
-/// therefore never collide with the ones added by [`build_cli`].
+/// discovery time, that no business command can carry one of these names as
+/// its first path segment: these `subcommand()` calls can therefore never
+/// collide with the ones added by [`build_cli`].
 fn add_builtins(cli: clap::Command) -> clap::Command {
     // Help text in English: it is displayed next to the configured
     // commands' `description`, and the repository's documentation is in
@@ -148,6 +172,43 @@ fn add_builtins(cli: clap::Command) -> clap::Command {
          output schemas",
     ))
     .subcommand(clap::Command::new("models").about("List configured models"))
+    .subcommand(
+        clap::Command::new("serve")
+            .about("Start the container runtime of the backend a model points at")
+            .arg(
+                clap::Arg::new("MODEL")
+                    .required(true)
+                    .help("Identifier of the model to serve (e.g. \"qwen-fast\")"),
+            ),
+    )
+    .subcommand(
+        clap::Command::new("stop")
+            .about("Stop and remove the container started for a model's backend")
+            .arg(
+                clap::Arg::new("MODEL")
+                    .required(true)
+                    .help("Identifier of the model whose runtime is stopped"),
+            ),
+    )
+    .subcommand(
+        clap::Command::new("status").about("Report the state of every containerized backend"),
+    )
+    .subcommand(
+        clap::Command::new("logs")
+            .about("Stream the logs of the container started for a model's backend")
+            .arg(
+                clap::Arg::new("MODEL")
+                    .required(true)
+                    .help("Identifier of the model whose runtime is read"),
+            )
+            .arg(
+                clap::Arg::new("follow")
+                    .long("follow")
+                    .short('f')
+                    .action(clap::ArgAction::SetTrue)
+                    .help("Keep streaming as new lines arrive"),
+            ),
+    )
     .subcommand(
         clap::Command::new("describe")
             .about("Describe a dynamically configured command, as JSON")
@@ -241,8 +302,17 @@ fn execute_business_command(
     spec: &command::CommandSpec,
     config: &config::Config,
     leaf_matches: &clap::ArgMatches,
+    logger: log::Logger,
 ) -> Result<()> {
     let (model, backend) = config.resolve(&spec.model)?;
+    logger.info(&format!(
+        "command \"{}\" -> model \"{}\" (backend \"{}\", operation \"{}\") from {}",
+        spec.path.join("/"),
+        model.id,
+        backend.id,
+        model.operation,
+        spec.file.display()
+    ));
 
     let args = collect_arg_values(spec, leaf_matches);
     // `std::env::var` returns `Err` both for a missing variable and for a
@@ -276,8 +346,20 @@ fn execute_business_command(
         command::InputMode::Stdin => None,
     };
     let input_text = input::resolve(&spec.input, file_arg)?;
+    logger.info(&format!(
+        "input: {} characters read from {}",
+        input_text.chars().count(),
+        match file_arg {
+            Some(path) => path.display().to_string(),
+            None => "stdin".to_string(),
+        }
+    ));
 
     let prompt = prompt::render(&spec.prompt, &input_text, &args, &env)?;
+    logger.info(&format!(
+        "prompt rendered: {} characters",
+        prompt.chars().count()
+    ));
 
     // The backend's raw response is never
     // written as-is to stdout. `output::finalize` applies the declared
@@ -288,8 +370,13 @@ fn execute_business_command(
     // doc). No reformulation or retry here: an invalid output is an
     // execution failure, not something to recover from (§15, out of scope
     // for this phase).
-    let raw_output = backend::chat(backend, model, &prompt)?;
+    let raw_output = backend::chat(backend, model, &prompt, logger)?;
     let output = output::finalize(&spec.output, &raw_output, &spec.file)?;
+    logger.info(&format!(
+        "output contract honoured ({}): {} characters written to stdout",
+        spec.output.format.as_str(),
+        output.chars().count()
+    ));
 
     println!("{output}");
 
@@ -316,7 +403,7 @@ fn execute_business_command(
 /// frontmatter, unknown reference). Its error is now KEPT
 /// (`loaded: Result<(Config, Vec<CommandSpec>)>`) rather than immediately
 /// propagated via `?`: the `clap` tree is built UNCONDITIONALLY with the
-/// three built-ins ([`add_builtins`]), and with the discovered business
+/// built-ins ([`add_builtins`]), and with the discovered business
 /// commands ONLY if loading succeeded (otherwise `build_cli(&[])`).
 /// Consequences:
 /// - `--help` ALWAYS works, even with a broken configuration;
@@ -326,7 +413,8 @@ fn execute_business_command(
 ///   the rest of this function (cf. `tests/clap_error_stdout_purity.rs`);
 /// - `npu doctor` ALWAYS runs (before any other branch) and reports the
 ///   kept load error as a failed check (a) (cf. `builtin::doctor`);
-/// - any OTHER invocation (business command, `models`, `describe`)
+/// - any OTHER invocation (business command, `models`, `serve`, `stop`,
+///   `status`, `logs`, `describe`)
 ///   propagates the kept load error via `loaded?`, exit code 2 — unchanged
 ///   from before this phase.
 ///
@@ -343,7 +431,17 @@ fn execute_business_command(
 /// code) — never `main` itself, so that stdout stays reserved for the
 /// RESULT produced by this library, as everywhere else in this module.
 pub fn run() -> Result<i32> {
+    // Read from the RAW command line: this logger must exist BEFORE
+    // `get_matches()`, since the degraded-mode warning below is emitted
+    // before parsing (cf. `log::level_from_args`). `clap` re-reads the same
+    // flag afterwards and is the one that rejects an invalid value.
+    let logger = log::Logger::new(log::level_from_args(std::env::args()));
+
     let roots = scope::roots();
+    logger.info(&format!(
+        "scopes: {}",
+        error::format_available(roots.iter().map(|root| root.display().to_string()))
+    ));
 
     let loaded: Result<(config::Config, Vec<command::CommandSpec>)> = config::load_scopes(&roots)
         .and_then(|config| command::discover_scopes(&roots).map(|specs| (config, specs)));
@@ -352,9 +450,9 @@ pub fn run() -> Result<i32> {
         // MUST precede `cli.get_matches()`: see this function's doc. Never
         // on stdout (contract rule: stdout is reserved for the result) —
         // this line is an ENGINE diagnostic, not a command result.
-        eprintln!(
-            "npu: invalid configuration ({err}); run \"npu doctor\" for details on the failed checks"
-        );
+        logger.warn(&format!(
+            "invalid configuration ({err}); run \"npu doctor\" for details on the failed checks"
+        ));
     }
 
     let specs_for_cli: &[command::CommandSpec] = match &loaded {
@@ -378,12 +476,19 @@ pub fn run() -> Result<i32> {
             Ok((config, specs)) => (Some(config), Some(specs.as_slice()), None),
             Err(err) => (None, None, Some(err)),
         };
-        let checks = builtin::doctor(config_ref, specs_ref, load_error_ref, &builtin::tcp_probe);
+        let checks = builtin::doctor(
+            config_ref,
+            specs_ref,
+            load_error_ref,
+            &builtin::tcp_probe,
+            &builtin::docker_probe,
+        );
         println!("{}", builtin::format_doctor(&checks));
         return Ok(builtin::doctor_exit_code(&checks));
     }
 
-    // Any OTHER branch (business command, `models`, `describe`) requires a
+    // Any OTHER branch (business command, `models`, the lifecycle commands,
+    // `describe`) requires a
     // successfully loaded configuration: propagates the error KEPT above,
     // code 2, exactly as before this phase (point 1 of the shared
     // contract).
@@ -391,6 +496,56 @@ pub fn run() -> Result<i32> {
 
     if builtin_name == Some("models") {
         println!("{}", builtin::format_models(&config));
+        return Ok(0);
+    }
+
+    if builtin_name == Some("serve") {
+        // `MODEL` is declared `.required(true)` by `add_builtins`: clap has
+        // already rejected the invocation if it is absent.
+        let model_id = leaf_matches
+            .get_one::<String>("MODEL")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let env = |name: &str| std::env::var(name).ok();
+        // The container identifier IS this command's result: stdout, like
+        // every other built-in's report. Docker's own output goes to stderr
+        // (cf. `builtin::docker_runner`).
+        println!(
+            "{}",
+            builtin::serve(&config, model_id, &env, &builtin::docker_runner)?
+        );
+        return Ok(0);
+    }
+
+    if builtin_name == Some("stop") {
+        let model_id = leaf_matches
+            .get_one::<String>("MODEL")
+            .map(String::as_str)
+            .unwrap_or_default();
+        logger.info(&format!("stopping the runtime of model \"{model_id}\""));
+        println!(
+            "{}",
+            builtin::stop(&config, model_id, &builtin::docker_runner)?
+        );
+        return Ok(0);
+    }
+
+    if builtin_name == Some("status") {
+        // The report IS the result: stdout, like `doctor` and `models`.
+        println!("{}", builtin::status(&config, &builtin::docker_runner)?);
+        return Ok(0);
+    }
+
+    if builtin_name == Some("logs") {
+        let model_id = leaf_matches
+            .get_one::<String>("MODEL")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let follow = leaf_matches.get_flag("follow");
+        // Nothing is printed here: the container's own streams are the
+        // result, and `builtin::docker_streamer` lets them through
+        // untouched (cf. its doc).
+        builtin::logs(&config, model_id, follow, &builtin::docker_streamer)?;
         return Ok(0);
     }
 
@@ -411,7 +566,7 @@ pub fn run() -> Result<i32> {
     let key = path.join("/");
     let spec = find_command(&specs, &key)?;
 
-    execute_business_command(spec, &config, leaf_matches)?;
+    execute_business_command(spec, &config, leaf_matches, logger)?;
 
     Ok(0)
 }

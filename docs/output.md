@@ -23,6 +23,10 @@ This holds on failure paths too: when a command fails, stdout is empty — zero 
 error is on stderr. It holds for argument errors raised by the CLI parser itself, and for the
 built-ins, whose report *is* their result and therefore goes to stdout.
 
+It also holds whatever `--verbose` says. Verbosity moves a threshold on the **diagnostic** stream
+only: `--verbose info` adds engine traces to stderr and changes stdout by not one byte. See
+[Verbosity](cli.md#verbosity).
+
 ---
 
 ## Declaring an output contract

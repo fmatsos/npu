@@ -230,7 +230,8 @@ fn collect_command_files(
 
 /// Rejects a command path whose FIRST segment collides with a name
 /// reserved for the CLI's built-ins (`builtin::RESERVED`: `doctor`,
-/// `models`, `describe`, as well as `help`, reserved by `clap` itself —
+/// `models`, `serve`, `describe`, as well as `help`, reserved by `clap`
+/// itself —
 /// phase 5, point 2 of the shared contract).
 ///
 /// Without this rejection, `commands/doctor.md` would be silently
@@ -347,7 +348,7 @@ fn collect_markdown_files(
 /// rather than letting the error surface (much less clearly, or even
 /// panicking `clap::Command::arg` on a duplicate id) from the clap tree's
 /// construction downstream, in `lib.rs`.
-const RESERVED_ARG_NAMES: [&str; 3] = ["help", "version", "FILE"];
+const RESERVED_ARG_NAMES: [&str; 4] = ["help", "version", "FILE", "verbose"];
 
 /// Short letter reserved by `clap`: every `Command` gets an automatic
 /// `-h`/`--help` flag, whether or not `disable_help_flag` is called —
@@ -357,7 +358,13 @@ const RESERVED_ARG_NAMES: [&str; 3] = ["help", "version", "FILE"];
 /// not to reject a configuration that collides with nothing actually
 /// built. If `lib.rs` ever starts calling `.version(..)`, this list will
 /// need to follow.
-const RESERVED_SHORT_LETTERS: [char; 1] = ['h'];
+///
+/// `v` is reserved for a different reason: `lib.rs` declares a GLOBAL
+/// `--verbose`/`-v` argument on the root command, inherited by every
+/// subcommand. A declared `short = "v"` would collide with it at build time,
+/// which `clap` reports by panicking — unacceptable for a configuration
+/// error, so it is rejected here instead, naming the argument.
+const RESERVED_SHORT_LETTERS: [char; 2] = ['h', 'v'];
 
 /// Validates the name of a declared argument (the `[args.<name>]` key):
 /// non-empty, made only of the characters a `{{ args.<name> }}`
@@ -423,8 +430,13 @@ fn convert_short(name: &str, raw: Option<String>) -> crate::Result<Option<char>>
 
     if RESERVED_SHORT_LETTERS.contains(&c) {
         return Err(crate::Error::Config(format!(
-            "argument \"{name}\": short letter \"{c}\" is reserved by clap (help, version); \
-             choose another one"
+            "argument \"{name}\": short letter \"{c}\" is reserved ({}); \
+             choose another one",
+            RESERVED_SHORT_LETTERS
+                .iter()
+                .map(|letter| format!("-{letter}"))
+                .collect::<Vec<_>>()
+                .join("/")
         )));
     }
 
@@ -596,9 +608,20 @@ fn convert_output(
     }
 }
 
+/// Line delimiting the TOML frontmatter of a command file, opening and
+/// closing. `---` is what every other Markdown-with-frontmatter tool uses,
+/// so an editor highlights the header instead of showing three plus signs
+/// as body text.
+const FRONTMATTER_DELIMITER: &str = "---";
+
+/// The delimiter used before [`FRONTMATTER_DELIMITER`]. Recognized ONLY to
+/// produce a message saying what to change: a file written for the previous
+/// version must not be diagnosed as having no frontmatter at all.
+const LEGACY_FRONTMATTER_DELIMITER: &str = "+++";
+
 /// Parses the content of a command file.
 ///
-/// The frontmatter is delimited by `+++` lines; the header is TOML, the
+/// The frontmatter is delimited by `---` lines; the header is TOML, the
 /// body (after the second delimiter) is the prompt. `scope_root` is the
 /// scope root (§4/§6 of the spec, e.g. `./.npu`) this command file comes
 /// from: it is used ONLY to resolve a possible relative
@@ -619,11 +642,20 @@ pub fn parse(
     let mut lines = source.lines();
 
     match lines.next() {
-        Some("+++") => {}
+        Some(FRONTMATTER_DELIMITER) => {}
+        // A file opening with the delimiter used before this version gets its
+        // own message: "missing frontmatter" would send the author looking
+        // for a missing line that is right there, only spelled differently.
+        Some(LEGACY_FRONTMATTER_DELIMITER) => {
+            return Err(crate::Error::Config(format!(
+                "frontmatter delimited by '{LEGACY_FRONTMATTER_DELIMITER}': the delimiter is \
+                 now '{FRONTMATTER_DELIMITER}' (opening and closing lines both)"
+            )));
+        }
         _ => {
-            return Err(crate::Error::Config(
-                "missing frontmatter: the file must start with a '+++' line".to_string(),
-            ));
+            return Err(crate::Error::Config(format!(
+                "missing frontmatter: the file must start with a '{FRONTMATTER_DELIMITER}' line"
+            )));
         }
     }
 
@@ -631,16 +663,16 @@ pub fn parse(
     let mut closed = false;
     let mut rest_lines: Vec<&str> = Vec::new();
     for line in lines.by_ref() {
-        if line == "+++" {
+        if line == FRONTMATTER_DELIMITER {
             closed = true;
             break;
         }
         header_lines.push(line);
     }
     if !closed {
-        return Err(crate::Error::Config(
-            "unterminated frontmatter: missing closing '+++' line".to_string(),
-        ));
+        return Err(crate::Error::Config(format!(
+            "unterminated frontmatter: missing closing '{FRONTMATTER_DELIMITER}' line"
+        )));
     }
     rest_lines.extend(lines);
 
@@ -783,7 +815,7 @@ mod tests {
         std::fs::create_dir_all(&commands_dir).expect("failed to create commands/git directory");
         std::fs::write(
             commands_dir.join("review.md"),
-            "+++\nmodel = \"qwen-fast\"\n+++\nprompt\n",
+            "---\nmodel = \"qwen-fast\"\n---\nprompt\n",
         )
         .expect("failed to write fixture");
 
@@ -816,7 +848,7 @@ mod tests {
 
     #[test]
     fn parses_nominal_command() {
-        let source = "+++\ndescription = \"Classify\"\nmodel = \"qwen-fast\"\n\n[input]\nmode = \"stdin_or_file\"\n+++\nHello {{ input }}\n";
+        let source = "---\ndescription = \"Classify\"\nmodel = \"qwen-fast\"\n\n[input]\nmode = \"stdin_or_file\"\n---\nHello {{ input }}\n";
         let spec =
             parse(source, vec!["classify".to_string()], &test_scope_root()).expect("should parse");
         assert_eq!(spec.description, "Classify");
@@ -827,8 +859,21 @@ mod tests {
     }
 
     #[test]
+    fn legacy_plus_delimiter_is_a_config_error_naming_both_delimiters() {
+        let source = "+++\nmodel = \"qwen-fast\"\n+++\nprompt\n";
+
+        let err = parse(source, vec!["x".to_string()], std::path::Path::new("."))
+            .expect_err("the previous delimiter must be rejected");
+
+        assert!(matches!(err, crate::Error::Config(_)));
+        let msg = err.to_string();
+        assert!(msg.contains("+++"), "got: {msg}");
+        assert!(msg.contains("---"), "got: {msg}");
+    }
+
+    #[test]
     fn missing_closing_delimiter_is_config_error() {
-        let source = "+++\nmodel = \"qwen-fast\"\nHello\n";
+        let source = "---\nmodel = \"qwen-fast\"\nHello\n";
         let err =
             parse(source, vec!["x".to_string()], &test_scope_root()).expect_err("should fail");
         assert!(matches!(err, crate::Error::Config(_)));
@@ -844,14 +889,14 @@ mod tests {
 
     #[test]
     fn default_input_mode_is_stdin() {
-        let source = "+++\nmodel = \"qwen-fast\"\n+++\nprompt\n";
+        let source = "---\nmodel = \"qwen-fast\"\n---\nprompt\n";
         let spec = parse(source, vec!["x".to_string()], &test_scope_root()).expect("should parse");
         assert!(matches!(spec.input, InputMode::Stdin));
     }
 
     #[test]
     fn missing_model_field_is_config_error() {
-        let source = "+++\ndescription = \"no model\"\n+++\nprompt\n";
+        let source = "---\ndescription = \"no model\"\n---\nprompt\n";
         let err =
             parse(source, vec!["x".to_string()], &test_scope_root()).expect_err("should fail");
         assert!(matches!(err, crate::Error::Config(_)));
@@ -859,7 +904,7 @@ mod tests {
 
     #[test]
     fn invalid_toml_is_config_error() {
-        let source = "+++\nmodel = \n+++\nprompt\n";
+        let source = "---\nmodel = \n---\nprompt\n";
         let err =
             parse(source, vec!["x".to_string()], &test_scope_root()).expect_err("should fail");
         assert!(matches!(err, crate::Error::Config(_)));
@@ -867,7 +912,7 @@ mod tests {
 
     #[test]
     fn nested_path_is_preserved() {
-        let source = "+++\nmodel = \"qwen-fast\"\n+++\nprompt\n";
+        let source = "---\nmodel = \"qwen-fast\"\n---\nprompt\n";
         let spec = parse(
             source,
             vec!["git".to_string(), "review".to_string()],
@@ -883,7 +928,7 @@ mod tests {
         let file = root.join("commands").join(format!("{rel_path}.md"));
         std::fs::create_dir_all(file.parent().expect("file has a parent"))
             .expect("failed to create intermediate directories");
-        std::fs::write(&file, format!("+++\nmodel = \"{model}\"\n+++\n{prompt}\n"))
+        std::fs::write(&file, format!("---\nmodel = \"{model}\"\n---\n{prompt}\n"))
             .expect("failed to write fixture");
     }
 
@@ -1041,6 +1086,18 @@ mod tests {
     }
 
     #[test]
+    fn discover_rejects_serve_reserved_name() {
+        let root = fixture_dir("reserved-serve");
+        write_command(&root, "serve", "qwen-fast", "prompt");
+
+        let err = discover(&root).expect_err("\"serve\" should be rejected as a reserved name");
+
+        let msg = err.to_string();
+        assert!(msg.contains("serve.md"), "got: {msg}");
+        assert!(msg.contains("\"serve\""), "got: {msg}");
+    }
+
+    #[test]
     fn discover_rejects_describe_reserved_name() {
         let root = fixture_dir("reserved-describe");
         write_command(&root, "describe", "qwen-fast", "prompt");
@@ -1126,8 +1183,8 @@ mod tests {
 
     #[test]
     fn parses_full_arg_spec() {
-        let source = "+++\nmodel = \"qwen-fast\"\n\n[args.language]\nshort = \"l\"\n\
-                       required = true\ndescription = \"Target language\"\n+++\nHello {{ args.language }}\n";
+        let source = "---\nmodel = \"qwen-fast\"\n\n[args.language]\nshort = \"l\"\n\
+                       required = true\ndescription = \"Target language\"\n---\nHello {{ args.language }}\n";
         let spec =
             parse(source, vec!["translate".to_string()], &test_scope_root()).expect("should parse");
 
@@ -1143,7 +1200,7 @@ mod tests {
 
     #[test]
     fn arg_short_absent_is_none() {
-        let source = "+++\nmodel = \"qwen-fast\"\n\n[args.language]\nrequired = true\n+++\nHello {{ args.language }}\n";
+        let source = "---\nmodel = \"qwen-fast\"\n\n[args.language]\nrequired = true\n---\nHello {{ args.language }}\n";
         let spec =
             parse(source, vec!["translate".to_string()], &test_scope_root()).expect("should parse");
 
@@ -1152,7 +1209,7 @@ mod tests {
 
     #[test]
     fn arg_short_multi_character_is_config_error() {
-        let source = "+++\nmodel = \"qwen-fast\"\n\n[args.language]\nshort = \"lang\"\n+++\nHello {{ args.language }}\n";
+        let source = "---\nmodel = \"qwen-fast\"\n\n[args.language]\nshort = \"lang\"\n---\nHello {{ args.language }}\n";
         let err = parse(source, vec!["translate".to_string()], &test_scope_root())
             .expect_err("a multi-character short should fail");
 
@@ -1160,6 +1217,31 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("language"), "got: {message}");
         assert!(message.contains("lang"), "got: {message}");
+    }
+
+    #[test]
+    fn arg_short_v_is_config_error_because_verbose_is_global() {
+        let source = "---\nmodel = \"qwen-fast\"\n\n[args.value]\nshort = \"v\"\n---\nHello {{ args.value }}\n";
+
+        let err = parse(source, vec!["x".to_string()], std::path::Path::new("."))
+            .expect_err("-v is taken by the global --verbose argument");
+
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(
+            err.to_string().contains("value"),
+            "the message must name the argument"
+        );
+    }
+
+    #[test]
+    fn arg_named_verbose_is_config_error() {
+        let source = "---\nmodel = \"qwen-fast\"\n\n[args.verbose]\nrequired = true\n---\nHello {{ args.verbose }}\n";
+
+        let err = parse(source, vec!["x".to_string()], std::path::Path::new("."))
+            .expect_err("\"verbose\" is taken by the global argument");
+
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("verbose"));
     }
 
     #[test]
@@ -1171,7 +1253,7 @@ mod tests {
         // silently pass in release profile. Verified empirically on both
         // profiles before this fix.
         let source =
-            "+++\nmodel = \"qwen-fast\"\n\n[args.x]\nshort = \"-\"\n+++\nHello {{ args.x }}\n";
+            "---\nmodel = \"qwen-fast\"\n\n[args.x]\nshort = \"-\"\n---\nHello {{ args.x }}\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect_err("a \"-\" short should fail at load time, never panic");
 
@@ -1188,7 +1270,7 @@ mod tests {
         // This test targets only `required`'s default value, so the
         // prompt cannot reference the argument without changing what it
         // tests.
-        let source = "+++\nmodel = \"qwen-fast\"\n\n[args.language]\nshort = \"l\"\n+++\nHello {{ input }}\n";
+        let source = "---\nmodel = \"qwen-fast\"\n\n[args.language]\nshort = \"l\"\n---\nHello {{ input }}\n";
         let spec =
             parse(source, vec!["translate".to_string()], &test_scope_root()).expect("should parse");
 
@@ -1204,7 +1286,7 @@ mod tests {
         // silently loads with a name no prompt could ever validly
         // reference, exactly the defect the L3 reviews' architecture rule
         // targets.
-        let source = "+++\nmodel = \"qwen-fast\"\n\n[args.\"café\"]\nshort = \"c\"\n+++\nHello {{ input }}\n";
+        let source = "---\nmodel = \"qwen-fast\"\n\n[args.\"café\"]\nshort = \"c\"\n---\nHello {{ input }}\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect_err("an accented argument name should fail at load time");
 
@@ -1218,7 +1300,7 @@ mod tests {
         // Same defect as above with a different character: `.` is valid
         // in a quoted TOML key but delimits a placeholder prefix
         // (`args.`/`env.`) on the `prompt.rs` side.
-        let source = "+++\nmodel = \"qwen-fast\"\n\n[args.\"foo.bar\"]\n+++\nHello {{ input }}\n";
+        let source = "---\nmodel = \"qwen-fast\"\n\n[args.\"foo.bar\"]\n---\nHello {{ input }}\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect_err("an argument name containing a dot should fail at load time");
 
@@ -1228,7 +1310,7 @@ mod tests {
 
     #[test]
     fn arg_named_help_is_config_error() {
-        let source = "+++\nmodel = \"qwen-fast\"\n\n[args.help]\nshort = \"h\"\n+++\nHello {{ args.help }}\n";
+        let source = "---\nmodel = \"qwen-fast\"\n\n[args.help]\nshort = \"h\"\n---\nHello {{ args.help }}\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect_err("an argument named \"help\" should fail");
 
@@ -1242,7 +1324,7 @@ mod tests {
         // commands accepting a file as input (phase 3): an argument
         // declared with the same name would collide (duplicate clap id)
         // and must therefore be rejected here, at load time.
-        let source = "+++\nmodel = \"qwen-fast\"\n\n[args.FILE]\nshort = \"f\"\n+++\nHello {{ args.FILE }}\n";
+        let source = "---\nmodel = \"qwen-fast\"\n\n[args.FILE]\nshort = \"f\"\n---\nHello {{ args.FILE }}\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect_err("an argument named \"FILE\" should fail");
 
@@ -1252,8 +1334,8 @@ mod tests {
 
     #[test]
     fn two_args_sharing_the_same_short_letter_is_config_error() {
-        let source = "+++\nmodel = \"qwen-fast\"\n\n[args.alpha]\nshort = \"x\"\n\n[args.beta]\n\
-                       short = \"x\"\n+++\nHello {{ args.alpha }} {{ args.beta }}\n";
+        let source = "---\nmodel = \"qwen-fast\"\n\n[args.alpha]\nshort = \"x\"\n\n[args.beta]\n\
+                       short = \"x\"\n---\nHello {{ args.alpha }} {{ args.beta }}\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect_err("two arguments sharing the same short letter should fail");
 
@@ -1266,7 +1348,7 @@ mod tests {
 
     #[test]
     fn prompt_referencing_undeclared_arg_is_config_error_at_parse_time() {
-        let source = "+++\nmodel = \"qwen-fast\"\n+++\nHello {{ args.language }}\n";
+        let source = "---\nmodel = \"qwen-fast\"\n---\nHello {{ args.language }}\n";
         let err = parse(source, vec!["translate".to_string()], &test_scope_root())
             .expect_err("an undeclared args.* placeholder should fail at parse time");
 
@@ -1277,7 +1359,7 @@ mod tests {
     #[test]
     fn declared_but_unreferenced_arg_is_not_an_error() {
         let source =
-            "+++\nmodel = \"qwen-fast\"\n\n[args.unused]\nshort = \"u\"\n+++\nHello {{ input }}\n";
+            "---\nmodel = \"qwen-fast\"\n\n[args.unused]\nshort = \"u\"\n---\nHello {{ input }}\n";
         let spec = parse(source, vec!["x".to_string()], &test_scope_root()).expect("should parse");
 
         assert_eq!(spec.args.len(), 1);
@@ -1286,7 +1368,7 @@ mod tests {
 
     #[test]
     fn command_without_args_section_has_empty_args() {
-        let source = "+++\nmodel = \"qwen-fast\"\n+++\nprompt\n";
+        let source = "---\nmodel = \"qwen-fast\"\n---\nprompt\n";
         let spec = parse(source, vec!["x".to_string()], &test_scope_root()).expect("should parse");
 
         assert!(spec.args.is_empty());
@@ -1294,8 +1376,8 @@ mod tests {
 
     #[test]
     fn existing_commands_without_args_section_still_parse_non_regression() {
-        let source = "+++\ndescription = \"Classify\"\nmodel = \"qwen-fast\"\n\n[input]\n\
-                       mode = \"stdin_or_file\"\n+++\nHello {{ input }}\n";
+        let source = "---\ndescription = \"Classify\"\nmodel = \"qwen-fast\"\n\n[input]\n\
+                       mode = \"stdin_or_file\"\n---\nHello {{ input }}\n";
         let spec =
             parse(source, vec!["classify".to_string()], &test_scope_root()).expect("should parse");
 
@@ -1319,7 +1401,7 @@ mod tests {
         std::fs::create_dir_all(&commands_dir).expect("failed to create commands directory");
         std::fs::write(
             commands_dir.join("translate.md"),
-            "+++\nmodel = \"qwen-general\"\n+++\nHello {{ args.unknown }}\n",
+            "---\nmodel = \"qwen-general\"\n---\nHello {{ args.unknown }}\n",
         )
         .expect("failed to write fixture");
 
@@ -1354,7 +1436,7 @@ mod tests {
         std::fs::create_dir_all(&commands_dir).expect("failed to create commands directory");
         std::fs::write(
             commands_dir.join("translate.md"),
-            "+++\nmodel = \"qwen-fast\"\n\n[args.language]\nshort = \"l\"\n+++\n\
+            "---\nmodel = \"qwen-fast\"\n\n[args.language]\nshort = \"l\"\n---\n\
              Translate into {{ args.langauge }}.\n",
         )
         .expect("failed to write fixture");
@@ -1391,7 +1473,7 @@ mod tests {
         std::fs::create_dir_all(&commands_dir).expect("failed to create commands directory");
         std::fs::write(
             commands_dir.join("optarg.md"),
-            "+++\nmodel = \"qwen-fast\"\n\n[args.tone]\nrequired = false\n+++\n\
+            "---\nmodel = \"qwen-fast\"\n\n[args.tone]\nrequired = false\n---\n\
              tone {{ args.tone }}: {{ input }}\n",
         )
         .expect("failed to write fixture");
@@ -1415,7 +1497,7 @@ mod tests {
 
     #[test]
     fn referenced_arg_with_required_true_loads_correctly() {
-        let source = "+++\nmodel = \"qwen-fast\"\n\n[args.tone]\nrequired = true\n+++\ntone {{ args.tone }}: {{ input }}\n";
+        let source = "---\nmodel = \"qwen-fast\"\n\n[args.tone]\nrequired = true\n---\ntone {{ args.tone }}: {{ input }}\n";
         let spec =
             parse(source, vec!["optarg".to_string()], &test_scope_root()).expect("should parse");
 
@@ -1429,7 +1511,7 @@ mod tests {
         // but unreferenced argument remains a valid, optional CLI
         // argument (see also `declared_but_unreferenced_arg_is_not_an_error`,
         // which doesn't set `required` explicitly).
-        let source = "+++\nmodel = \"qwen-fast\"\n\n[args.unused]\nrequired = false\n+++\nHello {{ input }}\n";
+        let source = "---\nmodel = \"qwen-fast\"\n\n[args.unused]\nrequired = false\n---\nHello {{ input }}\n";
         let spec = parse(source, vec!["x".to_string()], &test_scope_root()).expect("should parse");
 
         assert!(!spec.args.get("unused").expect("present").required);
@@ -1439,7 +1521,7 @@ mod tests {
 
     #[test]
     fn unknown_root_level_frontmatter_key_is_config_error() {
-        let source = "+++\nmodel = \"qwen-fast\"\ndescripton = \"typo\"\n+++\nprompt\n";
+        let source = "---\nmodel = \"qwen-fast\"\ndescripton = \"typo\"\n---\nprompt\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect_err("an unknown root key should fail, not be silently ignored");
 
@@ -1448,7 +1530,7 @@ mod tests {
 
     #[test]
     fn unknown_input_section_key_is_config_error() {
-        let source = "+++\nmodel = \"qwen-fast\"\n\n[input]\nmoed = \"stdin\"\n+++\nprompt\n";
+        let source = "---\nmodel = \"qwen-fast\"\n\n[input]\nmoed = \"stdin\"\n---\nprompt\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root()).expect_err(
             "an unknown key under [input] should fail, not silently fall back to the \
                           default mode",
@@ -1464,8 +1546,8 @@ mod tests {
         // (format = "text", max_lines = 1). Phase 4 finally gives it
         // meaning: the three keys must now be EFFECTIVE, not just
         // accepted by `deny_unknown_fields`.
-        let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"text\"\nmax_lines = 1\n\
-                       +++\nprompt\n";
+        let source = "---\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"text\"\nmax_lines = 1\n\
+                       ---\nprompt\n";
         let spec = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect("a valid [output] section should parse");
 
@@ -1479,7 +1561,7 @@ mod tests {
 
     #[test]
     fn output_section_absent_yields_default_output_spec() {
-        let source = "+++\nmodel = \"qwen-fast\"\n+++\nprompt\n";
+        let source = "---\nmodel = \"qwen-fast\"\n---\nprompt\n";
         let spec = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect("the absence of [output] should always parse (phase 4, task rule 1)");
 
@@ -1504,8 +1586,8 @@ mod tests {
         let schema_path = schemas_dir.join("classification.json");
         std::fs::write(&schema_path, r#"{"type": "object"}"#).expect("failed to write schema");
 
-        let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\n\
-                       schema = \"schemas/classification.json\"\n+++\nprompt\n";
+        let source = "---\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\n\
+                       schema = \"schemas/classification.json\"\n---\nprompt\n";
         let spec = parse(source, vec!["git".to_string(), "review".to_string()], &root)
             .expect("an existing schema under schemas/ at the scope root should resolve");
 
@@ -1538,8 +1620,8 @@ mod tests {
         std::fs::write(&schema_path, r#"{"type": "object"}"#).expect("failed to write schema");
 
         let source = format!(
-            "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\nschema = \"{}\"\n\
-             +++\nprompt\n",
+            "---\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\nschema = \"{}\"\n\
+             ---\nprompt\n",
             schema_path.display()
         );
         let spec = parse(&source, vec!["x".to_string()], &test_scope_root())
@@ -1557,7 +1639,7 @@ mod tests {
         // Rule 2 of the shared contract: `format = "json"` WITHOUT
         // `schema` is explicitly allowed, only checking that the output
         // is well-formed JSON.
-        let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\n+++\nprompt\n";
+        let source = "---\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\n---\nprompt\n";
         let spec = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect("format = json without schema should parse");
 
@@ -1569,8 +1651,8 @@ mod tests {
     fn output_schema_with_text_format_is_config_error() {
         // Forbidden combination (rule 2 of the shared contract): a schema
         // means nothing on plain text.
-        let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"text\"\n\
-                       schema = \"schemas/x.json\"\n+++\nprompt\n";
+        let source = "---\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"text\"\n\
+                       schema = \"schemas/x.json\"\n---\nprompt\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect_err("schema with format = text should be rejected at load time");
 
@@ -1584,8 +1666,8 @@ mod tests {
     fn output_max_lines_with_json_format_is_config_error() {
         // Symmetric forbidden combination (rule 2 of the shared
         // contract): max_lines only applies to text.
-        let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\nmax_lines = 3\n\
-             +++\nprompt\n";
+        let source = "---\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\nmax_lines = 3\n\
+             ---\nprompt\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect_err("max_lines with format = json should be rejected at load time");
 
@@ -1606,8 +1688,8 @@ mod tests {
         // that discovers the absence (see the next test,
         // `output_schema_missing_file_error_names_the_command_file_via_discover`).
         let root = fixture_dir("output-schema-missing");
-        let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\n\
-                       schema = \"schemas/does-not-exist.json\"\n+++\nprompt\n";
+        let source = "---\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\n\
+                       schema = \"schemas/does-not-exist.json\"\n---\nprompt\n";
         let spec = parse(source, vec!["x".to_string()], &root)
             .expect("a missing schema should no longer make loading fail");
 
@@ -1671,7 +1753,7 @@ mod tests {
         // Same architecture rule as the rest of the frontmatter
         // (`deny_unknown_fields`, L3 reviews of phases 1 to 3), now
         // applied to `[output]`.
-        let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformt = \"json\"\n+++\nprompt\n";
+        let source = "---\nmodel = \"qwen-fast\"\n\n[output]\nformt = \"json\"\n---\nprompt\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect_err("an unknown key under [output] should fail, not be ignored");
 
@@ -1694,7 +1776,7 @@ mod tests {
             .expect("failed to create intermediate directories");
         std::fs::write(
             &file,
-            format!("+++\nmodel = \"{model}\"\n\n[output]\n{output_toml}\n+++\n{prompt}\n"),
+            format!("---\nmodel = \"{model}\"\n\n[output]\n{output_toml}\n---\n{prompt}\n"),
         )
         .expect("failed to write fixture");
     }

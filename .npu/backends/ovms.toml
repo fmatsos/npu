@@ -11,3 +11,18 @@ base_url = "http://127.0.0.1:8000"
 [operations.chat]
 method = "POST"
 path = "/v3/chat/completions"
+
+# Démarrage du runtime par `npu serve qwen-fast` (Docker, pré-requis
+# optionnel). `{{ args.model }}` est remplacé par le champ `model` du modèle
+# invoqué, `{{ env.HOME }}` par la variable d'environnement : le cœur ne sait
+# rien d'OVMS, il exécute ce qui est déclaré ici.
+# Variantes GPU/NPU : image `openvino/model_server:latest-gpu`, plus
+# `--device /dev/dri` (GPU) ou `--device /dev/accel` + `--target_device NPU`.
+[docker]
+image = "openvino/model_server:latest"
+options = ["-p", "8000:8000", "-v", "{{ env.HOME }}/models:/models:rw"]
+args = [
+    "--source_model", "{{ args.model }}",
+    "--model_repository_path", "/models",
+    "--rest_port", "8000",
+]

@@ -27,6 +27,7 @@ point. Its report *is* its result, so it goes to stdout.
 $ npu doctor
 ✓ configuration loaded
 ✗ backend "ovms" reachable: TCP connection to "127.0.0.1:8000" failed: Connection refused (os error 111)
+✓ container runtime available
 ✓ model "qwen-fast"
 ✓ command "classify": model
 ✓ command "commit-message": model
@@ -35,11 +36,14 @@ $ npu doctor
 ```
 
 What it checks, in order: (1) every scope parses and merges; (2) each backend
-is reachable; (3) each model names a backend that exists and an operation that
-backend exposes; (4) each command names a model that exists; (5) every
-declared output schema exists, is readable, is valid JSON and compiles.
+is reachable; (3) the container runtime answers (`docker info`), **only** if a
+backend declares a `[docker]` table — Docker is an optional prerequisite and a
+machine without it is never penalized; (4) each model names a backend that
+exists and an operation that backend exposes; (5) each command names a model
+that exists; (6) every declared output schema exists, is readable, is valid
+JSON and compiles.
 
-Step 5 is the exhaustive pass normal execution deliberately skips — at runtime
+Step 6 is the exhaustive pass normal execution deliberately skips — at runtime
 only the invoked command's schema is compiled, so a broken schema elsewhere
 cannot disable the CLI.
 
@@ -54,7 +58,8 @@ cannot disable the CLI.
 | `4` | **output contract** — the model's answer violated the declaration | your prompt or your schema |
 
 `doctor` narrows it further: `2` if any *configuration* check failed, `3` if
-**only** reachability failed. Configuration takes priority — a broken config
+**only** reachability failed — the backend probe and the container runtime
+check both count as reachability. Configuration takes priority — a broken config
 *and* an unreachable backend gives `2`.
 
 The `2` / `4` split is the useful one for a calling program: `2` means *your
@@ -72,10 +77,12 @@ loading succeeded.
 | --- | --- |
 | `npu --help` | exit `0`, built-ins listed, warning on stderr |
 | `npu doctor` | exit `2`, report on stdout naming the offending file and line |
+| `npu serve` / `stop` / `status` / `logs` | exit `2`, stdout empty — they need the configuration that could not load |
 | anything else | exit `2`, stdout empty, error on stderr |
 
-So: **`npu --help` succeeding proves nothing.** If it lists only `doctor`,
-`models`, `describe` and `help`, the configuration failed to load — read
+So: **`npu --help` succeeding proves nothing.** If it lists only the
+built-ins (`doctor`, `models`, `serve`, `stop`, `status`, `logs`, `describe`,
+`help`), the configuration failed to load — read
 stderr, then run `npu doctor`.
 
 ## Symptom → cause
@@ -83,12 +90,16 @@ stderr, then run `npu doctor`.
 | Symptom | Look at |
 | --- | --- |
 | `npu --help` lists no business command | configuration failed to load; stderr names the file |
-| a command you wrote is missing from `--help` | wrong directory, not `.md`, or its first path segment is a reserved name (`doctor`, `models`, `describe`, `help`) |
+| a command you wrote is missing from `--help` | wrong directory, not `.md`, or its first path segment is a reserved name (`doctor`, `models`, `serve`, `stop`, `status`, `logs`, `describe`, `help`) |
 | `unknown command: "x" (available commands: …)` | the command was never discovered — check the path under `commands/` |
 | exit `2` naming a file in `/etc/npu` you cannot edit | override it in `./.npu` with the same `id` (backends/models) or the same command path |
 | a local override is ignored | replacement is keyed by `id` for backends and models, by full path for commands — a different `id` creates a second entry instead of replacing |
 | a broken file in a broad scope kills everything | **parse errors on backends/models are always fatal**, even when shadowed: an unparseable file has no knowable identity, so nothing can tell whether it is shadowed. Commands are keyed by path, so a shadowed broken command file is never opened. |
 | exit `3` with everything green in `doctor` | reachable socket, wrong `path` on the operation, or a non-2xx response — `doctor` never sends an HTTP request |
+| `npu serve` exits `2` naming a backend | that backend declares no `[docker]` table — npu was never told how to start it |
+| `npu serve` exits `3` | `docker` is missing, its daemon is down, or `docker run` failed; its own message is on stderr |
+| a command file is diagnosed as having no frontmatter | the fence is `---`; a file still opening with `+++` is rejected with its own message |
+| a container is running but the model does not answer | `docker run -d` returns before the model is loaded — `npu status` says `Up`, `npu logs <model>` says how far it got |
 | exit `4` | the response violated `[output]`: not JSON, schema violation, or more lines than `max_lines`. Every schema violation is listed, not just the first. |
 
 `npu` does not retry, does not reformulate, and does not ask the model again:
@@ -106,6 +117,21 @@ gets a stable contract instead of a best effort.
   closes it. A `POST` to `chat` would genuinely invoke the model — an
   unacceptable side effect for a diagnostic. Hence *reachable*, not
   *available*: a socket was accepted, and that is all that was established.
+- **That a container started by `npu serve` is ready.** `docker run -d`
+  returns as soon as the container is created, long before a model is loaded.
+  The container check answers "is the runtime usable", never "is the model
+  loaded".
+
+## Seeing more
+
+`--verbose info` traces what the engine did, on stderr: scopes read, command
+resolved, input size, request sent, response received. `--verbose error`
+silences even the default warnings. **No level changes stdout** — a failure
+message is printed once, at every level.
+
+```sh
+echo "texte" | npu classify --verbose info > /dev/null
+```
 
 ## Repairing
 

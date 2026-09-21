@@ -99,7 +99,7 @@ fn write_scope(scope: &Path, addr: std::net::SocketAddr, output_section: &str) {
         scope,
         ".npu/commands/e2e-cmd.md",
         &format!(
-            "+++\nmodel = \"test-model\"\n\n[output]\n{output_section}\n+++\n{{{{ input }}}}\n"
+            "---\nmodel = \"test-model\"\n\n[output]\n{output_section}\n---\n{{{{ input }}}}\n"
         ),
     );
 }
@@ -287,8 +287,8 @@ fn write_general_scope_with_never_invoked_command(
     write(
         xdg_root,
         "npu/commands/never-invoked.md",
-        "+++\nmodel = \"test-model\"\n\n[output]\nformat = \"json\"\n\
-         schema = \"schemas/broken-or-missing.json\"\n+++\n{{ input }}\n",
+        "---\nmodel = \"test-model\"\n\n[output]\nformat = \"json\"\n\
+         schema = \"schemas/broken-or-missing.json\"\n---\n{{ input }}\n",
     );
     if let Some(body) = schema_body {
         write(xdg_root, "npu/schemas/broken-or-missing.json", body);

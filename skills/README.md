@@ -7,10 +7,10 @@ Claude loads only when it needs it — nothing runs at startup.
 | Skill | Covers |
 | --- | --- |
 | [`npu-config`](npu-config/SKILL.md) | the `.npu/` layout, scope precedence, merge semantics, bootstrapping a project |
-| [`npu-backend`](npu-backend/SKILL.md) | `backends/*.toml` — `id`, `type`, `base_url`, `[operations.*]` |
+| [`npu-backend`](npu-backend/SKILL.md) | `backends/*.toml` — `id`, `type`, `base_url`, `[operations.*]`, `[docker]` |
 | [`npu-model`](npu-model/SKILL.md) | `models/*.toml` — `id`, `backend`, `operation`, `model`, `[generation]` |
 | [`npu-command`](npu-command/SKILL.md) | `commands/*.md` — frontmatter, input modes, `[args.*]`, templating, `[output]` |
-| [`npu-doctor`](npu-doctor/SKILL.md) | reading `npu doctor`, the exit-code contract, degraded mode, symptom → cause |
+| [`npu-doctor`](npu-doctor/SKILL.md) | reading `npu doctor`, the exit-code contract, `--verbose`, degraded mode, symptom → cause |
 
 `npu-config` routes to the three format skills; `npu-doctor` routes back to
 whichever one owns the file that failed.
@@ -22,7 +22,7 @@ session level chosen for something else.
 
 | Skill | `model` | `effort` | Why |
 | --- | --- | --- | --- |
-| `npu-backend` | `sonnet` | `low` | four keys and a table of operations |
+| `npu-backend` | `sonnet` | `low` | five keys and a table of operations |
 | `npu-model` | `sonnet` | `low` | five keys and two optional generation fields |
 | `npu-command` | `sonnet` | `medium` | a prompt, an input mode and an output contract — judgement, and a templating mistake only surfaces at load time |
 | `npu-config` | `sonnet` | `medium` | choosing a scope and reasoning about replacement is a design call |

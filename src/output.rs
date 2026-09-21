@@ -31,12 +31,25 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 /// Output format declared by a command (`[output].format`).
-#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Format {
     #[default]
     Text,
     Json,
+}
+
+impl Format {
+    /// The name this format carries in a command's frontmatter — and
+    /// therefore the one `describe` serializes and the one a trace prints.
+    /// Written once here so the two readers cannot drift apart.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Format::Text => "text",
+            Format::Json => "json",
+        }
+    }
 }
 
 /// Output contract resolved for a command.

@@ -34,19 +34,24 @@ Commands:
   help    Print this message or the help of the given subcommand(s)
 ```
 
-Four names are reserved by the built-ins and rejected at load time: `doctor`, `models`,
-`describe` and `help`. The reservation applies to the **first segment only**, so
+Eight names are reserved by the built-ins and rejected at load time: `doctor`, `models`, `serve`,
+`stop`, `status`, `logs`, `describe` and `help`. The reservation applies to the **first segment only**, so
 `commands/git/describe.md` is perfectly valid.
 
 ---
 
 ## Anatomy of a command file
 
-A command is a Markdown file: TOML frontmatter between `+++` fences, then the prompt as the body.
+A command is a Markdown file: TOML frontmatter between `---` fences, then the prompt as the body.
 The prompt is the content of the file, not a string squeezed into a config value.
 
+> [!NOTE]
+> The fence is `---`, not `+++`. A file still opening with `+++` is rejected at load time with a
+> message saying so — never diagnosed as having no frontmatter at all, which would send you
+> looking for a line that is right there.
+
 ```markdown
-+++
+---
 description = "Translate input text"
 model = "qwen-fast"
 
@@ -57,7 +62,7 @@ description = "Target language"
 
 [input]
 mode = "stdin_or_file"
-+++
+---
 
 Translate the following text into {{ args.language }}.
 
@@ -125,7 +130,7 @@ description = "Target language"
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `short` | string | none | must be exactly **one** character, and not `-` |
+| `short` | string | none | must be exactly **one** character, not `-`, `h` or `v` |
 | `required` | bool | `false` | |
 | `description` | string | `""` | shown in the command's `--help` |
 
@@ -136,7 +141,8 @@ The table key is the long flag: `--language`. Rejected at load time, each naming
 - two arguments sharing the same `short` letter;
 - a name that is empty, contains a space, starts with `-`, or uses characters a placeholder could
   never reference;
-- the reserved names `help` and `version`.
+- the reserved names `help`, `version`, `FILE` and `verbose`;
+- the short letters `-h` (clap's help) and `-v` (the global `--verbose`).
 
 Values become available to the prompt as `{{ args.<name> }}`.
 
@@ -204,4 +210,4 @@ input lost for good.
 | `model` exists, resolves to a backend operation | `{{ env.* }}` variables are defined | output contract (exit `4`) |
 | argument names, `short` letters | | |
 | every placeholder is recognised and declared | | |
-| reserved command names | | |
+| reserved command names, `verbose`/`-v` collisions | | |
