@@ -16,6 +16,8 @@
 
 use npu::command::{self, InputMode};
 use npu::config;
+use npu::prompt;
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[test]
@@ -30,6 +32,34 @@ fn discovers_commit_message_fixture() {
 
     assert_eq!(commit_message.model, "qwen-fast");
     assert!(matches!(commit_message.input, InputMode::Stdin));
+}
+
+/// Découvre la fixture versionnée `.npu/commands/translate.md` (phase 3,
+/// npu-cli-spec.md §11) : vérifie que l'argument `language` est déclaré avec
+/// la bonne lettre courte et le bon caractère `required`, et que son prompt
+/// (qui référence `{{ args.language }}`) passe bien la validation statique
+/// des placeholders (§12). N'appelle pas le réseau : `command::discover` ne
+/// fait que lire et parser des fichiers locaux.
+#[test]
+fn discovers_translate_fixture_with_declared_language_arg() {
+    let root = std::path::Path::new(".npu");
+    let commands = command::discover(root).expect("la découverte des commandes doit réussir");
+
+    let translate = commands
+        .iter()
+        .find(|spec| spec.path == vec!["translate".to_string()])
+        .expect("translate doit être découverte");
+
+    let language = translate
+        .args
+        .get("language")
+        .expect("l'argument 'language' doit être déclaré");
+    assert_eq!(language.short, Some('l'));
+    assert!(language.required, "'language' doit être required = true");
+
+    let declared: BTreeSet<String> = translate.args.keys().cloned().collect();
+    prompt::validate(&translate.prompt, &declared)
+        .expect("le prompt de translate doit passer la validation statique des placeholders");
 }
 
 /// Crée un dossier de fixture unique sous `target/`, pour ne pas polluer le
