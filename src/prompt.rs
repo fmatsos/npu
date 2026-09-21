@@ -1,4 +1,4 @@
-//! Prompt interpolation (phase 3, npu-cli-spec.md §11/§12).
+//! Prompt interpolation.
 //!
 //! Recognized placeholders: `{{ input }}`, `{{ args.<name> }}`, `{{ env.NAME }}`.
 //! A CLOSED placeholder (`{{ ... }}`) whose name matches none of these three
@@ -159,8 +159,8 @@ pub fn placeholders(template: &str) -> crate::Result<Vec<Placeholder>> {
 /// checked at render time, never here). Called when the command is loaded.
 ///
 /// A declared argument never referenced in the prompt is not an
-/// error: it remains a valid, documented CLI argument (npu-cli-spec.md
-/// §11), simply unused by this particular prompt.
+/// error: it remains a valid, documented CLI argument, simply unused by
+/// this particular prompt.
 pub fn validate(template: &str, declared_args: &BTreeSet<String>) -> crate::Result<()> {
     for placeholder in placeholders(template)? {
         if let Placeholder::Arg(name) = placeholder
@@ -208,8 +208,8 @@ fn resolve_env(name: &str, env: &dyn Fn(&str) -> Option<String>) -> crate::Resul
 ///
 /// INVARIANT (L3 review, fix 1): nothing that is knowable without
 /// the input must be checked after the input has been read. `input::resolve`
-/// may drain a non-replayable stream (a pipe, a one-shot command,
-/// npu-cli-spec.md §22): if a missing optional argument or an undefined
+/// may drain a non-replayable stream (a pipe, a one-shot command): if a
+/// missing optional argument or an undefined
 /// environment variable only fail at render time, AFTER this read,
 /// the work already produced upstream of the pipe is lost, and on a
 /// non-replayable stream it is lost for good. The caller (`lib.rs::run`) must

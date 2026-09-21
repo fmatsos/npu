@@ -1,5 +1,5 @@
-//! End-to-end verification of the output contract (phase 4,
-//! npu-cli-spec.md §15) — the COMPLETE pipeline, not the units of
+//! End-to-end verification of the output contract — the COMPLETE
+//! pipeline, not the units of
 //! `output.rs` or `command.rs` taken in isolation.
 //!
 //! Each test:
@@ -211,7 +211,7 @@ fn run_npu(scope: &Path, args: &[&str], stdin_data: &str) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_npu"))
         .args(args)
         .current_dir(scope)
-        // Configuration scope isolation (npu-cli-spec.md §5): only
+        // Configuration scope isolation: only
         // <scope>/.npu (via the current directory) must be visible. `HOME`
         // is redirected to `scope` itself (which never contains
         // `.config/npu`) and `XDG_CONFIG_HOME` is removed, so that neither

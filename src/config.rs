@@ -1,9 +1,8 @@
 //! Configuration loading: backends and models.
 //!
-//! `load` loads a single scope (cf. IMPLEMENTATION.md §2, phase 1).
-//! `load_scopes` composes several scopes in layers (phase 2, decision 3):
-//! replacement by `id`, with the most local scope winning entirely — no
-//! field-by-field merge (cf. npu-cli-spec.md §5).
+//! `load` loads a single scope. `load_scopes` composes several scopes in
+//! layers: replacement by `id`, with the most local scope winning entirely —
+//! no field-by-field merge.
 
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -49,7 +48,7 @@ pub struct Model {
     pub generation: Generation,
 }
 
-/// Only backend type supported in phase 1 (cf. npu-cli-spec.md §7).
+/// Only backend type supported so far.
 ///
 /// A backend declaring a different `type` would, absent validation, be
 /// silently treated as `openai-compatible` by `backend.rs`: we reject it at
@@ -57,7 +56,7 @@ pub struct Model {
 const SUPPORTED_BACKEND_KIND: &str = "openai-compatible";
 
 /// Only HTTP method supported in phase 1: `backend.rs` hardcodes
-/// `client.post()` (cf. npu-cli-spec.md §7). A different `Operation.method`
+/// `client.post()`. A different `Operation.method`
 /// would therefore be silently ignored without this validation (cf. review
 /// L3).
 const SUPPORTED_METHOD: &str = "POST";
@@ -199,8 +198,7 @@ pub fn load(root: &Path) -> crate::Result<Config> {
     load_scopes(&[root.to_path_buf()])
 }
 
-/// Loads and merges several configuration scopes (cf. npu-cli-spec.md §5,
-/// IMPLEMENTATION.md decision 3).
+/// Loads and merges several configuration scopes.
 ///
 /// `roots` must be ordered from most general to most local — this is the
 /// order `scope::roots()` produces. Each root is loaded with

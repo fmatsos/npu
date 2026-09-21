@@ -1,5 +1,5 @@
-//! End-to-end verification of phase 5 (built-ins + degraded mode,
-//! npu-cli-spec.md §16, IMPLEMENTATION.md phase 5) — the REAL binary
+//! End-to-end verification of the built-ins and the degraded mode — the
+//! REAL binary
 //! (`env!("CARGO_BIN_EXE_npu")`), never a function called directly in this
 //! test process, with temporary scopes mounted via `$XDG_CONFIG_HOME` (same
 //! idiom as `run_npu_xdg`/`fixture_cwd_without_local_scope` in
@@ -90,9 +90,9 @@ fn stderr_of(output: &Output) -> String {
 }
 
 /// Writes a `$XDG_CONFIG_HOME/npu` scope whose `backends/ovms.toml` is
-/// unreadable TOML (a PARSING failure, therefore fatal even when masked —
-/// cf. IMPLEMENTATION.md phase 2: unlike a command, a broken backend has no
-/// knowable identity before it is parsed).
+/// unreadable TOML (a PARSING failure, therefore fatal even when masked:
+/// unlike a command, a broken backend has no knowable identity before it
+/// is parsed).
 fn write_broken_scope(xdg_root: &Path) {
     write(
         xdg_root,

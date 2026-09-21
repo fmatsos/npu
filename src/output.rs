@@ -1,6 +1,6 @@
-//! Structured output contract (phase 4, npu-cli-spec.md §15).
+//! Structured output contract.
 //!
-//! Pipeline (§15): raw model response → extraction of an optional Markdown
+//! Pipeline: raw model response → extraction of an optional Markdown
 //! fence (`strip_fences`, JSON format only) → parsing → JSON Schema
 //! validation if a schema is declared → compact serialization → stdout. For
 //! text format: trim, then optional `max_lines` check.

@@ -1,6 +1,6 @@
 //! Protocol adapter for `openai-compatible`, `chat` operation only.
 //!
-//! Architecture decision (IMPLEMENTATION.md §0): the core embeds knowledge
+//! Architecture decision: the core embeds knowledge
 //! of the `OpenAI` **protocol** (request body shape, response extraction
 //! path), not business semantics. `chat` is the only operation supported in
 //! phase 1; the other `OpenAI` operations (`embeddings`,
@@ -268,8 +268,8 @@ mod tests {
         assert!(truncated.ends_with('…'));
     }
 
-    /// Integration test against a stubbed HTTP listener (cf.
-    /// IMPLEMENTATION.md §4): covers `chat()` end to end, with no extra
+    /// Integration test against a stubbed HTTP listener: covers `chat()`
+    /// end to end, with no extra
     /// dependency (just `std::net`/`std::thread`). None of this module's
     /// other tests exercise `chat()` itself, only its private functions:
     /// this was the module's most notable coverage gap.

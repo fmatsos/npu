@@ -1,14 +1,13 @@
 //! Resolution of layered configuration scopes (phase 2).
 //!
-//! General -> local precedence (npu-cli-spec.md §5, IMPLEMENTATION.md
-//! decision 3): `/etc/npu`, then `$XDG_CONFIG_HOME/npu` (falling back to
+//! General -> local precedence: `/etc/npu`, then `$XDG_CONFIG_HOME/npu`
+//! (falling back to
 //! `$HOME/.config/npu`), then `./.npu`. Consumers (`config.rs`,
 //! `command.rs`) apply "last one wins" to this list.
 
 use std::path::PathBuf;
 
-/// `/etc/npu` root, hardcoded: this is not an environment variable
-/// (see npu-cli-spec.md §5).
+/// `/etc/npu` root, hardcoded: this is not an environment variable.
 const ETC_ROOT: &str = "/etc/npu";
 
 /// The environment inputs the resolution depends on, isolated so the

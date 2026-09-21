@@ -1,5 +1,4 @@
-//! CLI built-ins: `doctor`, `models`, `describe` (phase 5,
-//! npu-cli-spec.md §16, IMPLEMENTATION.md phase 5) and the TCP
+//! CLI built-ins: `doctor`, `models`, `describe`, and the TCP
 //! reachability probe they share.
 //!
 //! This module NEVER writes to the console itself: [`doctor`] returns
@@ -12,11 +11,9 @@
 //! `prompt::render`/`prompt::preflight` inject their environment
 //! variable resolver (cf. `lib.rs::run`).
 //!
-//! **Deliberate omission: "NPU available".** The `doctor` report example
-//! in the spec (§16) shows this line. This CLI is deliberately
-//! agnostic of the inference runtime (npu-cli-spec.md §2: "Backend-agnostic
-//! architecture"; §26: the core only knows named backend operations,
-//! never an NPU in the hardware sense): it therefore has NO way to
+//! **Deliberate omission: "NPU available".** This CLI is deliberately
+//! agnostic of the inference runtime (the core only knows named backend
+//! operations, never an NPU in the hardware sense): it therefore has NO way to
 //! check the presence or availability of an NPU, unlike the
 //! reachability of a backend (a TCP connection) or the validity of a
 //! schema (a disk file read). Showing a checkmark for a check that

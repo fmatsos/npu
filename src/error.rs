@@ -1,7 +1,7 @@
 //! Unified crate error.
 //!
 //! A hand-written enum rather than `anyhow`/`thiserror`: four variants,
-//! one exit code each (see IMPLEMENTATION.md §1.7 / npu-cli-spec.md §14).
+//! one exit code each.
 //! stdout stays reserved for the command's result; these messages are meant
 //! for stderr.
 

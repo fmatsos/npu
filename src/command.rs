@@ -13,7 +13,7 @@ pub enum InputMode {
     StdinOrFile,
 }
 
-/// A CLI argument declared by a command (npu-cli-spec.md §11).
+/// A CLI argument declared by a command.
 ///
 /// Shared API contract: see the module doc for how this type is
 /// populated. `short` is written in TOML as a string (`short = "l"`);
@@ -101,7 +101,7 @@ struct Frontmatter {
     input: InputSection,
     #[serde(default)]
     args: BTreeMap<String, RawArgSpec>,
-    /// `[output]` section (phase 4, npu-cli-spec.md §15): output format,
+    /// `[output]` section: output format,
     /// JSON schema path, `max_lines`. Optional — its absence produces
     /// `OutputSpec::default()` (`convert_output`, below). `schema` is
     /// deserialized as a raw `String` (not yet a resolved `PathBuf`):
@@ -147,8 +147,8 @@ struct InputSection {
     mode: Option<InputMode>,
 }
 
-/// Discovers commands across several scope roots (phase 2,
-/// `IMPLEMENTATION.md` decision 3) and merges them by replacement.
+/// Discovers commands across several scope roots and merges them by
+/// replacement, keyed by full command path.
 ///
 /// `roots` is ordered from most general to most local (see
 /// `scope::roots`). The command key (its path, e.g. `"git/review"`) comes
@@ -653,7 +653,7 @@ pub fn parse(
 
     let args = convert_args(frontmatter.args)?;
 
-    // Static placeholder validation (npu-cli-spec.md §12): a prompt
+    // Static placeholder validation: a prompt
     // referencing {{ args.unknown }} must fail HERE, at load time — not
     // at execution time. `parse` only runs on the winning files of scope
     // resolution (see `discover_scopes`), so a file shadowed by a local
@@ -703,7 +703,7 @@ pub fn parse(
         }
     }
 
-    // `[output]` section (phase 4, npu-cli-spec.md §15): forbidden
+    // `[output]` section: forbidden
     // combinations, resolving the schema path against `scope_root`, and
     // verification (lazy for schema COMPILATION, not for its existence) —
     // see `convert_output`'s doc.

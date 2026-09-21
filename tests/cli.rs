@@ -34,8 +34,8 @@ fn discovers_commit_message_fixture() {
     assert!(matches!(commit_message.input, InputMode::Stdin));
 }
 
-/// Discovers the versioned `.npu/commands/translate.md` fixture (phase 3,
-/// npu-cli-spec.md §11): checks that the `language` argument is declared with
+/// Discovers the versioned `.npu/commands/translate.md` fixture: checks
+/// that the `language` argument is declared with
 /// the correct short letter and the correct `required` flag, and that its prompt
 /// (which references `{{ args.language }}`) correctly passes the static
 /// placeholder validation (§12). Does not call the network: `command::discover`
@@ -62,8 +62,8 @@ fn discovers_translate_fixture_with_declared_language_arg() {
         .expect("the translate prompt must pass static placeholder validation");
 }
 
-/// Discovers the versioned `.npu/commands/classify.md` fixture (phase 4,
-/// npu-cli-spec.md §6/§15): checks that the command correctly declares
+/// Discovers the versioned `.npu/commands/classify.md` fixture: checks
+/// that the command correctly declares
 /// `format = "json"` AND that the resolved schema path (`schemas/
 /// classification.json`, relative to the `.npu/` scope root) actually
 /// EXISTS on disk — the exact debt this phase repays

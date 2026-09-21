@@ -1,4 +1,4 @@
-//! Locks down stdout purity (npu-cli-spec.md §14) on the error path
+//! Locks down stdout purity on the error path
 //! of `clap` ITSELF (unknown subcommand, missing required
 //! argument), which exits via `get_matches()` — i.e. via the `std::process::exit`
 //! internal to `clap` — WITHOUT going through `main()`'s error handler

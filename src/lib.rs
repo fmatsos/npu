@@ -2,7 +2,7 @@
 //!
 //! All the logic lives here: the binary (`main.rs`) is only a shell.
 //! This is what makes the pipeline testable from `tests/`, which can only
-//! import a library target (cf. IMPLEMENTATION.md §4).
+//! import a library target.
 
 pub mod backend;
 pub mod builtin;
@@ -51,8 +51,8 @@ fn build_command_tree(specs: &[command::CommandSpec]) -> CommandNode<'_> {
     root
 }
 
-/// Builds the `clap::Arg` corresponding to a declared argument (`[args.*]`,
-/// npu-cli-spec.md §11): `.long(name)`, `.short(letter)` if present,
+/// Builds the `clap::Arg` corresponding to a declared argument
+/// (`[args.*]`): `.long(name)`, `.short(letter)` if present,
 /// `.required(required)`, `.help(description)` if non-empty, `.value_name(name
 /// in UPPERCASE)` and the single-value action (`ArgAction::Set`, an
 /// argument expects a single value — no multi-values, no boolean flag,
@@ -114,8 +114,8 @@ fn build_clap_node(name: &str, node: &CommandNode<'_>) -> clap::Command {
     cmd
 }
 
-/// Builds the complete `clap` tree (builder API, cf. IMPLEMENTATION.md
-/// decision 1) from the discovered commands. Contains ONLY the business
+/// Builds the complete `clap` tree (builder API) from the discovered
+/// commands. Contains ONLY the business
 /// commands: the built-ins (`doctor`/`models`/`describe`) are added
 /// separately by [`add_builtins`], unconditionally — this function remains
 /// usable with an empty `specs` (degraded mode, cf. `run`).
@@ -128,9 +128,8 @@ fn build_cli(specs: &[command::CommandSpec]) -> clap::Command {
     root
 }
 
-/// Adds the CLI's three built-ins (`doctor`, `models`, `describe` —
-/// npu-cli-spec.md §16, point 2 of the phase 5 shared contract) to the tree
-/// already built from the discovered business commands.
+/// Adds the CLI's three built-ins (`doctor`, `models`, `describe`) to the
+/// tree already built from the discovered business commands.
 ///
 /// Called UNCONDITIONALLY by `run`, including when loading the
 /// configuration has failed (degraded mode, point 1 of the shared
@@ -198,7 +197,7 @@ fn find_command<'a>(
 ///
 /// A declared argument absent from `leaf_matches` (not required and not
 /// supplied on the command line) is simply omitted from the map: phase 3
-/// does not introduce a default value (npu-cli-spec.md §11/§25). If the
+/// does not introduce a default value. If the
 /// prompt still references this argument via `{{ args.NAME }}`,
 /// `prompt::render` fails with an `Error::Config` naming the argument (rule
 /// 6 of the shared contract) rather than substituting an unrequested empty
@@ -232,8 +231,8 @@ fn collect_arg_values(
 /// referenced by the prompt are both knowable even before knowing what
 /// `{{ input }}` is worth: `prompt::preflight` therefore checks it BEFORE
 /// `input::resolve`, which is the only step of this pipeline liable to
-/// consume a non-replayable input (a pipe, a one-shot command, cf.
-/// npu-cli-spec.md §22). Without this order, `git diff | npu ...` would
+/// consume a non-replayable input (a pipe, a one-shot command).
+/// Without this order, `git diff | npu ...` would
 /// read and discard the whole diff before failing on a missing optional
 /// argument or an undefined environment variable — a silent loss, and on a
 /// non-replayable stream an irreversible one, of the work already produced
@@ -280,7 +279,7 @@ fn execute_business_command(
 
     let prompt = prompt::render(&spec.prompt, &input_text, &args, &env)?;
 
-    // Phase 4 (npu-cli-spec.md §15): the backend's raw response is never
+    // The backend's raw response is never
     // written as-is to stdout. `output::finalize` applies the declared
     // output contract (`spec.output` — format, schema, max_lines) and
     // returns either the exact text to write, or an `Error::Output` (exit
@@ -299,7 +298,7 @@ fn execute_business_command(
 
 /// Entry point of the library, called by `main`.
 ///
-/// Pipeline (npu-cli-spec.md §18, phase 2): resolving the scope roots
+/// Pipeline: resolving the scope roots
 /// (`scope::roots()`, from the most general to the most local — `/etc/npu`,
 /// then `$XDG_CONFIG_HOME/npu` or `$HOME/.config/npu`, then `./.npu`),
 /// loading and merging the configuration across these roots
@@ -308,7 +307,7 @@ fn execute_business_command(
 /// selected command, the model, the input, rendering the prompt, calling
 /// the backend, writing the result to stdout. Merging across scopes is a
 /// replacement by identifier (backends/models) or by full path (commands),
-/// never a field-by-field merge (IMPLEMENTATION.md decision 3); a root
+/// never a field-by-field merge; a root
 /// absent from disk is simply not taken into account.
 ///
 /// **Degraded mode (phase 5, point 1 of the shared contract — paying off
