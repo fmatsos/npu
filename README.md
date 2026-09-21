@@ -80,7 +80,9 @@ Docker, and a configuration without that table never asks for it.
 ### From a release
 
 Each `vX.Y.Z` tag publishes a stripped binary per target — `x86_64-unknown-linux-gnu`,
-`aarch64-apple-darwin`, `x86_64-pc-windows-msvc` — on the
+`aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`,
+`x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc` — plus the Linux x86-64
+triple built on Fedora and on Arch (`x86_64-fedora`, `x86_64-arch`), on the
 [releases page](https://github.com/fmatsos/npu/releases), together with the changelog for that
 version. Unpack the archive and put `npu` anywhere on your `PATH`; there is nothing else to
 install.

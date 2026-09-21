@@ -21,7 +21,7 @@ apart, and this repository has one definition of green.
 ## Releasing
 
 A release is a tag. `.github/workflows/release.yml` fires on `vX.Y.Z`,
-re-runs the gate, builds the three target binaries and publishes the GitHub
+re-runs the gate, builds the eight release archives and publishes the GitHub
 release with the notes **extracted verbatim from `CHANGELOG.md`** (falling
 back to generated notes when the section is missing). Nothing is released by
 hand: a local `gh release create` would skip the gate and publish binaries

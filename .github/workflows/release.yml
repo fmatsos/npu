@@ -30,6 +30,15 @@ jobs:
           tool: cargo-deny
       - run: make qa
 
+  # Six targets, eight archives. Each ARM target builds where the cross-compile
+  # needs no extra toolchain: Linux ARM on a native ARM runner (no cross
+  # linker), the Apple pair on one macOS host (a single SDK covers both), the
+  # Windows pair on one MSVC host. `ureq`'s TLS is `ring`, which builds for all
+  # six without a C toolchain setup step.
+  #
+  # `label` names the archive; it defaults to the target and only differs for
+  # the two distro containers, which build the same triple as the Ubuntu job
+  # against their own glibc.
   build:
     needs: qa
     strategy:
@@ -38,22 +47,51 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            container: fedora:latest
+            label: x86_64-fedora
+            setup: dnf -y install gcc curl tar gzip
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            container: archlinux:latest
+            label: x86_64-arch
+            setup: pacman -Syu --noconfirm gcc curl tar gzip
     runs-on: ${{ matrix.os }}
+    # Empty for every entry but the two distro ones, which is how the hosted
+    # runners keep running directly on the host.
+    container: ${{ matrix.container }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.tag || github.ref }}
+
+      # The distro images ship no Rust: rustup from the official script keeps
+      # the toolchain identical to the hosted runners'.
+      - name: Distro prerequisites
+        if: matrix.setup != ''
+        run: |
+          set -eux
+          ${{ matrix.setup }}
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Add the target
         run: rustup target add ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: ${{ matrix.label || matrix.target }}
 
       - run: cargo build --release --locked --target ${{ matrix.target }}
 
@@ -66,7 +104,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ inputs.tag || github.ref_name }}"
-          name="npu-${version}-${{ matrix.target }}"
+          name="npu-${version}-${{ matrix.label || matrix.target }}"
           mkdir -p "dist/${name}"
           cp "target/${{ matrix.target }}/release/npu" "dist/${name}/"
           cp README.md "dist/${name}/"
@@ -78,7 +116,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ inputs.tag || github.ref_name }}"
-          name="npu-${version}-${{ matrix.target }}"
+          name="npu-${version}-${{ matrix.label || matrix.target }}"
           mkdir -p "dist/${name}"
           cp "target/${{ matrix.target }}/release/npu.exe" "dist/${name}/"
           cp README.md "dist/${name}/"
@@ -86,7 +124,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: npu-${{ matrix.target }}
+          name: npu-${{ matrix.label || matrix.target }}
           path: |
             dist/*.tar.gz
             dist/*.zip
