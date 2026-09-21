@@ -1,95 +1,95 @@
-//! Built-ins du CLI : `doctor`, `models`, `describe` (phase 5,
-//! npu-cli-spec.md §16, IMPLEMENTATION.md phase 5) et la sonde de
-//! joignabilité TCP qu'ils partagent.
+//! CLI built-ins: `doctor`, `models`, `describe` (phase 5,
+//! npu-cli-spec.md §16, IMPLEMENTATION.md phase 5) and the TCP
+//! reachability probe they share.
 //!
-//! Ce module ne fait JAMAIS d'écriture console lui-même : [`doctor`] renvoie
-//! un rapport ([`Check`]) que l'appelant (`lib.rs::run`) formate avec
-//! [`format_doctor`] avant de l'écrire sur stdout (règle du contrat : stdout
-//! est réservé au RÉSULTAT d'un built-in, qui EST son rapport). C'est ce qui
-//! rend [`doctor`] entièrement testable sans toucher au disque au-delà de la
-//! vérification (e) ni au réseau : la sonde de joignabilité (`probe`) est
-//! injectée par l'appelant plutôt qu'appelée en dur, exactement comme
-//! `prompt::render`/`prompt::preflight` injectent leur résolveur de variable
-//! d'environnement (cf. `lib.rs::run`).
+//! This module NEVER writes to the console itself: [`doctor`] returns
+//! a report ([`Check`]) that the caller (`lib.rs::run`) formats with
+//! [`format_doctor`] before writing it to stdout (contract rule: stdout
+//! is reserved for the RESULT of a built-in, which IS its report). This is
+//! what makes [`doctor`] fully testable without touching disk beyond
+//! check (e), nor the network: the reachability probe (`probe`) is
+//! injected by the caller rather than called directly, exactly like
+//! `prompt::render`/`prompt::preflight` inject their environment
+//! variable resolver (cf. `lib.rs::run`).
 //!
-//! **Omission volontaire : « NPU available ».** L'exemple de rapport
-//! `doctor` de la spec (§16) affiche cette ligne. Ce CLI est délibérément
-//! agnostique du runtime d'inférence (npu-cli-spec.md §2 : « Backend-agnostic
-//! architecture » ; §26 : le core ne connaît que des opérations backend
-//! nommées, jamais un NPU au sens matériel) : il n'a donc AUCUN moyen de
-//! vérifier la présence ou la disponibilité d'un NPU, contrairement à la
-//! joignabilité d'un backend (une connexion TCP) ou à la validité d'un
-//! schéma (une lecture de fichier disque). Afficher une coche pour une
-//! vérification qu'on n'a pas réellement faite serait exactement le défaut
-//! que la règle d'architecture des revues L3 interdit (« un rapport qui ment
-//! est pire que pas de rapport ») : [`doctor`] ne produit donc JAMAIS de
-//! [`Check`] pour cette ligne. Ce n'est pas un oubli.
+//! **Deliberate omission: "NPU available".** The `doctor` report example
+//! in the spec (§16) shows this line. This CLI is deliberately
+//! agnostic of the inference runtime (npu-cli-spec.md §2: "Backend-agnostic
+//! architecture"; §26: the core only knows named backend operations,
+//! never an NPU in the hardware sense): it therefore has NO way to
+//! check the presence or availability of an NPU, unlike the
+//! reachability of a backend (a TCP connection) or the validity of a
+//! schema (a disk file read). Showing a checkmark for a check that
+//! wasn't actually performed would be exactly the flaw that the L3
+//! review architecture rule forbids ("a report that lies is worse than
+//! no report"): [`doctor`] therefore NEVER produces a [`Check`] for
+//! this line. This is not an oversight.
 
 use std::net::ToSocketAddrs;
 use std::time::Duration;
 
 use serde::Serialize;
 
-/// Issue d'une vérification de [`doctor`].
+/// Outcome of a [`doctor`] check.
 #[derive(Debug)]
 pub enum Status {
-    /// La vérification a réussi.
+    /// The check succeeded.
     Ok,
-    /// La vérification a échoué, avec un message actionnable.
+    /// The check failed, with an actionable message.
     Failed(String),
 }
 
-/// Catégorie d'une [`Check`], au sens du code de sortie de [`doctor_exit_code`]
-/// (point 5 du contrat partagé, §23 de la spec) : c'est cette valeur, et
-/// JAMAIS le texte de [`Check::label`], qui distingue un échec de
-/// configuration (« corrige tes fichiers ») d'un échec de joignabilité
-/// (« démarre ton runtime ») pour un agent appelant. Un libellé est de
-/// l'affichage — il peut être reformulé, traduit, ou recevoir un nouveau
-/// suffixe sans préavis ; la catégorie est un contrat machine et doit y
-/// survivre.
+/// Category of a [`Check`], in the sense of the exit code from [`doctor_exit_code`]
+/// (point 5 of the shared contract, spec §23): it is this value, and
+/// NEVER the text of [`Check::label`], that distinguishes a
+/// configuration failure ("fix your files") from a reachability failure
+/// ("start your runtime") for a calling agent. A label is
+/// display — it can be reworded, translated, or given a new
+/// suffix without notice; the category is a machine contract and must
+/// survive that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckKind {
-    /// Vérifications (a), (c), (d), (e) : configuration, modèles, commandes.
+    /// Checks (a), (c), (d), (e): configuration, models, commands.
     Config,
-    /// Vérification (b) : joignabilité TCP d'un backend.
+    /// Check (b): TCP reachability of a backend.
     Reachability,
 }
 
-/// Une ligne du rapport de [`doctor`].
+/// One line of the [`doctor`] report.
 #[derive(Debug)]
 pub struct Check {
-    /// Catégorie de cette vérification, utilisée par [`doctor_exit_code`].
+    /// Category of this check, used by [`doctor_exit_code`].
     pub kind: CheckKind,
-    /// Ce qui a été vérifié (ex. « backend « ovms » joignable »).
+    /// What was checked (e.g. `backend "ovms" reachable`).
     pub label: String,
-    /// Le résultat de cette vérification.
+    /// The result of this check.
     pub status: Status,
 }
 
-/// Les trois noms de built-ins exposés par ce CLI, plus `help`, réservé par
-/// `clap` lui-même (chaque `clap::Command` reçoit un flag `-h`/`--help`
-/// automatique). `command.rs` (`reject_reserved_path`) rejette au chargement
-/// tout fichier de commande dont le PREMIER segment de chemin coïncide avec
-/// l'une de ces valeurs (phase 5, point 2 du contrat partagé) : sans ce
-/// rejet, `commands/doctor.md` serait silencieusement masqué par (ou
-/// masquerait) le built-in `doctor` construit dans `lib.rs`.
+/// The three built-in names exposed by this CLI, plus `help`, reserved by
+/// `clap` itself (every `clap::Command` gets an automatic `-h`/`--help`
+/// flag). `command.rs` (`reject_reserved_path`) rejects at load time
+/// any command file whose FIRST path segment matches one of these
+/// values (phase 5, point 2 of the shared contract): without this
+/// rejection, `commands/doctor.md` would be silently shadowed by (or
+/// would shadow) the `doctor` built-in built in `lib.rs`.
 pub const RESERVED: &[&str] = &["doctor", "models", "describe", "help"];
 
-/// Délai maximal accordé à [`tcp_probe`] avant de considérer un backend
-/// injoignable. Court par construction (point 4 du contrat partagé) :
-/// `doctor` est une commande de diagnostic censée rester rapide même quand
-/// plusieurs backends sont interrogés, jamais destinée à attendre un délai
-/// d'expiration réseau complet.
+/// Maximum delay granted to [`tcp_probe`] before considering a backend
+/// unreachable. Short by design (point 4 of the shared contract):
+/// `doctor` is a diagnostic command meant to stay fast even when
+/// several backends are queried, never meant to wait out a full
+/// network timeout.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Vérification (a) : la configuration a-t-elle été chargée avec succès ?
+/// Check (a): was the configuration loaded successfully?
 ///
-/// `load_error` porte l'erreur CONSERVÉE par le mode dégradé de `lib.rs::run`
-/// (décision 1 du contrat partagé) plutôt que propagée immédiatement : c'est
-/// précisément ce qui permet à `doctor` de tourner malgré une configuration
-/// cassée. Le message de l'échec est celui de `crate::Error` lui-même (déjà
-/// préfixé « erreur de configuration : », cf. `error.rs`), jamais reconstruit
-/// à la main.
+/// `load_error` carries the error KEPT by the degraded mode of `lib.rs::run`
+/// (shared-contract decision 1) rather than propagated immediately: this is
+/// precisely what lets `doctor` run despite a broken configuration.
+/// The failure message is that of `crate::Error` itself (already
+/// prefixed with `configuration error: `, cf. `error.rs`), never rebuilt
+/// by hand.
 fn check_config_loaded(load_error: Option<&crate::Error>) -> Check {
     let status = match load_error {
         Some(err) => Status::Failed(err.to_string()),
@@ -97,19 +97,19 @@ fn check_config_loaded(load_error: Option<&crate::Error>) -> Check {
     };
     Check {
         kind: CheckKind::Config,
-        label: "configuration chargée".to_string(),
+        label: "configuration loaded".to_string(),
         status,
     }
 }
 
-/// Vérification (b) : chaque backend configuré est-il joignable ? Itère sur
-/// `config.backends` triés par identifiant (`BTreeMap`/`HashMap` non
-/// ordonnée sinon), pour que l'ordre du rapport soit déterministe quel que
-/// soit l'ordre d'itération de la `HashMap` sous-jacente.
+/// Check (b): is each configured backend reachable? Iterates over
+/// `config.backends` sorted by identifier (`BTreeMap`/`HashMap` is not
+/// ordered otherwise), so that the report order is deterministic regardless
+/// of the underlying `HashMap`'s iteration order.
 ///
-/// `probe` est injectée (jamais [`tcp_probe`] appelée en dur) : c'est ce qui
-/// rend cette fonction, et donc [`doctor`] tout entier, testable sans jamais
-/// ouvrir le moindre socket.
+/// `probe` is injected (never [`tcp_probe`] called directly): this is what
+/// makes this function, and therefore [`doctor`] as a whole, testable
+/// without ever opening a single socket.
 fn check_backends_reachable(
     config: &crate::config::Config,
     probe: &dyn Fn(&str) -> Result<(), String>,
@@ -119,7 +119,7 @@ fn check_backends_reachable(
 
     ids.into_iter()
         .map(|id| {
-            // `id` vient des clés de `config.backends` : l'entrée existe forcément.
+            // `id` comes from `config.backends`'s keys: the entry necessarily exists.
             let backend = &config.backends[id];
             let status = match probe(&backend.base_url) {
                 Ok(()) => Status::Ok,
@@ -127,30 +127,30 @@ fn check_backends_reachable(
             };
             Check {
                 kind: CheckKind::Reachability,
-                label: format!("backend « {id} » joignable"),
+                label: format!("backend \"{id}\" reachable"),
                 status,
             }
         })
         .collect()
 }
 
-/// Vérification (c) : pour chaque modèle configuré, son backend existe-t-il,
-/// et expose-t-il l'opération que ce modèle déclare ? Une seule [`Check`] par
-/// modèle, couvrant les deux — un modèle dont le backend est absent ne peut
-/// de toute façon pas exposer d'opération à vérifier. Triés par identifiant
-/// de modèle, même raison de déterminisme que [`check_backends_reachable`].
+/// Check (c): for each configured model, does its backend exist,
+/// and does it expose the operation that model declares? A single [`Check`]
+/// per model, covering both — a model whose backend is absent cannot
+/// expose an operation to check anyway. Sorted by model
+/// identifier, same determinism reason as [`check_backends_reachable`].
 fn check_models(config: &crate::config::Config) -> Vec<Check> {
     let mut ids: Vec<&String> = config.models.keys().collect();
     ids.sort_unstable();
 
     ids.into_iter()
         .map(|id| {
-            // `id` vient des clés de `config.models` : l'entrée existe forcément.
+            // `id` comes from `config.models`'s keys: the entry necessarily exists.
             let model = &config.models[id];
             let status = match config.backends.get(&model.backend) {
                 None => Status::Failed(format!(
-                    "backend « {} » introuvable (référencé par le modèle « {id} » ; backends \
-                     disponibles : {})",
+                    "backend \"{}\" not found (referenced by model \"{id}\"; available \
+                     backends: {})",
                     model.backend,
                     crate::error::format_available(config.backends.keys())
                 )),
@@ -159,8 +159,8 @@ fn check_models(config: &crate::config::Config) -> Vec<Check> {
                         Status::Ok
                     } else {
                         Status::Failed(format!(
-                            "le backend « {} » n'expose pas l'opération « {} » déclarée par le \
-                             modèle « {id} » (opérations disponibles : {})",
+                            "backend \"{}\" does not expose operation \"{}\" declared by model \
+                             \"{id}\" (available operations: {})",
                             backend.id,
                             model.operation,
                             crate::error::format_available(backend.operations.keys())
@@ -170,25 +170,25 @@ fn check_models(config: &crate::config::Config) -> Vec<Check> {
             };
             Check {
                 kind: CheckKind::Config,
-                label: format!("modèle « {id} »"),
+                label: format!("model \"{id}\""),
                 status,
             }
         })
         .collect()
 }
 
-/// Trie `commands` par chemin complet (`path.join("/")`), pour que l'ordre du
-/// rapport de [`doctor`] soit déterministe quel que soit l'ordre de
-/// découverte des fichiers sur le disque — même raison que le tri de
-/// `command::discover_scopes` lui-même.
+/// Sorts `commands` by full path (`path.join("/")`), so that the order of
+/// the [`doctor`] report is deterministic regardless of the order in which
+/// files are discovered on disk — same reason as the sort in
+/// `command::discover_scopes` itself.
 fn sorted_commands(commands: &[crate::command::CommandSpec]) -> Vec<&crate::command::CommandSpec> {
     let mut sorted: Vec<&crate::command::CommandSpec> = commands.iter().collect();
     sorted.sort_by_key(|spec| spec.path.join("/"));
     sorted
 }
 
-/// Vérification (d) : pour chaque commande découverte, dans TOUS les scopes
-/// (pas seulement celle éventuellement invoquée), son modèle existe-t-il ?
+/// Check (d): for each discovered command, in ALL scopes
+/// (not just the one possibly invoked), does its model exist?
 fn check_commands_model(
     config: &crate::config::Config,
     commands: &[crate::command::CommandSpec],
@@ -201,38 +201,38 @@ fn check_commands_model(
                 Status::Ok
             } else {
                 Status::Failed(format!(
-                    "modèle « {} » introuvable (référencé par la commande « {path} » ; modèles \
-                     disponibles : {})",
+                    "model \"{}\" not found (referenced by command \"{path}\"; available \
+                     models: {})",
                     spec.model,
                     crate::error::format_available(config.models.keys())
                 ))
             };
             Check {
                 kind: CheckKind::Config,
-                label: format!("commande « {path} » : modèle"),
+                label: format!("command \"{path}\": model"),
                 status,
             }
         })
         .collect()
 }
 
-/// Vérification (e) : pour chaque commande déclarant un schéma de sortie
-/// (`[output].schema`), dans TOUS les scopes, ce schéma est-il présent,
-/// lisible, du JSON valide, et un schéma JSON Schema compilable ? C'est le
-/// travail EXHAUSTIF que la phase 4 a délibérément différé à `doctor` (cf.
-/// `output.rs`, `command::resolve_schema_path` : l'existence et la
-/// compilation d'un schéma ne sont vérifiées, hors `doctor`, qu'au moment où
-/// la commande qui le réclame est réellement invoquée). Réutilise
-/// `output::compile_schema` — rendue `pub(crate)` pour cette phase (seul
-/// changement autorisé dans `output.rs`, cf. le compte rendu) — plutôt que
-/// d'écrire une seconde implémentation de la compilation de schéma : les
-/// trois messages d'erreur distincts (absent/illisible, JSON invalide, schéma
-/// syntaxiquement invalide) qu'elle produit déjà sont exactement ceux que
-/// cette vérification doit rapporter.
+/// Check (e): for each command declaring an output schema
+/// (`[output].schema`), in ALL scopes, is that schema present,
+/// readable, valid JSON, and a compilable JSON Schema? This is the
+/// EXHAUSTIVE work that phase 4 deliberately deferred to `doctor` (cf.
+/// `output.rs`, `command::resolve_schema_path`: a schema's existence and
+/// compilation are only checked, outside `doctor`, at the moment the
+/// command that requires it is actually invoked). Reuses
+/// `output::compile_schema` — made `pub(crate)` for this phase (the only
+/// change allowed in `output.rs`, cf. the report) — rather than
+/// writing a second implementation of schema compilation: the three
+/// distinct error messages (absent/unreadable, invalid JSON, schema
+/// syntactically invalid) it already produces are exactly the ones
+/// this check must report.
 ///
-/// Une commande sans `[output].schema` (format texte, ou JSON sans schéma —
-/// les deux explicitement autorisés par `command::convert_output`) ne produit
-/// aucune [`Check`] ici : il n'y a rien à vérifier.
+/// A command without `[output].schema` (text format, or JSON without a
+/// schema — both explicitly allowed by `command::convert_output`)
+/// produces no [`Check`] here: there is nothing to check.
 fn check_commands_output_schema(commands: &[crate::command::CommandSpec]) -> Vec<Check> {
     sorted_commands(commands)
         .into_iter()
@@ -245,30 +245,29 @@ fn check_commands_output_schema(commands: &[crate::command::CommandSpec]) -> Vec
             };
             Some(Check {
                 kind: CheckKind::Config,
-                label: format!("commande « {path} » : schéma de sortie"),
+                label: format!("command \"{path}\": output schema"),
                 status,
             })
         })
         .collect()
 }
 
-/// Exécute toutes les vérifications de `npu doctor` (point 3 du contrat
-/// partagé) et renvoie le rapport — sans jamais écrire sur la console ni
-/// toucher au réseau (`probe` est injectée) ; seule la vérification (e) touche
-/// au disque, en lisant les fichiers de schéma déclarés.
+/// Runs all `npu doctor` checks (point 3 of the shared contract) and
+/// returns the report — without ever writing to the console or touching
+/// the network (`probe` is injected); only check (e) touches disk, by
+/// reading the declared schema files.
 ///
-/// `config`/`commands` et `load_error` reflètent le mode dégradé de
-/// `lib.rs::run` (décision 1 du contrat partagé, corollaire de la dette
-/// tracée depuis la phase 1) : quand le chargement échoue, `run` CONSERVE
-/// l'erreur au lieu de la propager, pour que `doctor` puisse quand même
-/// tourner et la rapporter comme vérification (a) échouée. Cette fonction ne
-/// suppose pas que `config`/`commands`/`load_error` varient en bloc pour
-/// autant : chaque famille de vérifications (b/c, puis d/e) ne s'exécute que
-/// si les données dont elle a besoin sont effectivement disponibles, ce qui
-/// reste correct que l'appelant traite le chargement comme une seule
-/// opération atomique (le cas attendu en pratique, cf. le compte rendu) ou
-/// distingue un échec de configuration proprement dit d'un échec de
-/// découverte des commandes.
+/// `config`/`commands` and `load_error` reflect the degraded mode of
+/// `lib.rs::run` (shared-contract decision 1, corollary of the debt
+/// tracked since phase 1): when loading fails, `run` KEEPS the error
+/// instead of propagating it, so that `doctor` can still run and
+/// report it as a failed check (a). This function does not assume that
+/// `config`/`commands`/`load_error` vary as a block, though: each
+/// family of checks (b/c, then d/e) only runs if the data it needs is
+/// actually available, which stays correct whether the caller treats
+/// loading as a single atomic operation (the case expected in
+/// practice, cf. the report) or distinguishes a genuine configuration
+/// failure from a command discovery failure.
 #[must_use]
 pub fn doctor(
     config: Option<&crate::config::Config>,
@@ -291,35 +290,35 @@ pub fn doctor(
     checks
 }
 
-/// Formate le rapport de `doctor` pour stdout (point 6 du contrat partagé) :
-/// une coche (`✓`) suivie du libellé pour chaque vérification réussie, une
-/// croix (`✗`) suivie du libellé PUIS du message pour chaque échec — jamais
-/// l'inverse, sans quoi le message expliquant l'échec se retrouverait sans
-/// contexte sur ce qu'il concerne.
+/// Formats the `doctor` report for stdout (point 6 of the shared contract):
+/// a checkmark (`✓`) followed by the label for each successful check, a
+/// cross (`✗`) followed by the label THEN the message for each failure —
+/// never the reverse, or the message explaining the failure would end up
+/// without context on what it concerns.
 #[must_use]
 pub fn format_doctor(checks: &[Check]) -> String {
     checks
         .iter()
         .map(|check| match &check.status {
             Status::Ok => format!("✓ {}", check.label),
-            Status::Failed(message) => format!("✗ {} : {message}", check.label),
+            Status::Failed(message) => format!("✗ {}: {message}", check.label),
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-/// Code de sortie du rapport de `doctor` (point 5 du contrat partagé) :
-/// - `0` si toutes les vérifications passent ;
-/// - `2` si au moins une vérification de CONFIGURATION (a, c, d, e) échoue —
-///   la configuration prime, y compris quand une vérification de
-///   joignabilité (b) échoue en même temps ;
-/// - `3` si SEULE la joignabilité (b) échoue.
+/// Exit code of the `doctor` report (point 5 of the shared contract):
+/// - `0` if all checks pass;
+/// - `2` if at least one CONFIGURATION check (a, c, d, e) fails —
+///   configuration takes priority, including when a reachability check
+///   (b) fails at the same time;
+/// - `3` if ONLY reachability (b) fails.
 ///
-/// Distingue les deux familles d'échec via [`Check::kind`], jamais via le
-/// texte de [`Check::label`] : un libellé est de l'affichage — il peut être
-/// reformulé, traduit, ou recevoir un nouveau suffixe sans préavis — alors
-/// que la catégorie est un contrat machine (§23 de la spec) que ce code de
-/// sortie doit continuer à honorer quoi qu'il arrive au libellé.
+/// Distinguishes the two failure families via [`Check::kind`], never via
+/// the text of [`Check::label`]: a label is display — it can be
+/// reworded, translated, or given a new suffix without notice — while
+/// the category is a machine contract (spec §23) that this exit code
+/// must keep honoring no matter what happens to the label.
 #[must_use]
 pub fn doctor_exit_code(checks: &[Check]) -> i32 {
     let mut config_failed = false;
@@ -344,13 +343,13 @@ pub fn doctor_exit_code(checks: &[Check]) -> i32 {
     }
 }
 
-/// Formate le tableau `npu models` (point 6 du contrat partagé, §16 de la
-/// spec) : colonnes NAME/BACKEND/OPERATION, triées par nom pour rester
-/// déterministes quel que soit l'ordre d'itération de la `HashMap`
-/// sous-jacente, alignées sur la largeur RÉELLE du contenu (jamais une
-/// largeur codée en dur : un nom de modèle plus long que « NAME » élargit sa
-/// colonne). Une configuration sans aucun modèle produit quand même l'en-tête
-/// — jamais un tableau vide ni un panic.
+/// Formats the `npu models` table (point 6 of the shared contract, spec
+/// §16): NAME/BACKEND/OPERATION columns, sorted by name to stay
+/// deterministic regardless of the underlying `HashMap`'s iteration
+/// order, aligned to the ACTUAL width of the content (never a hardcoded
+/// width: a model name longer than "NAME" widens its column). A
+/// configuration with no models still produces the header — never an
+/// empty table nor a panic.
 #[must_use]
 pub fn format_models(config: &crate::config::Config) -> String {
     const NAME_HEADER: &str = "NAME";
@@ -396,11 +395,11 @@ pub fn format_models(config: &crate::config::Config) -> String {
     lines.join("\n")
 }
 
-/// Un argument déclaré tel que sérialisé par [`describe`] : mêmes champs que
-/// `command::ArgSpec`, jamais celui-ci directement — `ArgSpec` ne dérive que
-/// `Deserialize` (il n'est jamais écrit en sortie ailleurs dans ce crate), et
-/// ce fichier n'a pas le droit de modifier `command.rs` pour y ajouter
-/// `Serialize` (règle absolue de la tâche : propriétaire exclusif de
+/// A declared argument as serialized by [`describe`]: same fields as
+/// `command::ArgSpec`, never that one directly — `ArgSpec` only derives
+/// `Deserialize` (it is never written to output elsewhere in this crate),
+/// and this file is not allowed to modify `command.rs` to add
+/// `Serialize` there (absolute rule of the task: exclusive owner of
 /// `builtin.rs`).
 #[derive(Serialize)]
 struct DescribeArg<'a> {
@@ -409,11 +408,11 @@ struct DescribeArg<'a> {
     description: &'a str,
 }
 
-/// Le contrat de sortie tel que sérialisé par [`describe`] : mêmes données
-/// que `output::OutputSpec`, mais avec `format` et `schema` déjà convertis en
-/// types sérialisables (`&str`, `Option<String>`) plutôt que les types
-/// internes (`output::Format`, `Option<PathBuf>`), pour la même raison que
-/// [`DescribeArg`] ci-dessus.
+/// The output contract as serialized by [`describe`]: same data as
+/// `output::OutputSpec`, but with `format` and `schema` already converted
+/// to serializable types (`&str`, `Option<String>`) rather than the
+/// internal types (`output::Format`, `Option<PathBuf>`), for the same
+/// reason as [`DescribeArg`] above.
 #[derive(Serialize)]
 struct DescribeOutput<'a> {
     format: &'a str,
@@ -421,7 +420,7 @@ struct DescribeOutput<'a> {
     max_lines: Option<usize>,
 }
 
-/// La description JSON complète d'une commande, telle que sérialisée par
+/// The complete JSON description of a command, as serialized by
 /// [`describe`].
 #[derive(Serialize)]
 struct Describe<'a> {
@@ -433,23 +432,22 @@ struct Describe<'a> {
     output: DescribeOutput<'a>,
 }
 
-/// Décrit une commande dynamiquement configurée (point 6 du contrat partagé,
-/// §16 de la spec) : produit du JSON sur stdout, sérialisé par `serde_json`
-/// (jamais construit à la main — un `format!` manuel ne pourrait pas
-/// échapper correctement une description ou un prompt contenant des
-/// guillemets). Étend l'exemple de la §16 avec ce que les phases 3 et 4 ont
-/// ajouté : les arguments déclarés (`args`) et le contrat de sortie
-/// (`output`, avec son format, son schéma le cas échéant, et sa limite de
-/// lignes le cas échéant).
+/// Describes a dynamically configured command (point 6 of the shared
+/// contract, spec §16): produces JSON on stdout, serialized by
+/// `serde_json` (never built by hand — a manual `format!` could not
+/// correctly escape a description or a prompt containing quotes).
+/// Extends the §16 example with what phases 3 and 4 added: the declared
+/// arguments (`args`) and the output contract (`output`, with its
+/// format, its schema if any, and its line limit if any).
 ///
-/// Ne fait AUCUNE résolution par nom : le contrat partagé fixe cette
-/// signature à un `CommandSpec` déjà résolu — c'est à l'appelant
-/// (`lib.rs::run`) de retrouver ce `CommandSpec` (avec son propre
-/// `find_command`, déjà écrit et testé là-bas) avant d'appeler cette
-/// fonction. Voir le compte rendu pour la décision explicite derrière ce
-/// choix : « describe sur une commande inconnue » n'est donc pas un
-/// comportement que CE module peut produire ni tester, faute de recevoir un
-/// nom à résoudre.
+/// Does NO resolution by name: the shared contract fixes this signature
+/// to an already-resolved `CommandSpec` — it is up to the caller
+/// (`lib.rs::run`) to look up this `CommandSpec` (with its own
+/// `find_command`, already written and tested there) before calling
+/// this function. See the report for the explicit decision behind this
+/// choice: "describe on an unknown command" is therefore not a
+/// behavior this module can produce or test, for lack of receiving a
+/// name to resolve.
 pub fn describe(spec: &crate::command::CommandSpec) -> crate::Result<String> {
     let input = match spec.input {
         crate::command::InputMode::Stdin => "stdin",
@@ -493,30 +491,30 @@ pub fn describe(spec: &crate::command::CommandSpec) -> crate::Result<String> {
         },
     };
 
-    serde_json::to_string(&dto).map_err(|err| {
-        crate::Error::Config(format!("échec de sérialisation de la description : {err}"))
-    })
+    serde_json::to_string(&dto)
+        .map_err(|err| crate::Error::Config(format!("description serialization failed: {err}")))
 }
 
-/// Extrait `(hôte, port)` d'une URL de base « http(s)://hôte[:port][/...] »
-/// (point 4 du contrat partagé). Retombe sur le port implicite du schéma (80
-/// pour `http`, 443 pour `https`) quand aucun port explicite n'est présent.
-/// PUREMENT SYNTAXIQUE : ne touche jamais le réseau, seulement la chaîne
-/// `base_url` elle-même — c'est [`tcp_probe`] qui ouvre la connexion.
+/// Extracts `(host, port)` from a base URL "http(s)://host[:port][/...]"
+/// (point 4 of the shared contract). Falls back to the scheme's implicit
+/// port (80 for `http`, 443 for `https`) when no explicit port is
+/// present. PURELY SYNTACTIC: never touches the network, only the
+/// `base_url` string itself — it's [`tcp_probe`] that opens the
+/// connection.
 ///
-/// **Notation IPv6 entre crochets** (`[::1]` ou `[::1]:8000`, RFC 3986
-/// §3.2.2) traitée à part, AVANT le `rsplit_once(':')` général : une adresse
-/// IPv6 nue contient elle-même des `:`, donc un simple `rsplit_once(':')`
-/// couperait « `[::1]:8000` » sur le dernier `:` interne aux crochets plutôt
-/// que sur le séparateur hôte/port. `hôte` est renvoyé SANS les crochets
-/// (`"::1"`, pas `"[::1]"`) : `Ipv6Addr::from_str`, utilisée par
-/// `ToSocketAddrs` dans [`tcp_probe`], rejette la forme entre crochets — la
-/// conserver ferait échouer toute résolution IPv6 par une fausse erreur DNS,
-/// jamais par le message de port invalide qu'on attendrait.
+/// **Bracketed IPv6 notation** (`[::1]` or `[::1]:8000`, RFC 3986
+/// §3.2.2) handled separately, BEFORE the general `rsplit_once(':')`: a
+/// bare IPv6 address itself contains `:` characters, so a plain
+/// `rsplit_once(':')` would cut `[::1]:8000` on the last `:` inside the
+/// brackets rather than on the host/port separator. `host` is returned
+/// WITHOUT the brackets (`"::1"`, not `"[::1]"`): `Ipv6Addr::from_str`,
+/// used by `ToSocketAddrs` in [`tcp_probe`], rejects the bracketed form
+/// — keeping it would make any IPv6 resolution fail with a spurious DNS
+/// error, never with the invalid-port message one would expect.
 fn parse_host_port(base_url: &str) -> Result<(String, u16), String> {
     let Some((scheme, rest)) = base_url.split_once("://") else {
         return Err(format!(
-            "base_url « {base_url} » : schéma manquant (attendu « http:// » ou « https:// »)"
+            "base_url \"{base_url}\": missing scheme (expected \"http://\" or \"https://\")"
         ));
     };
 
@@ -525,15 +523,15 @@ fn parse_host_port(base_url: &str) -> Result<(String, u16), String> {
         "https" => 443,
         other => {
             return Err(format!(
-                "base_url « {base_url} » : schéma « {other} » non supporté (attendu « http » ou \
-                 « https »)"
+                "base_url \"{base_url}\": unsupported scheme \"{other}\" (expected \"http\" or \
+                 \"https\")"
             ));
         }
     };
 
     let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
     if authority.is_empty() {
-        return Err(format!("base_url « {base_url} » : hôte manquant"));
+        return Err(format!("base_url \"{base_url}\": missing host"));
     }
 
     if let Some(after_bracket) = authority.strip_prefix('[') {
@@ -544,19 +542,20 @@ fn parse_host_port(base_url: &str) -> Result<(String, u16), String> {
         Some((host, port_text)) if !host.is_empty() => {
             let port: u16 = port_text
                 .parse()
-                .map_err(|_| format!("base_url « {base_url} » : port « {port_text} » invalide"))?;
+                .map_err(|_| format!("base_url \"{base_url}\": invalid port \"{port_text}\""))?;
             Ok((host.to_string(), port))
         }
         _ => Ok((authority.to_string(), default_port)),
     }
 }
 
-/// Complète [`parse_host_port`] pour la notation IPv6 entre crochets :
-/// `after_bracket` est ce qui suit le `[` ouvrant déjà consommé par
-/// l'appelant (ex. `"::1]:8000"` pour `"[::1]:8000"`). Isolée dans sa propre
-/// fonction parce que [`parse_host_port`] a déjà deux niveaux de `match` /
-/// early-return ; l'imbriquer sur place nuirait à la lisibilité que
-/// `clippy::pedantic` (`too_many_lines`) sanctionnerait sinon.
+/// Complements [`parse_host_port`] for bracketed IPv6 notation:
+/// `after_bracket` is what follows the opening `[` already consumed by
+/// the caller (e.g. `"::1]:8000"` for `"[::1]:8000"`). Isolated in its
+/// own function because [`parse_host_port`] already has two levels of
+/// `match` / early-return; nesting it in place would hurt the
+/// readability that `clippy::pedantic` (`too_many_lines`) would
+/// otherwise penalize.
 fn parse_ipv6_authority(
     base_url: &str,
     after_bracket: &str,
@@ -564,16 +563,16 @@ fn parse_ipv6_authority(
 ) -> Result<(String, u16), String> {
     let Some(end) = after_bracket.find(']') else {
         return Err(format!(
-            "base_url « {base_url} » : crochet IPv6 ouvrant « [ » jamais refermé"
+            "base_url \"{base_url}\": unclosed opening IPv6 bracket \"[\""
         ));
     };
-    // `end` pointe sur `]` (ASCII, 1 octet) : les deux bornes de découpe
-    // suivantes tombent donc toujours sur une frontière de caractère,
-    // qu'importe le contenu de `base_url` autour de ces crochets.
+    // `end` points at `]` (ASCII, 1 byte): the two split bounds below
+    // therefore always fall on a character boundary, whatever
+    // `base_url`'s content around these brackets.
     let host = &after_bracket[..end];
     if host.is_empty() {
         return Err(format!(
-            "base_url « {base_url} » : adresse IPv6 vide entre crochets"
+            "base_url \"{base_url}\": empty IPv6 address between brackets"
         ));
     }
     let trailer = &after_bracket[end + 1..];
@@ -582,50 +581,50 @@ fn parse_ipv6_authority(
         Some(port_text) if !port_text.is_empty() => port_text
             .parse()
             .map(|port| (host.to_string(), port))
-            .map_err(|_| format!("base_url « {base_url} » : port « {port_text} » invalide")),
-        Some(_) => Err(format!(
-            "base_url « {base_url} » : port manquant après « : »"
-        )),
+            .map_err(|_| format!("base_url \"{base_url}\": invalid port \"{port_text}\"")),
+        Some(_) => Err(format!("base_url \"{base_url}\": missing port after \":\"")),
         None if trailer.is_empty() => Ok((host.to_string(), default_port)),
         None => Err(format!(
-            "base_url « {base_url} » : caractères inattendus après l'adresse IPv6 (« {trailer} »)"
+            "base_url \"{base_url}\": unexpected characters after the IPv6 address \
+             (\"{trailer}\")"
         )),
     }
 }
 
-/// Teste la joignabilité d'un backend par une connexion TCP à son `base_url`
-/// (point 4 du contrat partagé), avec un timeout court ([`PROBE_TIMEOUT`]),
-/// puis la referme aussitôt. PAS de requête HTTP : un `POST` sur l'opération
-/// `chat` invoquerait réellement le modèle, un effet de bord inacceptable
-/// pour une commande de diagnostic — cette fonction ne fait donc qu'ouvrir et
-/// fermer un socket, jamais écrire ni lire le moindre octet dessus. Le
-/// message d'erreur dit « injoignable » côté `doctor` (via le libellé
-/// `« joignable »` — cf. [`check_backends_reachable`]) et jamais «
-/// disponible » : seule l'acceptation d'un socket est vérifiée, pas la
-/// capacité du modèle à répondre.
+/// Tests a backend's reachability with a TCP connection to its
+/// `base_url` (point 4 of the shared contract), with a short timeout
+/// ([`PROBE_TIMEOUT`]), then closes it immediately. NO HTTP request: a
+/// `POST` on the `chat` operation would actually invoke the model, an
+/// unacceptable side effect for a diagnostic command — this function
+/// therefore only opens and closes a socket, never writing or reading a
+/// single byte on it. The error message says "unreachable" on the
+/// `doctor` side (via the label `"reachable"` — cf.
+/// [`check_backends_reachable`]) and never "available": only a
+/// socket's acceptance is checked, not the model's ability to respond.
 ///
 /// # Errors
 ///
-/// Renvoie `Err` si `base_url` n'a pas la forme attendue, si la résolution du
-/// couple hôte/port échoue, ou si la connexion elle-même échoue ou expire.
+/// Returns `Err` if `base_url` does not have the expected shape, if
+/// resolving the host/port pair fails, or if the connection itself
+/// fails or times out.
 pub fn tcp_probe(base_url: &str) -> Result<(), String> {
     let (host, port) = parse_host_port(base_url)?;
 
     let mut addrs = (host.as_str(), port)
         .to_socket_addrs()
-        .map_err(|err| format!("résolution de l'adresse « {host}:{port} » échouée : {err}"))?;
+        .map_err(|err| format!("address resolution for \"{host}:{port}\" failed: {err}"))?;
 
-    let addr = addrs.next().ok_or_else(|| {
-        format!("résolution de l'adresse « {host}:{port} » n'a produit aucune adresse")
-    })?;
+    let addr = addrs
+        .next()
+        .ok_or_else(|| format!("address resolution for \"{host}:{port}\" produced no address"))?;
 
     std::net::TcpStream::connect_timeout(&addr, PROBE_TIMEOUT)
         .map(|_stream| ())
-        .map_err(|err| format!("connexion TCP vers « {host}:{port} » échouée : {err}"))
+        .map_err(|err| format!("TCP connection to \"{host}:{port}\" failed: {err}"))
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)] // toléré dans les tests (cf. Cargo.toml [lints.clippy]).
+#[allow(clippy::expect_used)] // allowed in tests (cf. Cargo.toml [lints.clippy]).
 mod tests {
     use super::*;
 
@@ -672,19 +671,20 @@ mod tests {
         }
     }
 
-    // `unnecessary_wraps` : ces deux fonctions sont des sondes bouchonnées à
-    // signature FIXE (`&dyn Fn(&str) -> Result<(), String>`, cf. `doctor`) ;
-    // elles ne peuvent pas être simplifiées sans casser cette signature.
+    // `unnecessary_wraps`: these two functions are stub probes with a
+    // FIXED signature (`&dyn Fn(&str) -> Result<(), String>`, cf.
+    // `doctor`); they cannot be simplified without breaking that
+    // signature.
     #[allow(clippy::unnecessary_wraps)]
     fn always_ok(_base_url: &str) -> Result<(), String> {
         Ok(())
     }
 
     fn always_fails(_base_url: &str) -> Result<(), String> {
-        Err("connexion refusée".to_string())
+        Err("connection refused".to_string())
     }
 
-    // -- doctor : scénario nominal -----------------------------------------
+    // -- doctor: nominal scenario -----------------------------------------
 
     #[test]
     fn doctor_all_checks_passing_yields_no_failure_and_exit_code_zero() {
@@ -702,29 +702,29 @@ mod tests {
 
         assert!(
             checks.iter().all(|c| matches!(c.status, Status::Ok)),
-            "obtenu : {checks:?}"
+            "got: {checks:?}"
         );
         assert_eq!(doctor_exit_code(&checks), 0);
     }
 
-    // -- (a) configuration chargée ------------------------------------------
+    // -- (a) configuration loaded ------------------------------------------
 
     #[test]
     fn doctor_load_error_fails_configuration_check_only_and_exit_code_is_two() {
-        let err = crate::Error::Config("fichier de commande cassé".to_string());
+        let err = crate::Error::Config("broken command file".to_string());
 
         let checks = doctor(None, None, Some(&err), &always_ok);
 
         assert_eq!(
             checks.len(),
             1,
-            "config/commands absents : seule (a) doit être produite, obtenu : {checks:?}"
+            "config/commands absent: only (a) must be produced, got: {checks:?}"
         );
         assert!(matches!(&checks[0].status, Status::Failed(_)));
         assert_eq!(doctor_exit_code(&checks), 2);
     }
 
-    // -- (c) modèles ----------------------------------------------------------
+    // -- (c) models ----------------------------------------------------------
 
     #[test]
     fn doctor_model_referencing_unknown_backend_fails_check_c_and_exit_code_is_two() {
@@ -738,7 +738,7 @@ mod tests {
         let model_check = checks
             .iter()
             .find(|c| c.label.contains("gpt"))
-            .expect("une vérification pour le modèle « gpt » doit exister");
+            .expect("a check for model \"gpt\" must exist");
         assert!(matches!(&model_check.status, Status::Failed(_)));
         assert_eq!(doctor_exit_code(&checks), 2);
     }
@@ -760,7 +760,7 @@ mod tests {
         let model_check = checks
             .iter()
             .find(|c| c.label.contains("whisper"))
-            .expect("une vérification pour le modèle « whisper » doit exister");
+            .expect("a check for model \"whisper\" must exist");
         assert!(matches!(
             &model_check.status,
             Status::Failed(message) if message.contains("audio_transcriptions")
@@ -768,7 +768,7 @@ mod tests {
         assert_eq!(doctor_exit_code(&checks), 2);
     }
 
-    // -- (d) commandes / modèle ------------------------------------------------
+    // -- (d) commands / model ------------------------------------------------
 
     #[test]
     fn doctor_command_referencing_unknown_model_fails_check_d() {
@@ -779,13 +779,13 @@ mod tests {
 
         let command_check = checks
             .iter()
-            .find(|c| c.label.contains("classify") && c.label.contains("modèle"))
-            .expect("une vérification (d) pour « classify » doit exister");
+            .find(|c| c.label.contains("classify") && c.label.contains("model"))
+            .expect("a check (d) for \"classify\" must exist");
         assert!(matches!(&command_check.status, Status::Failed(_)));
         assert_eq!(doctor_exit_code(&checks), 2);
     }
 
-    // -- (e) commandes / schéma de sortie ---------------------------------------
+    // -- (e) commands / output schema ---------------------------------------
 
     #[test]
     fn doctor_command_with_missing_schema_file_fails_check_e() {
@@ -793,7 +793,7 @@ mod tests {
         spec.output = crate::output::OutputSpec {
             format: crate::output::Format::Json,
             schema: Some(std::path::PathBuf::from(
-                "/does/not/exist/schema-introuvable.json",
+                "/does/not/exist/schema-not-found.json",
             )),
             max_lines: None,
         };
@@ -803,26 +803,25 @@ mod tests {
 
         let schema_check = checks
             .iter()
-            .find(|c| c.label.contains("schéma"))
-            .expect("une vérification (e) doit exister");
+            .find(|c| c.label.contains("schema"))
+            .expect("a check (e) must exist");
         assert!(matches!(&schema_check.status, Status::Failed(_)));
     }
 
     #[test]
     fn doctor_command_without_schema_produces_no_check_e() {
-        let spec = command_spec(&["commit-message"], "qwen-fast"); // format texte par défaut
+        let spec = command_spec(&["commit-message"], "qwen-fast"); // text format by default
         let config = crate::config::Config::default();
 
         let checks = doctor(Some(&config), Some(&[spec]), None, &always_ok);
 
         assert!(
-            !checks.iter().any(|c| c.label.contains("schéma")),
-            "aucune vérification (e) ne doit être produite en l'absence de schéma, obtenu : \
-             {checks:?}"
+            !checks.iter().any(|c| c.label.contains("schema")),
+            "no check (e) must be produced in the absence of a schema, got: {checks:?}"
         );
     }
 
-    // -- code de sortie : priorité de la configuration sur la joignabilité -----
+    // -- exit code: configuration takes priority over reachability -----
 
     #[test]
     fn doctor_reachability_failure_alone_yields_exit_code_three() {
@@ -837,17 +836,17 @@ mod tests {
         assert_eq!(doctor_exit_code(&checks), 3);
     }
 
-    /// Régression : la classification doit venir de [`CheckKind`], jamais du
-    /// texte du libellé. Un libellé de joignabilité délibérément reformulé,
-    /// sans le mot « joignable » ni le suffixe historique, doit quand même
-    /// produire le code de sortie 3 — la classification par texte reclassait
-    /// silencieusement ce cas en échec de configuration (code 2).
+    /// Regression: classification must come from [`CheckKind`], never
+    /// from the label text. A reachability label deliberately reworded,
+    /// without the word "reachable" nor the historical suffix, must
+    /// still produce exit code 3 — text-based classification silently
+    /// reclassified this case as a configuration failure (code 2).
     #[test]
     fn doctor_exit_code_uses_kind_not_label_text_for_reachability_failure() {
         let checks = vec![Check {
             kind: CheckKind::Reachability,
-            label: "état du backend « ovms »".to_string(),
-            status: Status::Failed("connexion refusée".to_string()),
+            label: "backend \"ovms\" status".to_string(),
+            status: Status::Failed("connection refused".to_string()),
         }];
 
         assert_eq!(doctor_exit_code(&checks), 3);
@@ -860,13 +859,13 @@ mod tests {
             "ovms".to_string(),
             backend("ovms", "http://127.0.0.1:8000", &["chat"]),
         );
-        // (c) échoue : le modèle référence un backend inexistant.
+        // (c) fails: the model references a nonexistent backend.
         config.models.insert(
             "orphan".to_string(),
             model("orphan", "does-not-exist", "chat"),
         );
 
-        // (b) échoue aussi : la sonde échoue pour tout backend interrogé.
+        // (b) also fails: the probe fails for every backend queried.
         let checks = doctor(Some(&config), Some(&[]), None, &always_fails);
 
         let reachability_failed = checks
@@ -877,17 +876,17 @@ mod tests {
             .any(|c| c.label.contains("orphan") && matches!(c.status, Status::Failed(_)));
         assert!(
             reachability_failed,
-            "précondition : la sonde doit avoir échoué"
+            "precondition: the probe must have failed"
         );
         assert!(
             config_check_failed,
-            "précondition : la vérification (c) doit avoir échoué"
+            "precondition: check (c) must have failed"
         );
 
         assert_eq!(
             doctor_exit_code(&checks),
             2,
-            "la configuration doit primer sur la joignabilité (point 5 du contrat partagé)"
+            "configuration must take priority over reachability (point 5 of the shared contract)"
         );
     }
 
@@ -904,11 +903,11 @@ mod tests {
             Check {
                 kind: CheckKind::Config,
                 label: "b".to_string(),
-                status: Status::Failed("boum".to_string()),
+                status: Status::Failed("boom".to_string()),
             },
         ];
 
-        assert_eq!(format_doctor(&checks), "✓ a\n✗ b : boum");
+        assert_eq!(format_doctor(&checks), "✓ a\n✗ b: boom");
     }
 
     // -- format_models -------------------------------------------------------------
@@ -928,9 +927,9 @@ mod tests {
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 3);
 
-        let header_backend_at = lines[0].find("BACKEND").expect("en-tête BACKEND");
-        let row_a_backend_at = lines[1].find("ovms").expect("ligne « a »");
-        let row_long_backend_at = lines[2].find("ovms").expect("ligne « much-longer… »");
+        let header_backend_at = lines[0].find("BACKEND").expect("BACKEND header");
+        let row_a_backend_at = lines[1].find("ovms").expect("row \"a\"");
+        let row_long_backend_at = lines[2].find("ovms").expect("row \"much-longer…\"");
 
         assert_eq!(header_backend_at, row_a_backend_at);
         assert_eq!(header_backend_at, row_long_backend_at);
@@ -952,11 +951,11 @@ mod tests {
         let alpha_at = lines
             .iter()
             .position(|l| l.starts_with("alpha"))
-            .expect("« alpha » doit être présent");
+            .expect("\"alpha\" must be present");
         let zebra_at = lines
             .iter()
             .position(|l| l.starts_with("zebra"))
-            .expect("« zebra » doit être présent");
+            .expect("\"zebra\" must be present");
         assert!(alpha_at < zebra_at);
     }
 
@@ -1001,9 +1000,9 @@ mod tests {
     fn describe_produces_valid_json_with_declared_args_and_output_contract() {
         let spec = sample_translate_spec();
 
-        let json_text = describe(&spec).expect("describe doit réussir");
+        let json_text = describe(&spec).expect("describe must succeed");
         let value: serde_json::Value =
-            serde_json::from_str(&json_text).expect("describe doit produire du JSON valide");
+            serde_json::from_str(&json_text).expect("describe must produce valid JSON");
 
         assert_eq!(value["name"], "translate");
         assert_eq!(value["description"], "Translate input text");
@@ -1025,9 +1024,9 @@ mod tests {
             max_lines: Some(1),
         };
 
-        let json_text = describe(&spec).expect("describe doit réussir");
+        let json_text = describe(&spec).expect("describe must succeed");
         let value: serde_json::Value =
-            serde_json::from_str(&json_text).expect("describe doit produire du JSON valide");
+            serde_json::from_str(&json_text).expect("describe must produce valid JSON");
 
         assert_eq!(value["output"]["format"], "text");
         assert!(value["output"]["schema"].is_null());
@@ -1039,7 +1038,7 @@ mod tests {
     #[test]
     fn parse_host_port_defaults_http_to_port_80() {
         assert_eq!(
-            parse_host_port("http://127.0.0.1").expect("doit parser"),
+            parse_host_port("http://127.0.0.1").expect("must parse"),
             ("127.0.0.1".to_string(), 80)
         );
     }
@@ -1047,7 +1046,7 @@ mod tests {
     #[test]
     fn parse_host_port_defaults_https_to_port_443() {
         assert_eq!(
-            parse_host_port("https://example.com").expect("doit parser"),
+            parse_host_port("https://example.com").expect("must parse"),
             ("example.com".to_string(), 443)
         );
     }
@@ -1055,7 +1054,7 @@ mod tests {
     #[test]
     fn parse_host_port_explicit_port_is_used() {
         assert_eq!(
-            parse_host_port("http://127.0.0.1:8000").expect("doit parser"),
+            parse_host_port("http://127.0.0.1:8000").expect("must parse"),
             ("127.0.0.1".to_string(), 8000)
         );
     }
@@ -1063,7 +1062,7 @@ mod tests {
     #[test]
     fn parse_host_port_tolerates_a_path_after_the_authority() {
         assert_eq!(
-            parse_host_port("http://127.0.0.1:8000/v3/chat").expect("doit parser"),
+            parse_host_port("http://127.0.0.1:8000/v3/chat").expect("must parse"),
             ("127.0.0.1".to_string(), 8000)
         );
     }
@@ -1078,15 +1077,15 @@ mod tests {
         assert!(parse_host_port("ftp://127.0.0.1:21").is_err());
     }
 
-    // -- parse_host_port : IPv6 entre crochets ----------------------------------
+    // -- parse_host_port: bracketed IPv6 ----------------------------------
 
     #[test]
     fn parse_host_port_ipv6_with_explicit_port_strips_brackets_from_host() {
-        // Le host renvoyé doit être SANS crochets : `Ipv6Addr::from_str`
-        // (utilisée par `ToSocketAddrs` dans `tcp_probe`) rejette la forme
-        // entre crochets, cf. doc de `parse_ipv6_authority`.
+        // The returned host must be WITHOUT brackets: `Ipv6Addr::from_str`
+        // (used by `ToSocketAddrs` in `tcp_probe`) rejects the bracketed
+        // form, cf. `parse_ipv6_authority`'s doc.
         assert_eq!(
-            parse_host_port("http://[::1]:8000").expect("doit parser"),
+            parse_host_port("http://[::1]:8000").expect("must parse"),
             ("::1".to_string(), 8000)
         );
     }
@@ -1094,7 +1093,7 @@ mod tests {
     #[test]
     fn parse_host_port_ipv6_without_port_defaults_to_scheme_port() {
         assert_eq!(
-            parse_host_port("https://[2001:db8::1]").expect("doit parser"),
+            parse_host_port("https://[2001:db8::1]").expect("must parse"),
             ("2001:db8::1".to_string(), 443)
         );
     }
@@ -1102,7 +1101,7 @@ mod tests {
     #[test]
     fn parse_host_port_ipv6_tolerates_a_path_after_the_authority() {
         assert_eq!(
-            parse_host_port("http://[::1]:8000/v3/chat").expect("doit parser"),
+            parse_host_port("http://[::1]:8000/v3/chat").expect("must parse"),
             ("::1".to_string(), 8000)
         );
     }
@@ -1137,36 +1136,34 @@ mod tests {
     #[test]
     fn tcp_probe_succeeds_against_a_locally_bound_listener() {
         let listener =
-            std::net::TcpListener::bind("127.0.0.1:0").expect("bind du listener éphémère");
-        let addr = listener.local_addr().expect("adresse locale du listener");
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind of the ephemeral listener");
+        let addr = listener.local_addr().expect("listener's local address");
         let base_url = format!("http://{addr}");
 
-        // Accepte la connexion entrante puis termine : aucun thread ni
-        // socket ne doit survivre à ce test.
+        // Accepts the incoming connection then finishes: no thread nor
+        // socket must survive this test.
         let acceptor = std::thread::spawn(move || {
             let _ = listener.accept();
         });
 
         let result = tcp_probe(&base_url);
 
-        acceptor
-            .join()
-            .expect("le thread accepteur ne doit pas paniquer");
-        assert!(result.is_ok(), "obtenu : {result:?}");
+        acceptor.join().expect("the acceptor thread must not panic");
+        assert!(result.is_ok(), "got: {result:?}");
     }
 
     #[test]
     fn tcp_probe_fails_against_a_closed_port() {
         let listener =
-            std::net::TcpListener::bind("127.0.0.1:0").expect("bind du listener éphémère");
-        let addr = listener.local_addr().expect("adresse locale du listener");
-        drop(listener); // ferme immédiatement : plus personne n'écoute ici.
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind of the ephemeral listener");
+        let addr = listener.local_addr().expect("listener's local address");
+        drop(listener); // closes immediately: nobody is listening here anymore.
 
         let result = tcp_probe(&format!("http://{addr}"));
 
         assert!(
             result.is_err(),
-            "un port fermé doit être signalé comme injoignable"
+            "a closed port must be reported as unreachable"
         );
     }
 }

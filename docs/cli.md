@@ -9,11 +9,6 @@ time, naming the file.
 - [`npu describe`](#npu-describe)
 - [Degraded mode](#degraded-mode)
 
-> [!NOTE]
-> Help text is in English, but **diagnostic output is still in French** — the `doctor` report
-> labels and every error message. The output below is quoted verbatim from the binary rather
-> than translated, so that this page matches what you actually see.
-
 ---
 
 ## `npu doctor`
@@ -22,13 +17,13 @@ Validates the runtime environment and reports on stdout. Its report *is* its res
 
 ```console
 $ npu doctor
-✓ configuration chargée
-✗ backend « ovms » joignable : connexion TCP vers « 127.0.0.1:8000 » échouée : Connection refused (os error 111)
-✓ modèle « qwen-fast »
-✓ commande « classify » : modèle
-✓ commande « commit-message » : modèle
-✓ commande « translate » : modèle
-✓ commande « classify » : schéma de sortie
+✓ configuration loaded
+✗ backend "ovms" reachable: TCP connection to "127.0.0.1:8000" failed: Connection refused (os error 111)
+✓ model "qwen-fast"
+✓ command "classify": model
+✓ command "commit-message": model
+✓ command "translate": model
+✓ command "classify": output schema
 ```
 
 What it checks, in order:
@@ -65,8 +60,8 @@ would be a lie, and a diagnostic tool is the worst possible place for one.
 
 For the same reason, the reachability probe opens a TCP connection and closes it — it never sends
 an HTTP request. A `POST` to the `chat` operation would genuinely invoke the model, which is an
-unacceptable side effect for a diagnostic command. The label therefore says *joignable*
-(reachable), not *available*: a socket accepted, and that is all that was established.
+unacceptable side effect for a diagnostic command. The label therefore says *reachable*, not
+*available*: a socket accepted, and that is all that was established.
 
 ---
 
@@ -114,7 +109,7 @@ An unknown command is a configuration error listing what is available:
 
 ```console
 $ npu describe nexistepas
-erreur de configuration : commande inconnue : « nexistepas » (commandes disponibles : classify, commit-message, translate)
+configuration error: unknown command: "nexistepas" (available commands: classify, commit-message, translate)
 ```
 
 ---
@@ -142,13 +137,13 @@ Options:
 Exit code `0`, and on **stderr**:
 
 ```text
-npu : configuration invalide (erreur de configuration : TOML invalide dans
-/tmp/…/npu/backends/k.toml : TOML parse error at line 1, column 2
+npu: invalid configuration (configuration error: invalid TOML in
+/tmp/…/.npu/backends/k.toml: TOML parse error at line 1, column 2
   |
 1 | x{[
   |  ^
 key with no value, expected `=`
-) ; « npu doctor » en détaille les vérifications échouées
+); run "npu doctor" for details on the failed checks
 ```
 
 The warning matters as much as the help itself. Help listing zero business commands with no

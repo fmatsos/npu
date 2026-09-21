@@ -1,29 +1,29 @@
-//! Verrouille la pureté de stdout (npu-cli-spec.md §14) sur le chemin
-//! d'erreur de `clap` LUI-MÊME (sous-commande inconnue, argument requis
-//! manquant), qui sort via `get_matches()` — donc via `std::process::exit`
-//! interne à `clap` — SANS passer par le gestionnaire d'erreurs de `main()`
+//! Locks down stdout purity (npu-cli-spec.md §14) on the error path
+//! of `clap` ITSELF (unknown subcommand, missing required
+//! argument), which exits via `get_matches()` — i.e. via the `std::process::exit`
+//! internal to `clap` — WITHOUT going through `main()`'s error handler
 //! (`src/main.rs`).
 //!
-//! Preuve demandée par la revue L1+L2 (lacune non couverte par
-//! `output_contract_e2e.rs`, qui ne vérifie la pureté de stdout que sur le
-//! chemin d'erreur applicatif — `Error::Config`/`Error::Output`, géré par
-//! `main()` — jamais sur celui de `clap`) : §23 fait de `npu` un CLI appelé
-//! par un agent, pour qui une sortie non vide sur stdout en cas d'échec est
-//! aussi dangereuse ici que sur n'importe quel autre chemin d'erreur — un
-//! agent qui pipe stdout ne doit jamais recevoir un message d'usage `clap`
-//! mélangé à une sortie de commande.
+//! Evidence requested by the L1+L2 review (gap not covered by
+//! `output_contract_e2e.rs`, which only checks stdout purity on the
+//! application error path — `Error::Config`/`Error::Output`, handled by
+//! `main()` — never on `clap`'s own path): §23 makes `npu` a CLI invoked
+//! by an agent, for whom non-empty output on stdout on failure is
+//! just as dangerous here as on any other error path — an
+//! agent piping stdout must never receive a `clap` usage message
+//! mixed with command output.
 //!
-//! Utilise le VRAI binaire `npu` compilé (`env!("CARGO_BIN_EXE_npu")`),
-//! exécuté avec la fixture `.npu/` versionnée du dépôt (répertoire courant =
-//! racine du crate, cf. `CARGO_MANIFEST_DIR`) comme scope local — même
-//! fixture que `tests/cli.rs`. `HOME` est redirigé vers un répertoire
-//! temporaire sans `.config/npu` et `XDG_CONFIG_HOME` est retiré, pour que
-//! seule cette fixture locale soit prise en compte (même idiome
-//! d'isolation que `tests/output_contract_e2e.rs`) ; aucun réseau n'est
-//! jamais contacté par ces trois scénarios, `clap` échouant (ou `--help`
-//! s'imprimant) avant tout appel de backend.
+//! Uses the REAL compiled `npu` binary (`env!("CARGO_BIN_EXE_npu")`),
+//! run with the repo's versioned `.npu/` fixture (current directory =
+//! crate root, cf. `CARGO_MANIFEST_DIR`) as the local scope — the same
+//! fixture as `tests/cli.rs`. `HOME` is redirected to a
+//! temporary directory without `.config/npu` and `XDG_CONFIG_HOME` is removed, so that
+//! only this local fixture is taken into account (same isolation
+//! idiom as `tests/output_contract_e2e.rs`); no network is
+//! ever contacted by these three scenarios, `clap` failing (or `--help`
+//! printing) before any backend call.
 
-#![allow(clippy::expect_used)] // toléré dans les tests (cf. Cargo.toml [lints.clippy]).
+#![allow(clippy::expect_used)] // allowed in tests (see Cargo.toml [lints.clippy]).
 
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -35,7 +35,7 @@ fn isolated_home() -> std::path::PathBuf {
         .join("target")
         .join("test-fixtures")
         .join(format!("clap-stdout-purity-home-{n}"));
-    std::fs::create_dir_all(&dir).expect("création du répertoire HOME isolé");
+    std::fs::create_dir_all(&dir).expect("failed to create the isolated HOME directory");
     dir
 }
 
@@ -50,73 +50,70 @@ fn run_npu(args: &[&str]) -> Output {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("lancement du binaire npu")
+        .expect("failed to launch the npu binary")
         .wait_with_output()
-        .expect("attente de la fin du processus npu")
+        .expect("failed to wait for the npu process to finish")
 }
 
-/// Sous-commande inexistante : `clap` échoue AVANT que `main()` ne
-/// reprenne la main (`get_matches()` appelle `std::process::exit`
-/// directement, cf. `lib.rs::run`). stdout doit rester rigoureusement vide.
+/// Nonexistent subcommand: `clap` fails BEFORE `main()`
+/// regains control (`get_matches()` calls `std::process::exit`
+/// directly, cf. `lib.rs::run`). stdout must remain strictly empty.
 #[test]
 fn unknown_subcommand_writes_nothing_to_stdout() {
-    let output = run_npu(&["sous-commande-inexistante"]);
+    let output = run_npu(&["nonexistent-subcommand"]);
 
-    assert!(
-        !output.status.success(),
-        "une sous-commande inconnue doit échouer"
-    );
+    assert!(!output.status.success(), "an unknown subcommand must fail");
     assert!(
         output.stdout.is_empty(),
-        "stdout doit rester vide sur une erreur `clap` (sous-commande inconnue), obtenu : {}",
+        "stdout must remain empty on a `clap` error (unknown subcommand), got: {}",
         String::from_utf8_lossy(&output.stdout)
     );
-    let stderr = String::from_utf8(output.stderr).expect("stderr doit être de l'UTF-8 valide");
+    let stderr = String::from_utf8(output.stderr).expect("stderr must be valid UTF-8");
     assert!(
-        stderr.contains("sous-commande-inexistante"),
-        "stderr doit nommer la sous-commande fautive, obtenu : {stderr}"
+        stderr.contains("nonexistent-subcommand"),
+        "stderr must name the offending subcommand, got: {stderr}"
     );
 }
 
-/// Argument requis manquant (`translate` sans `--language`) : même chemin
-/// d'erreur `clap`, une autre forme (validation d'arguments plutôt que
-/// résolution de sous-commande). stdout doit rester rigoureusement vide.
+/// Missing required argument (`translate` without `--language`): same `clap`
+/// error path, a different form (argument validation rather than
+/// subcommand resolution). stdout must remain strictly empty.
 #[test]
 fn missing_required_arg_writes_nothing_to_stdout() {
     let output = run_npu(&["translate"]);
 
     assert!(
         !output.status.success(),
-        "translate sans --language doit échouer (argument requis manquant)"
+        "translate without --language must fail (missing required argument)"
     );
     assert!(
         output.stdout.is_empty(),
-        "stdout doit rester vide sur une erreur `clap` (argument requis manquant), obtenu : {}",
+        "stdout must remain empty on a `clap` error (missing required argument), got: {}",
         String::from_utf8_lossy(&output.stdout)
     );
-    let stderr = String::from_utf8(output.stderr).expect("stderr doit être de l'UTF-8 valide");
+    let stderr = String::from_utf8(output.stderr).expect("stderr must be valid UTF-8");
     assert!(
         stderr.to_lowercase().contains("language"),
-        "stderr doit nommer l'argument requis manquant, obtenu : {stderr}"
+        "stderr must name the missing required argument, got: {stderr}"
     );
 }
 
-/// Cas nominal, pour contraste explicite : `--help` DOIT écrire sur stdout
-/// (ce n'est pas un chemin d'erreur, cf. `clap`'s comportement standard) —
-/// verrouille que ce test ne confond pas « stdout vide » avec « `clap` ne
-/// doit jamais rien écrire sur stdout », ce qui serait faux.
+/// Nominal case, for explicit contrast: `--help` MUST write to stdout
+/// (this is not an error path, cf. `clap`'s standard behavior) —
+/// locks down that this test does not confuse "stdout empty" with "`clap`
+/// must never write anything to stdout", which would be false.
 #[test]
 fn help_writes_to_stdout_not_stderr() {
     let output = run_npu(&["--help"]);
 
-    assert!(output.status.success(), "npu --help doit réussir");
+    assert!(output.status.success(), "npu --help must succeed");
     assert!(
         !output.stdout.is_empty(),
-        "npu --help DOIT écrire l'aide sur stdout, ce n'est pas un chemin d'erreur"
+        "npu --help MUST write the help to stdout, this is not an error path"
     );
     assert!(
         output.stderr.is_empty(),
-        "npu --help ne doit rien écrire sur stderr, obtenu : {}",
+        "npu --help must not write anything to stderr, got: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 }

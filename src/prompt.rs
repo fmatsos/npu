@@ -1,21 +1,21 @@
-//! Interpolation du prompt (phase 3, npu-cli-spec.md §11/§12).
+//! Prompt interpolation (phase 3, npu-cli-spec.md §11/§12).
 //!
-//! Placeholders reconnus : `{{ input }}`, `{{ args.<nom> }}`, `{{ env.NOM }}`.
-//! Un placeholder FERMÉ (`{{ ... }}`) dont le nom n'est aucune de ces trois
-//! formes est une erreur de configuration, jamais recopié tel quel : un
-//! `{{ args.langauge }}` mal orthographié doit échouer bruyamment plutôt que
-//! d'être envoyé au modèle comme texte littéral (cf. revue L3 des phases 1 et
-//! 2 : une clé lue puis ignorée est un défaut). Un `{{` jamais refermé reste
-//! recopié tel quel, comme en phase 1 : on ne peut pas distinguer une
-//! intention d'une faute de frappe (§12, §25 — pas d'heuristique).
+//! Recognized placeholders: `{{ input }}`, `{{ args.<name> }}`, `{{ env.NAME }}`.
+//! A CLOSED placeholder (`{{ ... }}`) whose name matches none of these three
+//! forms is a configuration error, never copied through as-is: a
+//! misspelled `{{ args.langauge }}` must fail loudly rather than being
+//! sent to the model as literal text (cf. L3 review of phases 1 and
+//! 2: a key read then ignored is a defect). An `{{` never closed remains
+//! copied through as-is, as in phase 1: an intention cannot be distinguished
+//! from a typo (§12, §25 — no heuristic).
 //!
-//! Les trois fonctions publiques ([`placeholders`], [`validate`], [`render`])
-//! partagent un seul scanner (`scan`) plutôt que de dupliquer la boucle
-//! `find("{{")` / `find("}}")` trois fois.
+//! The three public functions ([`placeholders`], [`validate`], [`render`])
+//! share a single scanner (`scan`) rather than duplicating the
+//! `find("{{")` / `find("}}")` loop three times.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Ce à quoi un placeholder `{{ ... }}` peut se référer.
+/// What a `{{ ... }}` placeholder can refer to.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Placeholder {
     Input,
@@ -23,27 +23,27 @@ pub enum Placeholder {
     Env(String),
 }
 
-/// Formes de placeholder reconnues, pour les messages d'erreur.
-const ACCEPTED_FORMS: &str = "\"input\", \"args.<nom>\" ou \"env.<NOM>\"";
+/// Recognized placeholder forms, for error messages.
+const ACCEPTED_FORMS: &str = "\"input\", \"args.<name>\" or \"env.<NAME>\"";
 
-/// Un fragment de template après un premier passage de scan.
+/// A template fragment after a first scanning pass.
 ///
-/// `Placeholder` porte le contenu BRUT (non tronqué) entre `{{` et `}}` ;
-/// son interprétation (nom reconnu ou non) est déléguée à `parse_placeholder`
-/// pour que `placeholders`/`validate` (qui n'ont besoin que du nom) et
-/// `render` (qui doit aussi recopier le texte littéral autour) partagent la
-/// même passe.
+/// `Placeholder` carries the RAW (untrimmed) content between `{{` and `}}`;
+/// its interpretation (recognized name or not) is delegated to `parse_placeholder`
+/// so that `placeholders`/`validate` (which only need the name) and
+/// `render` (which must also copy through the surrounding literal text)
+/// share the same pass.
 enum Token<'a> {
     Literal(&'a str),
     Placeholder(&'a str),
-    /// `{{` sans `}}` correspondant : le reste du template, à recopier tel
-    /// quel avec le `{{` remis devant (cf. doc de module).
+    /// `{{` with no matching `}}`: the rest of the template, to be copied
+    /// through as-is with the `{{` put back in front (cf. module doc).
     Unclosed(&'a str),
 }
 
-/// Découpe `template` en fragments littéraux et en contenus bruts de
-/// placeholders fermés. Généralise la boucle `find("{{")` / `find("}}")`
-/// utilisée par les trois fonctions publiques du module.
+/// Splits `template` into literal fragments and raw contents of
+/// closed placeholders. Generalizes the `find("{{")` / `find("}}")` loop
+/// used by the module's three public functions.
 fn scan(template: &str) -> Vec<Token<'_>> {
     let mut tokens = Vec::new();
     let mut rest = template;
@@ -69,35 +69,35 @@ fn scan(template: &str) -> Vec<Token<'_>> {
     tokens
 }
 
-/// Caractères acceptés dans un nom d'argument (`args.<nom>`) ou de variable
-/// d'environnement (`env.<NOM>`), après trim et retrait du préfixe : ASCII
-/// alphanumérique, `_` ou `-`.
+/// Characters accepted in an argument name (`args.<name>`) or environment
+/// variable name (`env.<NAME>`), after trimming and removing the prefix: ASCII
+/// alphanumeric, `_` or `-`.
 ///
-/// Ce sont exactement les caractères qu'une clé TOML nue (`[args.foo-bar]`,
-/// seule forme que `serde`/`toml` acceptent sans guillemets) et un nom de
-/// variable d'environnement usuel peuvent tous deux porter sans ambiguïté.
-/// Tout le reste (espace, point, accolade, guillemet, ...) est soit un
-/// séparateur du gabarit, soit le signe d'une faute de frappe qu'on préfère
-/// rejeter au chargement plutôt que d'accepter silencieusement.
+/// These are exactly the characters that a bare TOML key (`[args.foo-bar]`,
+/// the only form `serde`/`toml` accept without quotes) and a usual
+/// environment variable name can both carry unambiguously.
+/// Everything else (space, dot, brace, quote, ...) is either a
+/// template separator, or the sign of a typo that we would rather
+/// reject at load time than accept silently.
 ///
-/// `pub(crate)` : `command::validate_arg_name` réutilise EXACTEMENT cette
-/// règle pour la clé `[args.<nom>]` elle-même, plutôt que d'en dupliquer une
-/// divergente. TOML autorise une clé de table entre guillemets
-/// (`[args."café"]`, `[args."foo.bar"]`) sur des caractères que ce module
-/// n'accepte jamais dans un placeholder `{{ args.<nom> }}` : sans ce
-/// partage, un tel argument chargeait silencieusement (nom jamais référencé
-/// dans le prompt) ou échouait avec un message pointant sur le placeholder
-/// plutôt que sur la déclaration fautive — exactement le défaut visé par la
-/// règle d'architecture des revues L3 (« une clé lue puis silencieusement
-/// ignorée est un défaut »), déplacé de la clé de placeholder vers le nom
-/// d'argument déclaré.
+/// `pub(crate)`: `command::validate_arg_name` reuses EXACTLY this
+/// rule for the `[args.<name>]` key itself, rather than duplicating a
+/// divergent one. TOML allows a quoted table key
+/// (`[args."café"]`, `[args."foo.bar"]`) with characters that this module
+/// never accepts in an `{{ args.<name> }}` placeholder: without this
+/// sharing, such an argument would load silently (name never referenced
+/// in the prompt) or fail with a message pointing at the placeholder
+/// rather than at the faulty declaration — exactly the defect targeted by
+/// the L3 review architecture rule ("a key read then silently
+/// ignored is a defect"), moved from the placeholder key to the
+/// declared argument name.
 pub(crate) fn is_valid_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '-'
 }
 
-/// Valide et renvoie le nom après un préfixe `args.`/`env.` : non vide, sans
-/// espace, caractères acceptés uniquement. `{{ args. }}` (nom vide) est donc
-/// rejeté ici, pas seulement une chaîne inconnue.
+/// Validates and returns the name after an `args.`/`env.` prefix: non-empty,
+/// no spaces, accepted characters only. `{{ args. }}` (empty name) is thus
+/// rejected here, not just as an unrecognized string.
 fn parse_named(rest: &str) -> Option<String> {
     if rest.is_empty() || !rest.chars().all(is_valid_name_char) {
         return None;
@@ -105,19 +105,19 @@ fn parse_named(rest: &str) -> Option<String> {
     Some(rest.to_string())
 }
 
-/// Construit l'erreur de configuration pour un placeholder dont le nom (une
-/// fois trimmé) ne correspond à aucune forme reconnue. `raw` est le contenu
-/// brut, non trimmé, tel que trouvé entre `{{` et `}}`.
+/// Builds the configuration error for a placeholder whose name (once
+/// trimmed) matches no recognized form. `raw` is the raw,
+/// untrimmed content as found between `{{` and `}}`.
 fn unknown_placeholder(raw: &str) -> crate::Error {
     let name = raw.trim();
     crate::Error::Config(format!(
-        "placeholder inconnu « {{{{ {name} }}}} » : formes reconnues : {ACCEPTED_FORMS}"
+        "unknown placeholder \"{{{{ {name} }}}}\": recognized forms: {ACCEPTED_FORMS}"
     ))
 }
 
-/// Interprète le contenu brut d'un placeholder fermé (`raw`, entre `{{` et
-/// `}}`, délimiteurs exclus) en `Placeholder`, ou renvoie l'erreur décrivant
-/// le placeholder fautif et les formes acceptées.
+/// Interprets the raw content of a closed placeholder (`raw`, between `{{`
+/// and `}}`, delimiters excluded) as a `Placeholder`, or returns the error
+/// describing the faulty placeholder and the accepted forms.
 fn parse_placeholder(raw: &str) -> crate::Result<Placeholder> {
     let trimmed = raw.trim();
 
@@ -138,11 +138,11 @@ fn parse_placeholder(raw: &str) -> crate::Result<Placeholder> {
     Err(unknown_placeholder(raw))
 }
 
-/// Analyse `template` et renvoie les placeholders rencontrés, dans l'ordre.
+/// Parses `template` and returns the placeholders encountered, in order.
 ///
-/// Erreur si un placeholder fermé (`{{ ... }}`) porte un nom non reconnu (ni
-/// `input`, ni `args.<nom>`, ni `env.<NOM>`). Un `{{` jamais refermé n'est
-/// pas un placeholder : il est ignoré ici comme il l'est par `render`.
+/// Error if a closed placeholder (`{{ ... }}`) has an unrecognized name (neither
+/// `input`, nor `args.<name>`, nor `env.<NAME>`). An `{{` never closed is
+/// not a placeholder: it is ignored here, just as it is by `render`.
 pub fn placeholders(template: &str) -> crate::Result<Vec<Placeholder>> {
     scan(template)
         .into_iter()
@@ -153,22 +153,22 @@ pub fn placeholders(template: &str) -> crate::Result<Vec<Placeholder>> {
         .collect()
 }
 
-/// Vérifie statiquement qu'un template ne référence que `input`, un argument
-/// DÉCLARÉ (présent dans `declared_args`), ou `env.X` (n'importe quel nom
-/// syntaxiquement valide : la PRÉSENCE d'une variable d'environnement n'est
-/// vérifiée qu'au rendu, jamais ici). Appelée au chargement de la commande.
+/// Statically checks that a template only references `input`, a DECLARED
+/// argument (present in `declared_args`), or `env.X` (any syntactically
+/// valid name: the PRESENCE of an environment variable is only
+/// checked at render time, never here). Called when the command is loaded.
 ///
-/// Un argument déclaré mais jamais référencé dans le prompt n'est pas une
-/// erreur : il reste un argument CLI valide et documenté (npu-cli-spec.md
-/// §11), simplement inutilisé par ce prompt-ci.
+/// A declared argument never referenced in the prompt is not an
+/// error: it remains a valid, documented CLI argument (npu-cli-spec.md
+/// §11), simply unused by this particular prompt.
 pub fn validate(template: &str, declared_args: &BTreeSet<String>) -> crate::Result<()> {
     for placeholder in placeholders(template)? {
         if let Placeholder::Arg(name) = placeholder
             && !declared_args.contains(&name)
         {
             return Err(crate::Error::Config(format!(
-                "argument inconnu « {name} » référencé par {{{{ args.{name} }}}} : \
-                 arguments déclarés : {}",
+                "unknown argument \"{name}\" referenced by {{{{ args.{name} }}}}: \
+                 declared arguments: {}",
                 crate::error::format_available(declared_args.iter())
             )));
         }
@@ -176,55 +176,55 @@ pub fn validate(template: &str, declared_args: &BTreeSet<String>) -> crate::Resu
     Ok(())
 }
 
-/// Résout la valeur d'un argument référencé par `{{ args.NOM }}`, ou l'erreur
-/// de configuration nommant l'argument. Factorisé entre [`render`] et
-/// [`preflight`] : les deux doivent produire EXACTEMENT le même message pour
-/// le même défaut (défense en profondeur, cf. doc de [`preflight`]).
+/// Resolves the value of an argument referenced by `{{ args.NAME }}`, or the
+/// configuration error naming the argument. Factored out between [`render`]
+/// and [`preflight`]: both must produce EXACTLY the same message for
+/// the same defect (defense in depth, cf. [`preflight`] doc).
 fn resolve_arg<'a>(name: &str, args: &'a BTreeMap<String, String>) -> crate::Result<&'a String> {
     args.get(name).ok_or_else(|| {
         crate::Error::Config(format!(
-            "argument « {name} » référencé par {{{{ args.{name} }}}} mais absent des valeurs \
-             fournies"
+            "argument \"{name}\" referenced by {{{{ args.{name} }}}} but missing from the \
+             values provided"
         ))
     })
 }
 
-/// Résout la valeur d'une variable d'environnement référencée par
-/// `{{ env.NOM }}`, ou l'erreur de configuration nommant la variable. Voir
-/// [`resolve_arg`] pour la raison du partage avec [`render`]/[`preflight`].
+/// Resolves the value of an environment variable referenced by
+/// `{{ env.NAME }}`, or the configuration error naming the variable. See
+/// [`resolve_arg`] for the reason it is shared with [`render`]/[`preflight`].
 fn resolve_env(name: &str, env: &dyn Fn(&str) -> Option<String>) -> crate::Result<String> {
     env(name).ok_or_else(|| {
         crate::Error::Config(format!(
-            "variable d'environnement « {name} » référencée par {{{{ env.{name} }}}} mais non \
-             définie"
+            "environment variable \"{name}\" referenced by {{{{ env.{name} }}}} but not \
+             defined"
         ))
     })
 }
 
-/// Vérifie, AVANT toute lecture de l'entrée, que tout ce que le prompt
-/// référence et qui est connaissable SANS l'entrée (un argument déclaré
-/// `{{ args.NOM }}`, une variable d'environnement `{{ env.NOM }}`) est bien
-/// disponible.
+/// Checks, BEFORE any reading of the input, that everything the prompt
+/// references and that is knowable WITHOUT the input (a declared argument
+/// `{{ args.NAME }}`, an environment variable `{{ env.NAME }}`) is indeed
+/// available.
 ///
-/// INVARIANT (revue L3, correctif 1) : rien de ce qui est connaissable sans
-/// l'entrée ne doit être vérifié après avoir lu l'entrée. `input::resolve`
-/// peut drainer un flux non rejouable (un pipe, une commande one-shot,
-/// npu-cli-spec.md §22) : si un argument optionnel absent ou une variable
-/// d'environnement non définie n'échouent qu'au rendu, APRÈS cette lecture,
-/// le travail déjà produit en amont du pipe est perdu, et sur un flux non
-/// rejouable il l'est définitivement. L'appelant (`lib.rs::run`) doit donc
-/// appeler `preflight` avant `input::resolve`, jamais après.
+/// INVARIANT (L3 review, fix 1): nothing that is knowable without
+/// the input must be checked after the input has been read. `input::resolve`
+/// may drain a non-replayable stream (a pipe, a one-shot command,
+/// npu-cli-spec.md §22): if a missing optional argument or an undefined
+/// environment variable only fail at render time, AFTER this read,
+/// the work already produced upstream of the pipe is lost, and on a
+/// non-replayable stream it is lost for good. The caller (`lib.rs::run`) must
+/// therefore call `preflight` before `input::resolve`, never after.
 ///
-/// `{{ input }}` lui-même n'est PAS vérifié ici : par construction, sa
-/// valeur ne peut être connue qu'après avoir lu l'entrée — ce n'est
-/// justement pas quelque chose de « connaissable sans l'entrée ».
+/// `{{ input }}` itself is NOT checked here: by construction, its
+/// value can only be known after the input has been read — that is
+/// precisely not something "knowable without the input".
 ///
-/// Que [`render`] revérifie ensuite la même présence n'est pas une
-/// duplication à supprimer mais de la défense en profondeur : `preflight`
-/// garantit seulement qu'aucune vérification NE SE PRODUIT après la lecture
-/// de l'entrée, pas que son résultat reste valable jusqu'au rendu (une
-/// variable d'environnement pourrait en théorie disparaître entre les deux
-/// appels, bien qu'aucun code de ce process ne la modifie).
+/// That [`render`] then rechecks the same presence is not a
+/// duplication to remove but defense in depth: `preflight`
+/// only guarantees that no check OCCURS after the input has been
+/// read, not that its result remains valid until render time (an
+/// environment variable could in theory disappear between the two
+/// calls, although no code in this process modifies it).
 pub fn preflight(
     template: &str,
     args: &BTreeMap<String, String>,
@@ -244,25 +244,25 @@ pub fn preflight(
     Ok(())
 }
 
-/// Rend le template : substitue chaque placeholder reconnu par sa valeur.
+/// Renders the template: substitutes each recognized placeholder with its value.
 ///
-/// `env` est injectée par l'appelant (plutôt que `std::env::var` appelé ici)
-/// pour rester testable sans muter le vrai environnement — `unsafe` en
-/// édition 2024, interdit par `unsafe_code = "forbid"`.
+/// `env` is injected by the caller (rather than calling `std::env::var` here)
+/// to stay testable without mutating the real environment — `unsafe` in
+/// edition 2024 is forbidden by `unsafe_code = "forbid"`.
 ///
 /// - `{{ input }}` → `input`.
-/// - `{{ args.NOM }}` → `args[NOM]`. Absent de la map : `Error::Config`
-///   nommant l'argument (ne devrait pas arriver si `validate` a tourné et si
-///   l'appelant câble correctement les arguments CLI vers cette map, mais on
-///   ne panique pas pour autant).
-/// - `{{ env.NOM }}` → `env(NOM)`. `None` (variable non définie) :
-///   `Error::Config` nommant la variable. `Some(String::new())` (variable
-///   définie mais vide) : substituée par une chaîne vide, pas une erreur.
+/// - `{{ args.NAME }}` → `args[NAME]`. Missing from the map: `Error::Config`
+///   naming the argument (shouldn't happen if `validate` has run and if
+///   the caller correctly wires the CLI arguments into this map, but we
+///   don't panic regardless).
+/// - `{{ env.NAME }}` → `env(NAME)`. `None` (variable not defined):
+///   `Error::Config` naming the variable. `Some(String::new())` (variable
+///   defined but empty): substituted with an empty string, not an error.
 ///
-/// La substitution ne se réapplique jamais à son propre résultat : le
-/// template est entièrement scanné AVANT toute substitution (`scan`), donc
-/// une valeur d'argument contenant littéralement `{{ input }}` n'est jamais
-/// réinterprétée.
+/// The substitution is never reapplied to its own result: the
+/// template is fully scanned BEFORE any substitution (`scan`), so
+/// an argument value literally containing `{{ input }}` is never
+/// reinterpreted.
 pub fn render(
     template: &str,
     input: &str,
@@ -296,7 +296,7 @@ pub fn render(
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)] // toléré dans les tests (cf. Cargo.toml [lints.clippy]).
+#[allow(clippy::expect_used)] // tolerated in tests (cf. Cargo.toml [lints.clippy]).
 mod tests {
     use super::*;
 
@@ -499,26 +499,26 @@ mod tests {
 
     #[test]
     fn render_template_with_accented_and_multibyte_characters_does_not_panic() {
-        // `scan` ne tranche `template` qu'aux positions renvoyées par
-        // `str::find("{{"/"}}")`, donc toujours sur une frontière de
-        // caractère valide (garanti par `str::find`, jamais un décompte
-        // d'octets manuel) — mais la revue L3 des phases 1/2 demande un test
-        // explicite plutôt qu'un raisonnement implicite. Ce gabarit place des
-        // caractères multi-octets (accents, emoji) immédiatement collés aux
-        // délimiteurs `{{`/`}}`, sans espace, le cas le plus susceptible de
-        // heurter une frontière de caractère si le découpage était fait par
-        // décompte d'octets plutôt que via `find`.
+        // `scan` only slices `template` at positions returned by
+        // `str::find("{{"/"}}")`, so always on a valid character
+        // boundary (guaranteed by `str::find`, never a manual byte
+        // count) — but the L3 review of phases 1/2 asks for an
+        // explicit test rather than implicit reasoning. This template places
+        // multi-byte characters (accents, emoji) immediately touching the
+        // `{{`/`}}` delimiters, with no space, the case most likely to
+        // hit a character boundary if the splitting were done by
+        // byte count rather than via `find`.
         let mut args = BTreeMap::new();
-        args.insert("langue".to_string(), "français".to_string());
+        args.insert("language".to_string(), "français".to_string());
         let env = |_: &str| None;
 
         let rendered = render(
-            "Préparé{{ input }} : {{ args.langue }}🎉 café",
+            "Préparé{{ input }} : {{ args.language }}🎉 café",
             "☕é",
             &args,
             &env,
         )
-        .expect("un template accentué/emoji ne doit jamais paniquer");
+        .expect("an accented/emoji template must never panic");
 
         assert_eq!(rendered, "Préparé☕é : français🎉 café");
     }
@@ -528,10 +528,10 @@ mod tests {
         let args = BTreeMap::new();
         let env = |_: &str| None;
 
-        let rendered = render("café 🎉 {{ input non refermé", "x", &args, &env)
-            .expect("un {{ non refermé après du multi-octet ne doit pas paniquer");
+        let rendered = render("café 🎉 {{ input not closed", "x", &args, &env)
+            .expect("an unclosed {{ after multi-byte text must not panic");
 
-        assert_eq!(rendered, "café 🎉 {{ input non refermé");
+        assert_eq!(rendered, "café 🎉 {{ input not closed");
     }
 
     #[test]
@@ -544,20 +544,20 @@ mod tests {
         assert!(matches!(err, crate::Error::Config(_)));
     }
 
-    // -- preflight() (revue L3, correctif 1) -----------------------------------
+    // -- preflight() (L3 review, fix 1) -----------------------------------
 
     #[test]
     fn preflight_detects_missing_env_var_without_needing_input() {
-        // C'est la vérification demandée explicitement par la revue L3 :
-        // au niveau de la fonction de préflight elle-même, sans passer par
-        // le processus complet (dont la preuve est la mesure de temps sur le
-        // binaire réel, cf. rapport). Une variable d'environnement absente
-        // doit être détectée SANS qu'aucune entrée n'ait besoin d'exister.
+        // This is the check explicitly requested by the L3 review:
+        // at the level of the preflight function itself, without going through
+        // the full process (whose proof is the timing measurement on the
+        // real binary, cf. report). A missing environment variable
+        // must be detected WITHOUT any input needing to exist.
         let args = BTreeMap::new();
         let env = |_: &str| None;
 
-        let err = preflight("{{ env.NPU_ABSENTE }} : {{ input }}", &args, &env)
-            .expect_err("une variable d'environnement absente doit échouer en préflight");
+        let err = preflight("{{ env.NPU_ABSENT }}: {{ input }}", &args, &env)
+            .expect_err("a missing environment variable must fail in preflight");
 
         assert!(matches!(err, crate::Error::Config(_)));
     }
@@ -567,17 +567,17 @@ mod tests {
         let args = BTreeMap::new();
         let env = |_: &str| None;
 
-        let err = preflight("ton {{ args.tone }} : {{ input }}", &args, &env)
-            .expect_err("un argument absent doit échouer en préflight");
+        let err = preflight("the {{ args.tone }}: {{ input }}", &args, &env)
+            .expect_err("a missing argument must fail in preflight");
 
         assert!(matches!(err, crate::Error::Config(_)));
     }
 
     #[test]
     fn preflight_does_not_require_input_placeholder_to_be_resolved() {
-        // `{{ input }}` n'est vérifiable qu'APRÈS lecture de l'entrée : par
-        // construction, `preflight` ne doit jamais échouer à cause de lui
-        // seul.
+        // `{{ input }}` is only checkable AFTER the input has been read: by
+        // construction, `preflight` must never fail because of it
+        // alone.
         let args = BTreeMap::new();
         let env = |_: &str| None;
 
@@ -602,15 +602,15 @@ mod tests {
 
     #[test]
     fn preflight_and_render_agree_on_the_same_missing_env_var_message() {
-        // Défense en profondeur (cf. doc de `preflight`) : les deux
-        // fonctions partagent `resolve_env`, donc le même message.
+        // Defense in depth (cf. `preflight` doc): both
+        // functions share `resolve_env`, hence the same message.
         let args = BTreeMap::new();
         let env = |_: &str| None;
 
         let preflight_err =
-            preflight("{{ env.API_KEY }}", &args, &env).expect_err("preflight doit échouer");
+            preflight("{{ env.API_KEY }}", &args, &env).expect_err("preflight must fail");
         let render_err = render("{{ env.API_KEY }}", "x", &args, &env)
-            .expect_err("render doit échouer de la même façon");
+            .expect_err("render must fail the same way");
 
         assert_eq!(preflight_err.to_string(), render_err.to_string());
     }

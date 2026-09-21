@@ -1,8 +1,8 @@
-//! Moteur générique d'exécution de commandes IA locales.
+//! Generic execution engine for local AI commands.
 //!
-//! Toute la logique vit ici : le binaire (`main.rs`) n'est qu'une coquille.
-//! C'est ce qui rend le pipeline testable depuis `tests/`, qui ne peut importer
-//! qu'une cible bibliothèque (cf. IMPLEMENTATION.md §4).
+//! All the logic lives here: the binary (`main.rs`) is only a shell.
+//! This is what makes the pipeline testable from `tests/`, which can only
+//! import a library target (cf. IMPLEMENTATION.md §4).
 
 pub mod backend;
 pub mod builtin;
@@ -16,9 +16,9 @@ pub mod scope;
 
 pub use error::{Error, Result};
 
-/// Un nœud de l'arbre de commandes construit depuis les `CommandSpec`
-/// découvertes. `spec` est renseigné sur une commande feuille ; un nœud
-/// intermédiaire (ex. `git` avant `git review`) n'a que des enfants.
+/// A node of the command tree built from the discovered `CommandSpec`s.
+/// `spec` is set on a leaf command; an intermediate node (e.g. `git` before
+/// `git review`) only has children.
 struct CommandNode<'a> {
     spec: Option<&'a command::CommandSpec>,
     children: std::collections::BTreeMap<String, CommandNode<'a>>,
@@ -33,9 +33,9 @@ impl CommandNode<'_> {
     }
 }
 
-/// Regroupe les `CommandSpec` en arbre par préfixe de chemin : deux commandes
-/// partageant un segment de tête (`git review`, `git commit`) fusionnent sous
-/// le même nœud intermédiaire `git`.
+/// Groups the `CommandSpec`s into a tree by path prefix: two commands
+/// sharing a leading segment (`git review`, `git commit`) merge under the
+/// same intermediate node `git`.
 fn build_command_tree(specs: &[command::CommandSpec]) -> CommandNode<'_> {
     let mut root = CommandNode::new();
     for spec in specs {
@@ -51,14 +51,13 @@ fn build_command_tree(specs: &[command::CommandSpec]) -> CommandNode<'_> {
     root
 }
 
-/// Construit le `clap::Arg` correspondant à un argument déclaré (`[args.*]`,
-/// npu-cli-spec.md §11) : `.long(nom)`, `.short(lettre)` si présente,
-/// `.required(required)`, `.help(description)` si non vide, `.value_name(nom
-/// en MAJUSCULES)` et l'action de valeur simple (`ArgAction::Set`, un
-/// argument attend une seule valeur — pas de multi-valeurs, pas de flag
-/// booléen, cf. §11/§25). L'id de l'argument est `name` lui-même : c'est ce
-/// que `collect_arg_values` relit depuis les `ArgMatches` de la commande
-/// feuille.
+/// Builds the `clap::Arg` corresponding to a declared argument (`[args.*]`,
+/// npu-cli-spec.md §11): `.long(name)`, `.short(letter)` if present,
+/// `.required(required)`, `.help(description)` if non-empty, `.value_name(name
+/// in UPPERCASE)` and the single-value action (`ArgAction::Set`, an
+/// argument expects a single value — no multi-values, no boolean flag,
+/// cf. §11/§25). The argument's id is `name` itself: this is what
+/// `collect_arg_values` reads back from the leaf command's `ArgMatches`.
 fn build_declared_arg(name: &str, arg_spec: &command::ArgSpec) -> clap::Arg {
     let mut arg = clap::Arg::new(name.to_string())
         .long(name.to_string())
@@ -76,18 +75,17 @@ fn build_declared_arg(name: &str, arg_spec: &command::ArgSpec) -> clap::Arg {
     arg
 }
 
-/// Construit récursivement le sous-arbre `clap` correspondant à `node`, nommé
-/// `name`. Une commande feuille reçoit sa description, si elle accepte un
-/// fichier en entrée un argument positionnel optionnel `FILE`, puis un
-/// `clap::Arg` par argument déclaré (`[args.*]`, phase 3 — cf.
-/// [`build_declared_arg`]). L'itération sur `spec.args` (un `BTreeMap`) est
-/// triée par nom, donc l'ordre des arguments dans `--help` est déterministe
-/// quel que soit l'ordre d'écriture du frontmatter TOML. `command::parse`
-/// réserve déjà le nom `FILE` (cf. `RESERVED_ARG_NAMES`) : aucun argument
-/// déclaré ne peut donc entrer en collision avec l'argument positionnel
-/// ajouté ici. Un nœud intermédiaire (pas de `CommandSpec` propre) reste
-/// utilisable seul : il affiche alors son aide plutôt que d'échouer
-/// silencieusement.
+/// Recursively builds the `clap` subtree corresponding to `node`, named
+/// `name`. A leaf command receives its description, an optional `FILE`
+/// positional argument if it accepts a file as input, then a `clap::Arg`
+/// per declared argument (`[args.*]`, phase 3 — cf. [`build_declared_arg`]).
+/// Iterating over `spec.args` (a `BTreeMap`) is sorted by name, so the order
+/// of arguments in `--help` is deterministic regardless of the order the
+/// TOML frontmatter was written in. `command::parse` already reserves the
+/// name `FILE` (cf. `RESERVED_ARG_NAMES`): no declared argument can
+/// therefore collide with the positional argument added here. An
+/// intermediate node (with no `CommandSpec` of its own) remains usable on
+/// its own: it then shows its help instead of failing silently.
 fn build_clap_node(name: &str, node: &CommandNode<'_>) -> clap::Command {
     let mut cmd = clap::Command::new(name.to_string());
 
@@ -116,11 +114,11 @@ fn build_clap_node(name: &str, node: &CommandNode<'_>) -> clap::Command {
     cmd
 }
 
-/// Construit l'arbre `clap` complet (API builder, cf. IMPLEMENTATION.md
-/// décision 1) depuis les commandes découvertes. Ne contient QUE les
-/// commandes métier : les built-ins (`doctor`/`models`/`describe`) sont
-/// ajoutés séparément par [`add_builtins`], inconditionnellement — cette
-/// fonction reste utilisable avec `specs` vide (mode dégradé, cf. `run`).
+/// Builds the complete `clap` tree (builder API, cf. IMPLEMENTATION.md
+/// decision 1) from the discovered commands. Contains ONLY the business
+/// commands: the built-ins (`doctor`/`models`/`describe`) are added
+/// separately by [`add_builtins`], unconditionally — this function remains
+/// usable with an empty `specs` (degraded mode, cf. `run`).
 fn build_cli(specs: &[command::CommandSpec]) -> clap::Command {
     let tree = build_command_tree(specs);
     let mut root = clap::Command::new("npu").arg_required_else_help(true);
@@ -130,21 +128,22 @@ fn build_cli(specs: &[command::CommandSpec]) -> clap::Command {
     root
 }
 
-/// Ajoute les trois built-ins du CLI (`doctor`, `models`, `describe` —
-/// npu-cli-spec.md §16, point 2 du contrat partagé de la phase 5) à l'arbre
-/// déjà construit depuis les commandes métier découvertes.
+/// Adds the CLI's three built-ins (`doctor`, `models`, `describe` —
+/// npu-cli-spec.md §16, point 2 of the phase 5 shared contract) to the tree
+/// already built from the discovered business commands.
 ///
-/// Appelée INCONDITIONNELLEMENT par `run`, y compris quand le chargement de
-/// la configuration a échoué (mode dégradé, point 1 du contrat partagé) :
-/// une configuration cassée ne doit JAMAIS priver `--help` de `doctor`,
-/// puisque `doctor` est précisément l'outil censé en diagnostiquer la
-/// cause. `command::reject_reserved_path` garantit en amont, à la
-/// découverte, qu'aucune commande métier ne peut porter l'un de ces trois
-/// noms en premier segment de chemin : ces trois `subcommand()` ne peuvent
-/// donc jamais entrer en collision avec ceux ajoutés par [`build_cli`].
+/// Called UNCONDITIONALLY by `run`, including when loading the
+/// configuration has failed (degraded mode, point 1 of the shared
+/// contract): a broken configuration must NEVER deprive `--help` of
+/// `doctor`, since `doctor` is precisely the tool meant to diagnose its
+/// cause. `command::reject_reserved_path` already guarantees, upstream at
+/// discovery time, that no business command can carry one of these three
+/// names as its first path segment: these three `subcommand()` calls can
+/// therefore never collide with the ones added by [`build_cli`].
 fn add_builtins(cli: clap::Command) -> clap::Command {
-    // Textes d'aide en anglais : ils s'affichent à côté des `description` des
-    // commandes configurées, et la documentation du dépôt est en anglais.
+    // Help text in English: it is displayed next to the configured
+    // commands' `description`, and the repository's documentation is in
+    // English.
     cli.subcommand(clap::Command::new("doctor").about(
         "Check the runtime environment: configuration, backend reachability, declared \
          output schemas",
@@ -161,9 +160,9 @@ fn add_builtins(cli: clap::Command) -> clap::Command {
     )
 }
 
-/// Reconstitue le chemin de la commande sélectionnée en descendant la chaîne
-/// de sous-commandes retenue par `clap`, et renvoie les `ArgMatches` de la
-/// commande feuille avec le chemin parcouru.
+/// Reconstructs the path of the selected command by walking down the chain
+/// of subcommands `clap` resolved, and returns the leaf command's
+/// `ArgMatches` along with the path walked.
 fn selected_path(matches: &clap::ArgMatches) -> (Vec<String>, &clap::ArgMatches) {
     let mut path = Vec::new();
     let mut current = matches;
@@ -174,10 +173,10 @@ fn selected_path(matches: &clap::ArgMatches) -> (Vec<String>, &clap::ArgMatches)
     (path, current)
 }
 
-/// Retrouve, parmi `specs`, la commande dont le chemin joint par `/` vaut
-/// `key`. Renvoie une `Error::Config` listant les commandes disponibles si
-/// aucune ne correspond (même style que `config::Config::resolve` et
-/// `backend::chat` pour les identifiants inconnus).
+/// Finds, among `specs`, the command whose path joined by `/` equals `key`.
+/// Returns an `Error::Config` listing the available commands if none match
+/// (same style as `config::Config::resolve` and `backend::chat` for unknown
+/// identifiers).
 fn find_command<'a>(
     specs: &'a [command::CommandSpec],
     key: &str,
@@ -187,23 +186,23 @@ fn find_command<'a>(
         .find(|spec| spec.path.join("/") == key)
         .ok_or_else(|| {
             Error::Config(format!(
-                "commande inconnue : « {key} » (commandes disponibles : {})",
+                "unknown command: \"{key}\" (available commands: {})",
                 error::format_available(specs.iter().map(|s| s.path.join("/")))
             ))
         })
 }
 
-/// Collecte, pour la commande feuille `spec`, les valeurs de ses arguments
-/// déclarés (`[args.*]`) depuis les `ArgMatches` correspondantes, dans la
-/// `BTreeMap<String, String>` attendue par `prompt::render`.
+/// Collects, for the leaf command `spec`, the values of its declared
+/// arguments (`[args.*]`) from the corresponding `ArgMatches`, into the
+/// `BTreeMap<String, String>` expected by `prompt::render`.
 ///
-/// Un argument déclaré mais absent de `leaf_matches` (non requis et non
-/// fourni sur la ligne de commande) est simplement omis de la map : la phase
-/// 3 n'introduit pas de valeur par défaut (npu-cli-spec.md §11/§25). Si le
-/// prompt référence quand même cet argument via `{{ args.NOM }}`,
-/// `prompt::render` échoue avec une `Error::Config` nommant l'argument
-/// (règle 6 du contrat partagé) plutôt que de substituer une chaîne vide non
-/// demandée.
+/// A declared argument absent from `leaf_matches` (not required and not
+/// supplied on the command line) is simply omitted from the map: phase 3
+/// does not introduce a default value (npu-cli-spec.md §11/§25). If the
+/// prompt still references this argument via `{{ args.NAME }}`,
+/// `prompt::render` fails with an `Error::Config` naming the argument (rule
+/// 6 of the shared contract) rather than substituting an unrequested empty
+/// string.
 fn collect_arg_values(
     spec: &command::CommandSpec,
     leaf_matches: &clap::ArgMatches,
@@ -218,27 +217,27 @@ fn collect_arg_values(
         .collect()
 }
 
-/// Exécute le pipeline d'une commande MÉTIER déjà résolue (`spec`), avec la
-/// configuration chargée (`config`, forcément `Ok` à ce point : `run` a
-/// propagé toute erreur de chargement avant d'atteindre cette fonction) et
-/// les `ArgMatches` de la commande feuille sélectionnée.
+/// Executes the pipeline of an already-resolved BUSINESS command (`spec`),
+/// with the loaded configuration (`config`, necessarily `Ok` at this point:
+/// `run` has propagated any load error before reaching this function) and
+/// the `ArgMatches` of the selected leaf command.
 ///
-/// Extrait de `run` tel quel (phase 5, câblage du mode dégradé) : le seul
-/// changement face à la version antérieure à cette phase est l'endroit d'où
-/// cette séquence est appelée, jamais son contenu ni son ordre interne.
+/// Extracted from `run` as-is (phase 5, degraded-mode wiring): the only
+/// change from the version before this phase is where this sequence is
+/// called from, never its content nor its internal order.
 ///
-/// INVARIANT (revue L3, correctif 1, phase 3) — préservé À L'IDENTIQUE :
-/// rien de ce qui est connaissable sans l'entrée ne doit être vérifié après
-/// avoir lu l'entrée. Un argument référencé par le prompt et une variable
-/// d'environnement référencée par le prompt sont tous deux connaissables
-/// avant même de savoir ce que vaut `{{ input }}` : `prompt::preflight` le
-/// vérifie donc AVANT `input::resolve`, qui est la seule étape de ce
-/// pipeline susceptible de consommer une entrée non rejouable (un pipe, une
-/// commande one-shot, cf. npu-cli-spec.md §22). Sans cet ordre, `git diff |
-/// npu ...` lirait et jetterait tout le diff avant d'échouer sur un argument
-/// optionnel absent ou une variable d'environnement non définie — perte
-/// silencieuse et, sur un flux non rejouable, irréversible du travail déjà
-/// produit en amont.
+/// INVARIANT (L3 review, fix 1, phase 3) — preserved IDENTICALLY: nothing
+/// that is knowable without the input must be checked after reading the
+/// input. An argument referenced by the prompt and an environment variable
+/// referenced by the prompt are both knowable even before knowing what
+/// `{{ input }}` is worth: `prompt::preflight` therefore checks it BEFORE
+/// `input::resolve`, which is the only step of this pipeline liable to
+/// consume a non-replayable input (a pipe, a one-shot command, cf.
+/// npu-cli-spec.md §22). Without this order, `git diff | npu ...` would
+/// read and discard the whole diff before failing on a missing optional
+/// argument or an undefined environment variable — a silent loss, and on a
+/// non-replayable stream an irreversible one, of the work already produced
+/// upstream.
 fn execute_business_command(
     spec: &command::CommandSpec,
     config: &config::Config,
@@ -247,29 +246,30 @@ fn execute_business_command(
     let (model, backend) = config.resolve(&spec.model)?;
 
     let args = collect_arg_values(spec, leaf_matches);
-    // `std::env::var` renvoie `Err` aussi bien pour une variable absente que
-    // pour une variable contenant de l'UTF-8 invalide ; `.ok()` réduit les
-    // deux cas à `None`, exactement la sémantique attendue par
-    // `prompt::render`/`prompt::preflight` (règle 5 du contrat : présence
-    // vérifiée au rendu — et maintenant en préflight —, pas au chargement).
-    // Une variable définie mais vide reste `Ok(String::new())` côté
-    // `std::env::var` (elle n'est ni absente ni invalide), donc
-    // `Some(String::new())` ici, jamais `None` — garanti par `std`, exercé
-    // par les tests de `prompt::render` (`render_env_var_defined_but_empty_
-    // is_not_an_error`) via cette même closure injectée. On ne peut pas
-    // vérifier ce point directement par un test ICI sans muter l'environnement
-    // réel, interdit par `unsafe_code = "forbid"` en édition 2024 (même
-    // contrainte documentée sur `prompt::render`) : la closure elle-même
-    // reste donc la plus petite unité non testable, tout le reste de la
-    // sémantique est validé côté `prompt.rs`.
+    // `std::env::var` returns `Err` both for a missing variable and for a
+    // variable containing invalid UTF-8; `.ok()` reduces both cases to
+    // `None`, exactly the semantics expected by
+    // `prompt::render`/`prompt::preflight` (contract rule 5: presence
+    // checked at render time — and now at preflight time —, not at load
+    // time). A variable that is defined but empty stays `Ok(String::new())`
+    // on the `std::env::var` side (it is neither missing nor invalid), so
+    // `Some(String::new())` here, never `None` — guaranteed by `std`,
+    // exercised by `prompt::render`'s tests
+    // (`render_env_var_defined_but_empty_is_not_an_error`) via this same
+    // injected closure. This point cannot be checked directly by a test
+    // HERE without mutating the real environment, forbidden by
+    // `unsafe_code = "forbid"` in edition 2024 (the same constraint
+    // documented on `prompt::render`): the closure itself therefore remains
+    // the smallest untestable unit, the rest of the semantics is validated
+    // on the `prompt.rs` side.
     let env = |name: &str| std::env::var(name).ok();
 
     prompt::preflight(&spec.prompt, &args, &env)?;
 
-    // L'argument `FILE` n'est déclaré (cf. `build_clap_node`) que pour les
-    // modes qui acceptent un fichier : reproduire ici la même condition
-    // évite d'appeler `get_one` sur un id absent (panique) et garde les deux
-    // points en phase si une phase ultérieure change l'un sans l'autre.
+    // The `FILE` argument is only declared (cf. `build_clap_node`) for the
+    // modes that accept a file: reproducing the same condition here avoids
+    // calling `get_one` on an absent id (panic) and keeps the two spots in
+    // sync if a later phase changes one without the other.
     let file_arg = match spec.input {
         command::InputMode::File | command::InputMode::StdinOrFile => leaf_matches
             .get_one::<String>("FILE")
@@ -280,15 +280,15 @@ fn execute_business_command(
 
     let prompt = prompt::render(&spec.prompt, &input_text, &args, &env)?;
 
-    // Phase 4 (npu-cli-spec.md §15) : la réponse brute du backend n'est
-    // jamais écrite telle quelle sur stdout. `output::finalize` applique le
-    // contrat de sortie déclaré (`spec.output` — format, schéma, max_lines)
-    // et renvoie soit le texte exact à écrire, soit une `Error::Output`
-    // (code de sortie 4 : la CONFIGURATION est valide, c'est la réponse du
-    // modèle qui ne respecte pas le contrat déclaré — cf. doc de module de
-    // `output.rs`). Aucune reformulation ni retry ici : une sortie invalide
-    // est un échec d'exécution, pas quelque chose à rattraper (§15, hors
-    // périmètre de cette phase).
+    // Phase 4 (npu-cli-spec.md §15): the backend's raw response is never
+    // written as-is to stdout. `output::finalize` applies the declared
+    // output contract (`spec.output` — format, schema, max_lines) and
+    // returns either the exact text to write, or an `Error::Output` (exit
+    // code 4: the CONFIGURATION is valid, it is the model's response that
+    // does not respect the declared contract — cf. `output.rs`'s module
+    // doc). No reformulation or retry here: an invalid output is an
+    // execution failure, not something to recover from (§15, out of scope
+    // for this phase).
     let raw_output = backend::chat(backend, model, &prompt)?;
     let output = output::finalize(&spec.output, &raw_output, &spec.file)?;
 
@@ -297,54 +297,52 @@ fn execute_business_command(
     Ok(())
 }
 
-/// Point d'entrée de la bibliothèque, appelé par `main`.
+/// Entry point of the library, called by `main`.
 ///
-/// Pipeline (npu-cli-spec.md §18, phase 2) : résolution des racines de scope
-/// (`scope::roots()`, de la plus générale à la plus locale — `/etc/npu`, puis
-/// `$XDG_CONFIG_HOME/npu` ou `$HOME/.config/npu`, puis `./.npu`), chargement
-/// et fusion de la configuration sur ces racines (`config::load_scopes`),
-/// découverte et fusion des commandes (`command::discover_scopes`),
-/// construction de l'arbre `clap`, résolution de la commande sélectionnée, du
-/// modèle, de l'entrée, rendu du prompt, appel du backend, écriture du
-/// résultat sur stdout. La fusion entre scopes est un remplacement par
-/// identifiant (backends/modèles) ou par chemin complet (commandes), jamais
-/// une fusion champ par champ (IMPLEMENTATION.md décision 3) ; une racine
-/// absente du disque n'est simplement pas prise en compte.
+/// Pipeline (npu-cli-spec.md §18, phase 2): resolving the scope roots
+/// (`scope::roots()`, from the most general to the most local — `/etc/npu`,
+/// then `$XDG_CONFIG_HOME/npu` or `$HOME/.config/npu`, then `./.npu`),
+/// loading and merging the configuration across these roots
+/// (`config::load_scopes`), discovering and merging the commands
+/// (`command::discover_scopes`), building the `clap` tree, resolving the
+/// selected command, the model, the input, rendering the prompt, calling
+/// the backend, writing the result to stdout. Merging across scopes is a
+/// replacement by identifier (backends/models) or by full path (commands),
+/// never a field-by-field merge (IMPLEMENTATION.md decision 3); a root
+/// absent from disk is simply not taken into account.
 ///
-/// **Mode dégradé (phase 5, point 1 du contrat partagé — remboursement de la
-/// dette tracée depuis la phase 1).** Le chargement (`config::load_scopes`
-/// PUIS `command::discover_scopes`) peut échouer (TOML mal formé,
-/// frontmatter cassé, référence inconnue). Son erreur est désormais
-/// CONSERVÉE (`loaded: Result<(Config, Vec<CommandSpec>)>`) plutôt que
-/// propagée immédiatement par `?` : l'arbre `clap` est construit
-/// INCONDITIONNELLEMENT avec les trois built-ins ([`add_builtins`]), et avec
-/// les commandes métier découvertes SEULEMENT si le chargement a réussi
-/// (sinon `build_cli(&[])`). Conséquences :
-/// - `--help` fonctionne TOUJOURS, y compris avec une configuration cassée ;
-/// - une ligne sur STDERR signale l'échec de chargement et renvoie vers
-///   `npu doctor` — émise AVANT `cli.get_matches()`, parce que `--help`
-///   sort par `std::process::exit` interne à `clap` sans jamais repasser par
-///   la suite de cette fonction (cf. `tests/clap_error_stdout_purity.rs`) ;
-/// - `npu doctor` s'exécute TOUJOURS (avant toute autre branche) et rapporte
-///   l'erreur de chargement conservée comme vérification (a) échouée (cf.
-///   `builtin::doctor`) ;
-/// - toute AUTRE invocation (commande métier, `models`, `describe`) propage
-///   l'erreur de chargement conservée via `loaded?`, code de sortie 2 —
-///   inchangé par rapport à avant cette phase.
+/// **Degraded mode (phase 5, point 1 of the shared contract — paying off
+/// the debt tracked since phase 1).** Loading (`config::load_scopes` THEN
+/// `command::discover_scopes`) can fail (malformed TOML, broken
+/// frontmatter, unknown reference). Its error is now KEPT
+/// (`loaded: Result<(Config, Vec<CommandSpec>)>`) rather than immediately
+/// propagated via `?`: the `clap` tree is built UNCONDITIONALLY with the
+/// three built-ins ([`add_builtins`]), and with the discovered business
+/// commands ONLY if loading succeeded (otherwise `build_cli(&[])`).
+/// Consequences:
+/// - `--help` ALWAYS works, even with a broken configuration;
+/// - a line on STDERR reports the load failure and points to `npu doctor`
+///   — emitted BEFORE `cli.get_matches()`, because `--help` exits via
+///   `clap`'s internal `std::process::exit` without ever returning through
+///   the rest of this function (cf. `tests/clap_error_stdout_purity.rs`);
+/// - `npu doctor` ALWAYS runs (before any other branch) and reports the
+///   kept load error as a failed check (a) (cf. `builtin::doctor`);
+/// - any OTHER invocation (business command, `models`, `describe`)
+///   propagates the kept load error via `loaded?`, exit code 2 — unchanged
+///   from before this phase.
 ///
-/// Quand le chargement RÉUSSIT, le comportement est identique à avant cette
-/// phase, invariant compris (cf. doc de [`execute_business_command`]).
+/// When loading SUCCEEDS, the behavior is identical to before this phase,
+/// invariant included (cf. [`execute_business_command`]'s doc).
 ///
-/// Code de sortie transporté par le type de retour : `Ok(0)` (succès
-/// ordinaire, y compris une commande métier), `Ok(code)` pour `code != 0`
-/// est le code de sortie d'un RAPPORT (`npu doctor` — cf.
-/// `builtin::doctor_exit_code` — ce n'est pas un échec du moteur, juste un
-/// diagnostic qui n'est pas entièrement au vert), et `Err` reste réservé aux
-/// échecs du pipeline (`Error::exit_code`). `main` traduit les trois cas ;
-/// c'est ELLE qui écrit le rapport de `doctor` (ci-dessous, via `println!`,
-/// donc déjà sur stdout avant de renvoyer le code) — jamais `main`
-/// elle-même, pour que stdout reste réservé au RÉSULTAT produit par cette
-/// bibliothèque, comme partout ailleurs dans ce module.
+/// Exit code carried by the return type: `Ok(0)` (ordinary success,
+/// including a business command), `Ok(code)` for `code != 0` is the exit
+/// code of a REPORT (`npu doctor` — cf. `builtin::doctor_exit_code` — this
+/// is not an engine failure, just a diagnostic that is not entirely green),
+/// and `Err` remains reserved for pipeline failures (`Error::exit_code`).
+/// `main` translates the three cases; it is `run` that writes `doctor`'s
+/// report (below, via `println!`, so already on stdout before returning the
+/// code) — never `main` itself, so that stdout stays reserved for the
+/// RESULT produced by this library, as everywhere else in this module.
 pub fn run() -> Result<i32> {
     let roots = scope::roots();
 
@@ -352,13 +350,11 @@ pub fn run() -> Result<i32> {
         .and_then(|config| command::discover_scopes(&roots).map(|specs| (config, specs)));
 
     if let Err(err) = &loaded {
-        // DOIT précéder `cli.get_matches()` : voir la doc de cette fonction.
-        // Jamais sur stdout (règle du contrat : stdout est réservé au
-        // résultat) — cette ligne est un diagnostic du MOTEUR, pas un
-        // résultat de commande.
+        // MUST precede `cli.get_matches()`: see this function's doc. Never
+        // on stdout (contract rule: stdout is reserved for the result) —
+        // this line is an ENGINE diagnostic, not a command result.
         eprintln!(
-            "npu : configuration invalide ({err}) ; « npu doctor » en détaille les vérifications \
-             échouées"
+            "npu: invalid configuration ({err}); run \"npu doctor\" for details on the failed checks"
         );
     }
 
@@ -373,12 +369,12 @@ pub fn run() -> Result<i32> {
     let builtin_name = path.first().map(String::as_str);
 
     if builtin_name == Some("doctor") {
-        // `doctor` tourne TOUJOURS, réussite ou échec du chargement : c'est
-        // précisément son intérêt en mode dégradé (point 3 du contrat
-        // partagé). `probe` est la sonde RÉELLE (`builtin::tcp_probe`),
-        // jamais un bouchon — les tests de `builtin.rs` injectent le leur
-        // directement sur `builtin::doctor`, cette fonction-ci ne fait que
-        // brancher la sonde réelle.
+        // `doctor` ALWAYS runs, whether loading succeeded or failed: this
+        // is precisely its point in degraded mode (point 3 of the shared
+        // contract). `probe` is the REAL probe (`builtin::tcp_probe`),
+        // never a stub — `builtin.rs`'s tests inject their own directly on
+        // `builtin::doctor`, this function here only wires in the real
+        // probe.
         let (config_ref, specs_ref, load_error_ref) = match &loaded {
             Ok((config, specs)) => (Some(config), Some(specs.as_slice()), None),
             Err(err) => (None, None, Some(err)),
@@ -388,10 +384,10 @@ pub fn run() -> Result<i32> {
         return Ok(builtin::doctor_exit_code(&checks));
     }
 
-    // Toute AUTRE branche (commande métier, `models`, `describe`) exige une
-    // configuration chargée avec succès : propage l'erreur CONSERVÉE
-    // ci-dessus, code 2, exactement comme avant cette phase (point 1 du
-    // contrat partagé).
+    // Any OTHER branch (business command, `models`, `describe`) requires a
+    // successfully loaded configuration: propagates the error KEPT above,
+    // code 2, exactly as before this phase (point 1 of the shared
+    // contract).
     let (config, specs) = loaded?;
 
     if builtin_name == Some("models") {
@@ -400,9 +396,10 @@ pub fn run() -> Result<i32> {
     }
 
     if builtin_name == Some("describe") {
-        // `COMMAND` est déclaré `.required(true)` par `add_builtins` : clap
-        // a déjà rejeté l'invocation avant `get_matches()` si l'argument est
-        // absent, `leaf_matches` le porte donc toujours à ce point.
+        // `COMMAND` is declared `.required(true)` by `add_builtins`: clap
+        // has already rejected the invocation before `get_matches()` if
+        // the argument is absent, so `leaf_matches` always carries it at
+        // this point.
         let name = leaf_matches
             .get_one::<String>("COMMAND")
             .map(String::as_str)
@@ -421,7 +418,7 @@ pub fn run() -> Result<i32> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)] // toléré dans les tests (cf. Cargo.toml [lints.clippy]).
+#[allow(clippy::expect_used)] // allowed in tests (cf. Cargo.toml [lints.clippy]).
 mod tests {
     use super::*;
     use command::{CommandSpec, InputMode};
@@ -442,15 +439,15 @@ mod tests {
             input,
             prompt: "{{ input }}".to_string(),
             args,
-            // Phase 4 (`command::CommandSpec.output`, champ ajouté par le
-            // contrat d'API partagé) : ces tests de `lib.rs` portent sur la
-            // construction de l'arbre `clap`, jamais sur le contrat de
-            // sortie — `OutputSpec::default()` (format text, pas de schéma,
-            // pas de limite) leur est neutre.
+            // Phase 4 (`command::CommandSpec.output`, field added by the
+            // shared API contract): these `lib.rs` tests bear on the
+            // construction of the `clap` tree, never on the output
+            // contract — `OutputSpec::default()` (text format, no schema,
+            // no limit) is neutral for them.
             output: output::OutputSpec::default(),
-            // Neutre pour les mêmes raisons que `output` ci-dessus : ces
-            // tests ne portent jamais sur le contrat de sortie ni sur le
-            // nommage du fichier de commande dans une erreur de schéma.
+            // Neutral for the same reasons as `output` above: these tests
+            // never bear on the output contract nor on naming the command
+            // file in a schema error.
             file: std::path::PathBuf::new(),
         }
     }
@@ -479,7 +476,7 @@ mod tests {
 
         let git = cli
             .find_subcommand("git")
-            .expect("git doit exister comme sous-commande fusionnée");
+            .expect("git must exist as a merged subcommand");
         let git_children: Vec<&str> = git.get_subcommands().map(clap::Command::get_name).collect();
         assert!(git_children.contains(&"review"));
         assert!(git_children.contains(&"commit"));
@@ -497,17 +494,17 @@ mod tests {
 
         let stdin_only = cli
             .find_subcommand("commit-message")
-            .expect("commit-message doit exister");
+            .expect("commit-message must exist");
         assert!(stdin_only.get_arguments().next().is_none());
 
         let classify = cli
             .find_subcommand("classify")
-            .expect("classify doit exister");
+            .expect("classify must exist");
         assert!(classify.get_arguments().any(|arg| arg.get_id() == "FILE"));
 
         let summarize = cli
             .find_subcommand("summarize")
-            .expect("summarize doit exister");
+            .expect("summarize must exist");
         assert!(summarize.get_arguments().any(|arg| arg.get_id() == "FILE"));
     }
 
@@ -517,13 +514,13 @@ mod tests {
         let cli = build_cli(&specs);
         let matches = cli
             .try_get_matches_from(["npu", "git", "review"])
-            .expect("la ligne de commande doit être acceptée");
+            .expect("the command line must be accepted");
 
         let (path, leaf) = selected_path(&matches);
 
         assert_eq!(path, vec!["git".to_string(), "review".to_string()]);
-        // Les `ArgMatches` renvoyées sont bien celles de la feuille, pas de la racine :
-        // aucune sous-commande ne reste à descendre depuis `leaf`.
+        // The returned `ArgMatches` are indeed the leaf's, not the root's:
+        // no subcommand remains to be descended into from `leaf`.
         assert!(leaf.subcommand().is_none());
     }
 
@@ -531,17 +528,17 @@ mod tests {
     fn selected_path_is_empty_when_no_subcommand_is_selected() {
         let specs = vec![spec(&["commit-message"], InputMode::Stdin)];
         let cli = build_cli(&specs);
-        // `arg_required_else_help` empêche normalement d'arriver ici sans
-        // sous-commande en usage réel, mais `selected_path` doit rester correcte
-        // si on l'appelle malgré tout sur des `ArgMatches` racine vides.
+        // `arg_required_else_help` normally prevents reaching this point
+        // without a subcommand in real usage, but `selected_path` must
+        // stay correct if it is called anyway on empty root `ArgMatches`.
         let matches = clap::Command::new("npu")
             .try_get_matches_from(["npu"])
-            .expect("aucune sous-commande requise sur cette instance de test");
+            .expect("no subcommand required on this test instance");
 
         let (path, _leaf) = selected_path(&matches);
 
         assert!(path.is_empty());
-        let _ = cli; // évite un warning si `cli` n'est plus utilisé au-delà
+        let _ = cli; // avoids a warning if `cli` is no longer used beyond this point
     }
 
     #[test]
@@ -550,7 +547,7 @@ mod tests {
             spec(&["commit-message"], InputMode::Stdin),
             spec(&["git", "review"], InputMode::Stdin),
         ];
-        let found = find_command(&specs, "git/review").expect("git/review doit être trouvée");
+        let found = find_command(&specs, "git/review").expect("git/review must be found");
         assert_eq!(found.path, vec!["git".to_string(), "review".to_string()]);
     }
 
@@ -560,8 +557,8 @@ mod tests {
             spec(&["commit-message"], InputMode::Stdin),
             spec(&["git", "review"], InputMode::Stdin),
         ];
-        let err = find_command(&specs, "does-not-exist")
-            .expect_err("la commande ne doit pas être trouvée");
+        let err =
+            find_command(&specs, "does-not-exist").expect_err("the command must not be found");
 
         assert!(matches!(err, Error::Config(_)));
         let message = err.to_string();
@@ -572,16 +569,17 @@ mod tests {
 
     #[test]
     fn intermediate_node_without_its_own_spec_is_invocable_alone() {
-        // Un nœud intermédiaire (ici `git`, qui n'a pas de CommandSpec propre)
-        // doit rester utilisable seul : `arg_required_else_help` plutôt qu'un
-        // échec silencieux si on invoque `npu git` sans sous-commande.
+        // An intermediate node (here `git`, which has no CommandSpec of its
+        // own) must remain usable alone: `arg_required_else_help` rather
+        // than a silent failure if `npu git` is invoked without a
+        // subcommand.
         let specs = vec![spec(&["git", "review"], InputMode::Stdin)];
         let cli = build_cli(&specs);
-        let git = cli.find_subcommand("git").expect("git doit exister");
+        let git = cli.find_subcommand("git").expect("git must exist");
         assert!(git.is_arg_required_else_help_set());
     }
 
-    // -- arguments CLI déclarés (phase 3) --------------------------------------
+    // -- declared CLI arguments (phase 3) --------------------------------------
 
     #[test]
     fn declared_arg_becomes_clap_arg_with_short_required_help_and_value_name() {
@@ -595,11 +593,11 @@ mod tests {
         let cli = build_cli(&specs);
         let translate = cli
             .find_subcommand("translate")
-            .expect("translate doit exister");
+            .expect("translate must exist");
         let language = translate
             .get_arguments()
             .find(|arg| arg.get_id() == "language")
-            .expect("l'argument 'language' doit être présent");
+            .expect("the 'language' argument must be present");
 
         assert_eq!(language.get_short(), Some('l'));
         assert!(language.is_required_set());
@@ -620,11 +618,11 @@ mod tests {
         let specs = vec![spec_with_args(&["x"], InputMode::Stdin, args)];
 
         let cli = build_cli(&specs);
-        let x = cli.find_subcommand("x").expect("x doit exister");
+        let x = cli.find_subcommand("x").expect("x must exist");
         let unused = x
             .get_arguments()
             .find(|arg| arg.get_id() == "unused")
-            .expect("l'argument 'unused' doit être présent");
+            .expect("the 'unused' argument must be present");
 
         assert_eq!(unused.get_short(), None);
         assert!(!unused.is_required_set());
@@ -639,7 +637,7 @@ mod tests {
         let specs = vec![spec_with_args(&["x"], InputMode::Stdin, args)];
 
         let cli = build_cli(&specs);
-        let x = cli.find_subcommand("x").expect("x doit exister");
+        let x = cli.find_subcommand("x").expect("x must exist");
         let names: Vec<&str> = x
             .get_arguments()
             .map(|arg| arg.get_id().as_str())
@@ -655,12 +653,12 @@ mod tests {
         args.insert("language".to_string(), arg_spec(Some('l'), true, ""));
         let specs = vec![spec_with_args(&["translate"], InputMode::StdinOrFile, args)];
 
-        // `build_cli` ne doit pas paniquer (id dupliqué) : la construction
-        // seule est l'assertion.
+        // `build_cli` must not panic (duplicate id): the construction
+        // itself is the assertion.
         let cli = build_cli(&specs);
         let translate = cli
             .find_subcommand("translate")
-            .expect("translate doit exister");
+            .expect("translate must exist");
         assert!(translate.get_arguments().any(|arg| arg.get_id() == "FILE"));
         assert!(
             translate
@@ -677,7 +675,7 @@ mod tests {
         let cli = build_cli(&specs);
         let matches = cli
             .try_get_matches_from(["npu", "translate", "--language", "french"])
-            .expect("la ligne de commande doit être acceptée");
+            .expect("the command line must be accepted");
         let (_, leaf) = selected_path(&matches);
 
         let collected = collect_arg_values(&specs[0], leaf);
@@ -696,15 +694,15 @@ mod tests {
         let cli = build_cli(&specs);
         let matches = cli
             .try_get_matches_from(["npu", "x"])
-            .expect("la ligne de commande doit être acceptée sans l'argument non requis");
+            .expect("the command line must be accepted without the non-required argument");
         let (_, leaf) = selected_path(&matches);
 
         let collected = collect_arg_values(&specs[0], leaf);
 
         assert!(
             !collected.contains_key("unused"),
-            "un argument non fourni et non requis ne doit pas apparaître dans la map, \
-             pas de valeur par défaut (§11/§25)"
+            "an argument that is not supplied and not required must not appear in the map, \
+             no default value (§11/§25)"
         );
     }
 
@@ -719,7 +717,7 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "un argument requis manquant doit être rejeté par clap"
+            "a missing required argument must be rejected by clap"
         );
     }
 }

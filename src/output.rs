@@ -1,38 +1,36 @@
-//! Contrat de sortie structurée (phase 4, npu-cli-spec.md §15).
+//! Structured output contract (phase 4, npu-cli-spec.md §15).
 //!
-//! Pipeline (§15) : réponse brute du modèle → extraction d'une éventuelle
-//! clôture Markdown (`strip_fences`, format JSON uniquement) → parsing →
-//! validation JSON Schema si un schéma est déclaré → sérialisation compacte
-//! → stdout. Pour le format texte : trim, puis vérification optionnelle de
-//! `max_lines`.
+//! Pipeline (§15): raw model response → extraction of an optional Markdown
+//! fence (`strip_fences`, JSON format only) → parsing → JSON Schema
+//! validation if a schema is declared → compact serialization → stdout. For
+//! text format: trim, then optional `max_lines` check.
 //!
-//! Distinction de code de sortie (règle 1 du contrat partagé, §23 — le
-//! contrat machine dont un agent appelant dépend) : une réponse du modèle qui
-//! ne respecte pas le contrat déclaré est une [`crate::Error::Output`] (code
-//! 4, la configuration est valide, c'est le modèle qui a mal répondu) ; un
-//! fichier de schéma introuvable, illisible ou syntaxiquement invalide est une
-//! [`crate::Error::Config`] (code 2, c'est la configuration qui est cassée).
-//! Une sortie invalide n'est JAMAIS réparée ni retentée ici (§15 : c'est un
-//! échec d'exécution, pas quelque chose à rattraper — la reformulation/retry
-//! appartient à la phase 5, hors périmètre).
+//! Exit code distinction (rule 1 of the shared contract, §23 — the machine
+//! contract a calling agent depends on): a model response that does not
+//! honor the declared contract is a [`crate::Error::Output`] (code 4, the
+//! configuration is valid, it's the model that misbehaved); a schema file
+//! that is not found, unreadable, or syntactically invalid is a
+//! [`crate::Error::Config`] (code 2, it's the configuration that is broken).
+//! An invalid output is NEVER repaired nor retried here (§15: it's an
+//! execution failure, not something to catch — reformulation/retry belongs
+//! to phase 5, out of scope).
 //!
-//! Résolution du chemin de schéma (règle 3 du contrat partagé) : `OutputSpec.
-//! schema` porte un chemin DÉJÀ résolu (absolu, ou relatif au cwd) au moment
-//! où il atteint ce module — la résolution relative à la racine de scope de
-//! la commande (§4/§6 : `schemas/` est un dossier frère de `commands/`) est
-//! la responsabilité de l'appelant (`command.rs`), pas de `output.rs`, qui ne
-//! fait qu'ouvrir le chemin qu'on lui donne. Cette résolution (`command::
-//! resolve_schema_path`) est PUREMENT SYNTAXIQUE (revue L3) : elle ne touche
-//! jamais le disque. C'est donc CE module, dans `compile_schema`, qui
-//! découvre en premier — et seulement au moment où la commande qui le
-//! réclame est réellement invoquée — qu'un schéma est absent, illisible ou
-//! syntaxiquement invalide, alignant l'existence sur la compilation, toutes
-//! deux paresseuses.
+//! Schema path resolution (rule 3 of the shared contract): `OutputSpec.
+//! schema` carries a path that is ALREADY resolved (absolute, or relative to
+//! the cwd) by the time it reaches this module — resolution relative to the
+//! command's scope root (§4/§6: `schemas/` is a sibling directory of
+//! `commands/`) is the caller's responsibility (`command.rs`), not
+//! `output.rs`'s, which only opens the path it is given. This resolution
+//! (`command::resolve_schema_path`) is PURELY SYNTACTIC (L3 review): it
+//! never touches disk. So it is THIS module, in `compile_schema`, that first
+//! discovers — and only at the moment the command that requires it is
+//! actually invoked — that a schema is absent, unreadable, or syntactically
+//! invalid, aligning existence with compilation, both lazy.
 
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-/// Format de sortie déclaré par une commande (`[output].format`).
+/// Output format declared by a command (`[output].format`).
 #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Format {
@@ -41,15 +39,15 @@ pub enum Format {
     Json,
 }
 
-/// Contrat de sortie résolu pour une commande.
+/// Output contract resolved for a command.
 ///
-/// Construit par l'appelant (`command.rs`) à partir du frontmatter `[output]`
-/// — combinaisons interdites (règle 2 du contrat partagé : `schema` avec
-/// `format = "text"`, ou `max_lines` avec `format = "json"`) déjà rejetées
-/// avant que cette valeur n'existe. `finalize` ne revalide donc pas ces
-/// combinaisons : elle lit uniquement le champ pertinent au `format` en
-/// vigueur et ignore l'autre, ce qui reste sûr même si l'appelant ne
-/// respectait pas l'invariant (aucun champ non pertinent n'est jamais lu).
+/// Built by the caller (`command.rs`) from the `[output]` frontmatter —
+/// forbidden combinations (rule 2 of the shared contract: `schema` with
+/// `format = "text"`, or `max_lines` with `format = "json"`) are already
+/// rejected before this value exists. `finalize` therefore does not
+/// revalidate these combinations: it only reads the field relevant to the
+/// `format` in effect and ignores the other, which stays safe even if the
+/// caller did not honor the invariant (no irrelevant field is ever read).
 #[derive(Debug, Default)]
 pub struct OutputSpec {
     pub format: Format,
@@ -57,17 +55,16 @@ pub struct OutputSpec {
     pub max_lines: Option<usize>,
 }
 
-/// Nombre maximal de caractères conservés dans l'extrait de réponse cité par
-/// un message d'erreur de parsing JSON (règle 6 du contrat partagé : un
-/// extrait tronqué, pas la réponse entière). Compté en caractères, pas en
-/// octets, pour ne jamais couper au milieu d'un caractère multi-octets.
+/// Maximum number of characters kept in the response excerpt quoted by a
+/// JSON parsing error message (rule 6 of the shared contract: a truncated
+/// excerpt, not the whole response). Counted in characters, not bytes, to
+/// never cut in the middle of a multi-byte character.
 const EXCERPT_MAX_CHARS: usize = 200;
 
-/// Tronque `text` à au plus [`EXCERPT_MAX_CHARS`] caractères pour un message
-/// d'erreur, en ajoutant une ellipse si la réponse était plus longue.
-/// Itère par `char`, jamais par indice d'octet brut : un slicing naïf sur un
-/// texte accentué ou contenant un emoji paniquerait sur une frontière de
-/// caractère multi-octets.
+/// Truncates `text` to at most [`EXCERPT_MAX_CHARS`] characters for an error
+/// message, appending an ellipsis if the response was longer. Iterates by
+/// `char`, never by raw byte index: a naive slice on accented text or text
+/// containing an emoji would panic on a multi-byte character boundary.
 fn excerpt(text: &str) -> String {
     let mut truncated: String = text.chars().take(EXCERPT_MAX_CHARS).collect();
     if text.chars().count() > EXCERPT_MAX_CHARS {
@@ -76,29 +73,28 @@ fn excerpt(text: &str) -> String {
     truncated
 }
 
-/// Retire une clôture Markdown entourant la réponse du modèle, si présente.
+/// Removes a Markdown fence surrounding the model's response, if present.
 ///
-/// Les modèles entourent très souvent leur JSON de ` ``` ` ou de ` ```json `
-/// (règle 5 du contrat partagé). Cette fonction retire au plus UNE clôture
-/// ouvrante en tête et sa fermante en queue, avec une étiquette de langue
-/// optionnelle sur la ligne d'ouverture, en tolérant les espaces/retours à la
-/// ligne autour de l'ensemble (`str::trim` avant analyse). Elle ne touche à
-/// rien :
-/// - si le texte (une fois les espaces de tête/queue ignorés) ne commence pas
-///   par ` ``` ` ;
-/// - si la clôture d'ouverture n'a pas de fermante correspondante en fin de
-///   texte (« clôture ouvrante sans fermante ») ;
-/// - au milieu du texte : seules la première clôture (début) et la dernière
-///   (fin) sont considérées, jamais une clôture interne, qui est du contenu.
+/// Models very often wrap their JSON in ` ``` ` or ` ```json ` (rule 5 of
+/// the shared contract). This function removes at most ONE opening fence at
+/// the start and its matching closing fence at the end, with an optional
+/// language label on the opening line, tolerating whitespace/newlines
+/// around the whole thing (`str::trim` before analysis). It touches
+/// nothing:
+/// - if the text (once leading/trailing whitespace is ignored) does not
+///   start with ` ``` `;
+/// - if the opening fence has no matching closing fence at the end of the
+///   text ("opening fence without a closing one");
+/// - in the middle of the text: only the first fence (start) and the last
+///   (end) are considered, never an internal fence, which is content.
 ///
-/// Fonction pure et sans allocation : `raw.trim()` ne copie rien (il renvoie
-/// une sous-tranche de `raw`), et toutes les découpes ultérieures portent sur
-/// cette même tranche — le `&str` renvoyé est donc toujours emprunté à
-/// `raw`, jamais une `String` neuve. Chaque point de découpe est ancré sur un
-/// marqueur ASCII (` ``` `, `\n`) trouvé via `str::find`/`str::ends_with`,
-/// qui renvoient toujours une frontière de caractère valide : aucun risque de
-/// panique sur un contenu accentué ou contenant un emoji, où qu'il se trouve
-/// dans le texte.
+/// Pure, allocation-free function: `raw.trim()` copies nothing (it returns
+/// a sub-slice of `raw`), and all subsequent slicing operates on that same
+/// slice — the returned `&str` is therefore always borrowed from `raw`,
+/// never a fresh `String`. Every slice point is anchored on an ASCII marker
+/// (` ``` `, `\n`) found via `str::find`/`str::ends_with`, which always
+/// return a valid character boundary: no risk of panicking on accented
+/// content or content containing an emoji, wherever it occurs in the text.
 #[must_use]
 pub fn strip_fences(raw: &str) -> &str {
     const FENCE: &str = "```";
@@ -108,9 +104,9 @@ pub fn strip_fences(raw: &str) -> &str {
         return raw;
     }
 
-    // Ligne d'ouverture : `````` (étiquette de langue optionnelle) jusqu'au
-    // premier retour à la ligne. Sans retour à la ligne, il n'y a pas de
-    // corps distinct de la clôture d'ouverture elle-même : rien à retirer.
+    // Opening line: `````` (optional language label) up to the first
+    // newline. Without a newline, there is no body distinct from the
+    // opening fence itself: nothing to remove.
     let after_open = &s[FENCE.len()..];
     let Some(newline_offset) = after_open.find('\n') else {
         return raw;
@@ -122,17 +118,17 @@ pub fn strip_fences(raw: &str) -> &str {
     }
     let close_start = s.len() - FENCE.len();
 
-    // La clôture fermante doit être sur sa propre ligne : soit elle suit
-    // immédiatement la ligne d'ouverture (corps vide, `body_start ==
-    // close_start`), soit le caractère qui la précède est un `\n`. Sans cette
-    // vérification, un texte se terminant par ``` littéral au milieu d'une
-    // ligne de contenu serait pris pour une clôture.
+    // The closing fence must be on its own line: either it immediately
+    // follows the opening line (empty body, `body_start == close_start`),
+    // or the character preceding it is a `\n`. Without this check, text
+    // ending with a literal ``` in the middle of a content line would be
+    // mistaken for a fence.
     if close_start > body_start && !s[..close_start].ends_with('\n') {
         return raw;
     }
 
     let body_end = if close_start > body_start {
-        close_start - 1 // exclut le `\n` qui précède la clôture fermante
+        close_start - 1 // excludes the `\n` preceding the closing fence
     } else {
         close_start
     };
@@ -140,16 +136,16 @@ pub fn strip_fences(raw: &str) -> &str {
     s[body_start..body_end].trim()
 }
 
-/// Applique le contrat de sortie `spec` à la réponse brute `raw` du modèle et
-/// renvoie le texte EXACT à écrire sur stdout, sans retour à la ligne final
-/// (l'appelant l'ajoute — cf. `lib.rs`, `println!("{output}")`).
+/// Applies the output contract `spec` to the model's raw response `raw` and
+/// returns the EXACT text to write to stdout, without a trailing newline
+/// (the caller adds it — cf. `lib.rs`, `println!("{output}")`).
 ///
-/// `command_file` est le chemin du fichier de commande (`CommandSpec.file`,
-/// cf. `command.rs`) qui a produit `spec` — utilisé UNIQUEMENT pour nommer
-/// la commande fautive dans un message d'erreur si le schéma qu'elle réclame
-/// (branche JSON) s'avère absent, illisible ou syntaxiquement invalide au
-/// moment de cette invocation (`compile_schema`, plus bas). Ignoré par la
-/// branche texte, qui ne connaît pas de schéma.
+/// `command_file` is the path of the command file (`CommandSpec.file`, cf.
+/// `command.rs`) that produced `spec` — used ONLY to name the offending
+/// command in an error message if the schema it requires (JSON branch)
+/// turns out to be absent, unreadable, or syntactically invalid at the
+/// moment of this invocation (`compile_schema`, below). Ignored by the text
+/// branch, which knows nothing of a schema.
 pub fn finalize(spec: &OutputSpec, raw: &str, command_file: &Path) -> crate::Result<String> {
     match spec.format {
         Format::Text => finalize_text(spec.max_lines, raw),
@@ -157,15 +153,15 @@ pub fn finalize(spec: &OutputSpec, raw: &str, command_file: &Path) -> crate::Res
     }
 }
 
-/// Applique le contrat `format = "text"` (règle 7 du contrat partagé) :
-/// aucune clôture retirée, aucun parsing. La réponse est trimée des espaces
-/// en tête et en queue. Si `max_lines` est déclaré et que la réponse compte
-/// plus de lignes NON VIDES (après trim) que cette limite, échec —
-/// `Error::Output` indiquant le nombre attendu et le nombre reçu, jamais une
-/// troncature silencieuse (§15 : échec, pas réparation). Les lignes vides
-/// (uniquement des espaces, ou totalement vides) ne comptent pas dans le
-/// total comparé à la limite, mais restent dans le texte renvoyé : seul le
-/// trim global (tête/queue) modifie la réponse elle-même.
+/// Applies the `format = "text"` contract (rule 7 of the shared contract):
+/// no fence removed, no parsing. The response is trimmed of leading and
+/// trailing whitespace. If `max_lines` is declared and the response has
+/// more NON-EMPTY lines (after trim) than this limit, failure —
+/// `Error::Output` stating the expected count and the received count, never
+/// a silent truncation (§15: failure, not repair). Empty lines (whitespace
+/// only, or fully empty) do not count towards the total compared to the
+/// limit, but remain in the returned text: only the global trim
+/// (leading/trailing) modifies the response itself.
 fn finalize_text(max_lines: Option<usize>, raw: &str) -> crate::Result<String> {
     let trimmed = raw.trim();
 
@@ -176,8 +172,8 @@ fn finalize_text(max_lines: Option<usize>, raw: &str) -> crate::Result<String> {
             .count();
         if non_empty_lines > limit {
             return Err(crate::Error::Output(format!(
-                "sortie texte : au plus {limit} ligne(s) non vide(s) attendue(s) (max_lines), \
-                 {non_empty_lines} reçue(s)"
+                "text output: at most {limit} non-empty line(s) expected (max_lines), \
+                 {non_empty_lines} received"
             )));
         }
     }
@@ -185,71 +181,71 @@ fn finalize_text(max_lines: Option<usize>, raw: &str) -> crate::Result<String> {
     Ok(trimmed.to_string())
 }
 
-/// Applique le contrat `format = "json"` (règles 5/6 du contrat partagé) :
-/// extraction d'une éventuelle clôture Markdown ([`strip_fences`]), parsing
-/// (`serde_json` — échec => `Error::Output` citant l'erreur de parsing et un
-/// extrait tronqué de la réponse), puis validation contre le schéma s'il y en
-/// a un (échec => `Error::Output` listant CHAQUE violation, jamais seulement
-/// la première). La valeur renvoyée sur stdout est la sérialisation COMPACTE
-/// de la valeur parsée, pour que stdout reste du JSON valide quel que soit
-/// l'emballage que le modèle a mis autour (§22 : `npu classify | jq .`).
+/// Applies the `format = "json"` contract (rules 5/6 of the shared
+/// contract): extraction of an optional Markdown fence ([`strip_fences`]),
+/// parsing (`serde_json` — failure => `Error::Output` citing the parsing
+/// error and a truncated excerpt of the response), then validation against
+/// the schema if there is one (failure => `Error::Output` listing EVERY
+/// violation, never just the first). The value returned on stdout is the
+/// COMPACT serialization of the parsed value, so stdout stays valid JSON
+/// regardless of the wrapping the model put around it (§22: `npu classify |
+/// jq .`).
 fn finalize_json(schema: Option<&Path>, raw: &str, command_file: &Path) -> crate::Result<String> {
     let candidate = strip_fences(raw);
 
     let value: serde_json::Value = serde_json::from_str(candidate).map_err(|err| {
         crate::Error::Output(format!(
-            "sortie JSON invalide : {err} ; réponse reçue (extrait) : « {} »",
+            "invalid JSON output: {err}; response received (excerpt): \"{}\"",
             excerpt(candidate.trim())
         ))
     })?;
 
     if let Some(schema_path) = schema {
-        // PARESSEUX PAR CONCEPTION (règle 4 du contrat partagé) : ce schéma
-        // n'est compilé que parce que la commande réellement invoquée le
-        // déclare, jamais au chargement de la configuration ni pour les
-        // schémas d'autres commandes du même scope. Même leçon que la revue
-        // L3 de la phase 2 (un backend/modèle cassé masqué par un scope plus
-        // local n'est jamais lu) : un schéma cassé appartenant à une commande
-        // que personne n'invoque ne doit pas rendre le CLI inutilisable. La
-        // vérification exhaustive de tous les schémas est le travail de
-        // `npu doctor` (phase 5, hors périmètre ici). Depuis la revue L3 de
-        // CETTE phase, l'EXISTENCE du schéma est paresseuse au même titre que
-        // sa compilation (cf. doc de `command::resolve_schema_path`) : c'est
-        // ICI, et seulement ici, que `compile_schema` peut découvrir un
-        // fichier absent, illisible ou syntaxiquement invalide.
+        // LAZY BY DESIGN (rule 4 of the shared contract): this schema is
+        // only compiled because the command actually invoked declares it,
+        // never at configuration load time nor for schemas of other
+        // commands in the same scope. Same lesson as the phase 2 L3 review
+        // (a broken backend/model shadowed by a more local scope is never
+        // read): a broken schema belonging to a command that nobody invokes
+        // must not make the CLI unusable. Exhaustively checking all schemas
+        // is `npu doctor`'s job (phase 5, out of scope here). Since this
+        // phase's L3 review, the EXISTENCE of the schema is lazy in the
+        // same way as its compilation (cf. `command::resolve_schema_path`'s
+        // doc): it is HERE, and only here, that `compile_schema` can
+        // discover a file that is absent, unreadable, or syntactically
+        // invalid.
         let validator = compile_schema(schema_path, command_file)?;
         validate_against_schema(&validator, &value)?;
     }
 
-    serde_json::to_string(&value).map_err(|err| {
-        crate::Error::Output(format!("échec de sérialisation de la sortie JSON : {err}"))
-    })
+    serde_json::to_string(&value)
+        .map_err(|err| crate::Error::Output(format!("JSON output serialization failed: {err}")))
 }
 
-/// Compile le schéma JSON situé à `path` en un validateur réutilisable.
+/// Compiles the JSON schema located at `path` into a reusable validator.
 ///
-/// Un fichier introuvable ou illisible, ou un JSON Schema syntaxiquement
-/// invalide, est une `Error::Config` : la CONFIGURATION est cassée, pas la
-/// réponse du modèle (règle 1 du contrat partagé). `path` est déjà résolu
-/// par l'appelant (cf. doc de module) : ouvert tel quel, relatif au cwd du
-/// processus s'il n'est pas absolu — comme le ferait n'importe quel autre
-/// fichier lu par ce crate (`std::fs::read_to_string`).
+/// A file that is not found or unreadable, or a JSON Schema that is
+/// syntactically invalid, is an `Error::Config`: the CONFIGURATION is
+/// broken, not the model's response (rule 1 of the shared contract). `path`
+/// is already resolved by the caller (cf. module doc): opened as-is,
+/// relative to the process's cwd if not absolute — like any other file read
+/// by this crate (`std::fs::read_to_string`).
 ///
-/// `command_file` (revue L3, correctif 1) est le fichier de commande qui a
-/// déclaré ce schéma (`CommandSpec.file`, cf. `command.rs`) : nommé dans
-/// chacun des trois messages d'erreur ci-dessous, EN PLUS du chemin résolu
-/// du schéma. Depuis que `command::resolve_schema_path` ne vérifie plus rien
-/// au disque, c'est cette fonction, et seulement elle, qui découvre un
-/// schéma absent, illisible ou cassé — au moment de l'exécution réelle de la
-/// commande qui le réclame, jamais avant.
+/// `command_file` (L3 review, fix 1) is the command file that declared this
+/// schema (`CommandSpec.file`, cf. `command.rs`): named in each of the
+/// three error messages below, IN ADDITION TO the resolved schema path.
+/// Since `command::resolve_schema_path` no longer checks anything on disk,
+/// it is this function, and only this function, that discovers a schema
+/// that is absent, unreadable, or broken — at the moment the command that
+/// requires it is actually executed, never before.
 pub(crate) fn compile_schema(
     path: &Path,
     command_file: &Path,
 ) -> crate::Result<jsonschema::Validator> {
     let text = std::fs::read_to_string(path).map_err(|err| {
         crate::Error::Config(format!(
-            "schéma de sortie « {} », déclaré par le fichier de commande « {} », introuvable \
-             ou illisible : {err}",
+            "output schema \"{}\", declared by command file \"{}\", not found \
+             or unreadable: {err}",
             path.display(),
             command_file.display()
         ))
@@ -257,8 +253,8 @@ pub(crate) fn compile_schema(
 
     let document: serde_json::Value = serde_json::from_str(&text).map_err(|err| {
         crate::Error::Config(format!(
-            "schéma de sortie « {} », déclaré par le fichier de commande « {} » : JSON \
-             invalide : {err}",
+            "output schema \"{}\", declared by command file \"{}\": invalid \
+             JSON: {err}",
             path.display(),
             command_file.display()
         ))
@@ -266,7 +262,7 @@ pub(crate) fn compile_schema(
 
     jsonschema::validator_for(&document).map_err(|err| {
         crate::Error::Config(format!(
-            "schéma de sortie « {} », déclaré par le fichier de commande « {} », invalide : \
+            "output schema \"{}\", declared by command file \"{}\", invalid: \
              {err}",
             path.display(),
             command_file.display()
@@ -274,13 +270,13 @@ pub(crate) fn compile_schema(
     })
 }
 
-/// Valide `value` contre `validator` et renvoie une `Error::Output` listant
-/// CHAQUE violation (chemin JSON fautif + raison), jamais seulement la
-/// première (règle 6 du contrat partagé) : un utilisateur doit pouvoir
-/// corriger son prompt en une seule passe plutôt que de relancer la commande
-/// à chaque violation découverte. Même style actionnable que
-/// `config::validate_backend`/`error::format_available` : chemin entre
-/// guillemets français, message d'erreur nommé.
+/// Validates `value` against `validator` and returns an `Error::Output`
+/// listing EVERY violation (offending JSON path + reason), never just the
+/// first (rule 6 of the shared contract): a user should be able to fix
+/// their prompt in a single pass rather than rerunning the command for
+/// every violation discovered one at a time. Same actionable style as
+/// `config::validate_backend`/`error::format_available`: path in quotes,
+/// named error message.
 fn validate_against_schema(
     validator: &jsonschema::Validator,
     value: &serde_json::Value,
@@ -290,9 +286,9 @@ fn validate_against_schema(
         .map(|error| {
             let path = error.instance_path();
             if path.is_empty() {
-                format!("- (racine) : {error}")
+                format!("- (root): {error}")
             } else {
-                format!("- {path} : {error}")
+                format!("- {path}: {error}")
             }
         })
         .collect();
@@ -302,21 +298,21 @@ fn validate_against_schema(
     }
 
     Err(crate::Error::Output(format!(
-        "sortie JSON invalide au regard du schéma ({} violation(s)) :\n{}",
+        "invalid JSON output against schema ({} violation(s)):\n{}",
         violations.len(),
         violations.join("\n")
     )))
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)] // toléré dans les tests (cf. Cargo.toml [lints.clippy]).
+#[allow(clippy::expect_used)] // tolerated in tests (cf. Cargo.toml [lints.clippy]).
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// Crée un fichier de fixture unique sous `target/`, même idiome que
-    /// `command::tests::fixture_dir` : pas de pollution du dépôt, pas de
-    /// collision entre tests exécutés en parallèle.
+    /// Creates a unique fixture file under `target/`, same idiom as
+    /// `command::tests::fixture_dir`: no pollution of the repo, no
+    /// collision between tests running in parallel.
     fn fixture_file(name: &str, contents: &str) -> std::path::PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -324,18 +320,17 @@ mod tests {
             .join("target")
             .join("test-fixtures")
             .join("output");
-        std::fs::create_dir_all(&dir).expect("création du dossier de fixture");
+        std::fs::create_dir_all(&dir).expect("creating the fixture directory");
         let file = dir.join(format!("{name}-{n}.json"));
-        std::fs::write(&file, contents).expect("écriture fixture");
+        std::fs::write(&file, contents).expect("writing fixture");
         file
     }
 
-    /// Fichier de commande factice passé à `finalize` par les tests de ce
-    /// module : sa seule contrainte est d'être un chemin stable, jamais lu
-    /// ni ouvert par `finalize`/`finalize_json` elles-mêmes (seul
-    /// `compile_schema`, sur la branche schéma cassé/absent, l'utilise — et
-    /// uniquement pour le CITER dans le message d'erreur, jamais pour
-    /// l'ouvrir).
+    /// Placeholder command file passed to `finalize` by this module's
+    /// tests: its only constraint is to be a stable path, never read nor
+    /// opened by `finalize`/`finalize_json` themselves (only
+    /// `compile_schema`, on the broken/missing schema branch, uses it — and
+    /// only to CITE it in the error message, never to open it).
     fn test_command_file() -> std::path::PathBuf {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join(".npu")
@@ -370,7 +365,7 @@ mod tests {
 
     #[test]
     fn strip_fences_does_not_touch_a_fence_in_the_middle() {
-        let text = "Voici le résultat : ``` pas une clôture d'enveloppe ``` fin.";
+        let text = "Here is the result: ``` not a wrapping fence ``` end.";
         assert_eq!(strip_fences(text), text);
     }
 
@@ -388,7 +383,7 @@ mod tests {
 
     #[test]
     fn strip_fences_accented_text_without_fence_does_not_panic() {
-        let text = "Résumé : café à Montréal 🎉, sans clôture du tout.";
+        let text = "Summary: café à Montréal 🎉, no fence at all.";
         assert_eq!(strip_fences(text), text);
     }
 
@@ -401,9 +396,9 @@ mod tests {
             schema: None,
             max_lines: None,
         };
-        let out = finalize(&spec, "  \n  bonjour le monde  \n\n", &test_command_file())
-            .expect("doit réussir");
-        assert_eq!(out, "bonjour le monde");
+        let out =
+            finalize(&spec, "  \n  hello world  \n\n", &test_command_file()).expect("must succeed");
+        assert_eq!(out, "hello world");
     }
 
     #[test]
@@ -413,8 +408,8 @@ mod tests {
             schema: None,
             max_lines: Some(2),
         };
-        let out = finalize(&spec, "ligne 1\nligne 2", &test_command_file()).expect("doit réussir");
-        assert_eq!(out, "ligne 1\nligne 2");
+        let out = finalize(&spec, "line 1\nline 2", &test_command_file()).expect("must succeed");
+        assert_eq!(out, "line 1\nline 2");
     }
 
     #[test]
@@ -424,8 +419,7 @@ mod tests {
             schema: None,
             max_lines: Some(1),
         };
-        let err =
-            finalize(&spec, "ligne 1\nligne 2", &test_command_file()).expect_err("doit échouer");
+        let err = finalize(&spec, "line 1\nline 2", &test_command_file()).expect_err("must fail");
         assert!(matches!(err, crate::Error::Output(_)));
     }
 
@@ -436,11 +430,11 @@ mod tests {
             schema: None,
             max_lines: Some(2),
         };
-        // 2 lignes non vides, 2 lignes vides (dont une avec seulement des
-        // espaces) : ne doit pas dépasser max_lines = 2.
-        let out = finalize(&spec, "ligne 1\n\nligne 2\n   \n", &test_command_file())
-            .expect("doit réussir");
-        assert_eq!(out, "ligne 1\n\nligne 2");
+        // 2 non-empty lines, 2 empty lines (one of which has only
+        // whitespace): must not exceed max_lines = 2.
+        let out =
+            finalize(&spec, "line 1\n\nline 2\n   \n", &test_command_file()).expect("must succeed");
+        assert_eq!(out, "line 1\n\nline 2");
     }
 
     #[test]
@@ -451,7 +445,7 @@ mod tests {
             max_lines: None,
         };
         let out =
-            finalize(&spec, "l1\nl2\nl3\nl4\nl5", &test_command_file()).expect("doit réussir");
+            finalize(&spec, "l1\nl2\nl3\nl4\nl5", &test_command_file()).expect("must succeed");
         assert_eq!(out, "l1\nl2\nl3\nl4\nl5");
     }
 
@@ -465,7 +459,7 @@ mod tests {
             max_lines: None,
         };
         let out =
-            finalize(&spec, "{\n  \"a\": 1\n}\n", &test_command_file()).expect("doit réussir");
+            finalize(&spec, "{\n  \"a\": 1\n}\n", &test_command_file()).expect("must succeed");
         assert_eq!(out, "{\"a\":1}");
     }
 
@@ -481,7 +475,7 @@ mod tests {
             "```json\n{\"a\": 1, \"b\": 2}\n```",
             &test_command_file(),
         )
-        .expect("doit réussir");
+        .expect("must succeed");
         assert_eq!(out, "{\"a\":1,\"b\":2}");
     }
 
@@ -492,44 +486,42 @@ mod tests {
             schema: None,
             max_lines: None,
         };
-        let err =
-            finalize(&spec, "pas du JSON du tout", &test_command_file()).expect_err("doit échouer");
+        let err = finalize(&spec, "not JSON at all", &test_command_file()).expect_err("must fail");
         assert!(matches!(err, crate::Error::Output(_)));
     }
 
     #[test]
     fn json_invalid_error_excerpt_truncates_long_multibyte_response_without_panicking() {
-        // La branche de troncature d'`excerpt` (`chars().count() >
-        // EXCERPT_MAX_CHARS`) n'était exercée par aucun test : le seul cas
-        // existant (`json_invalid_is_output_error`) est une chaîne ASCII de
-        // vingt caractères, bien en deçà de `EXCERPT_MAX_CHARS` (200). Ce
-        // test force la troncature avec une réponse accentuée/emoji de plus
-        // de 200 CARACTÈRES (mais bien plus de 200 OCTETS, chaque « é »
-        // pesant deux octets et l'emoji quatre) : un slicing naïf sur un
-        // indice d'octet paniquerait ici, alors qu'`excerpt` itère par
-        // `char` (cf. sa doc). La réponse entière n'est délibérément pas du
-        // JSON valide, pour emprunter le chemin d'erreur qui appelle
-        // `excerpt`.
+        // The truncation branch of `excerpt` (`chars().count() >
+        // EXCERPT_MAX_CHARS`) was not exercised by any test: the only
+        // existing case (`json_invalid_is_output_error`) is a twenty
+        // character ASCII string, well below `EXCERPT_MAX_CHARS` (200).
+        // This test forces the truncation with an accented/emoji response
+        // of more than 200 CHARACTERS (but far more than 200 BYTES, each
+        // "é" weighing two bytes and the emoji four): a naive slice on a
+        // byte index would panic here, whereas `excerpt` iterates by
+        // `char` (cf. its doc). The whole response is deliberately not
+        // valid JSON, to take the error path that calls `excerpt`.
         let spec = OutputSpec {
             format: Format::Json,
             schema: None,
             max_lines: None,
         };
-        // Des emojis (4 octets chacun) plutôt que des « é » (2 octets) :
-        // avec un pas de 2 octets, une régression qui slicerait par indice
-        // d'octet a une chance sur deux de retomber quand même sur une
-        // frontière valide au décalage `EXCERPT_MAX_CHARS` précis et de ne
-        // PAS paniquer malgré le bogue (vérifié empiriquement en mutant
-        // `excerpt` pendant l'écriture de ce test) ; un pas de 4 octets
-        // rend cette coïncidence bien moins probable.
-        let long_response = format!("pas du JSON : {}", "🎉".repeat(250));
+        // Emojis (4 bytes each) rather than "é" (2 bytes): with a 2-byte
+        // step, a regression that sliced by byte index would have a
+        // fifty-fifty chance of still landing on a valid boundary at the
+        // exact `EXCERPT_MAX_CHARS` offset and NOT panicking despite the
+        // bug (empirically verified by mutating `excerpt` while writing
+        // this test); a 4-byte step makes this coincidence far less
+        // likely.
+        let long_response = format!("not JSON: {}", "🎉".repeat(250));
         assert!(
             long_response.chars().count() > EXCERPT_MAX_CHARS,
-            "la fixture doit dépasser EXCERPT_MAX_CHARS pour exercer la troncature"
+            "the fixture must exceed EXCERPT_MAX_CHARS to exercise the truncation"
         );
 
         let err = finalize(&spec, &long_response, &test_command_file())
-            .expect_err("doit échouer, ce n'est pas du JSON");
+            .expect_err("must fail, this is not JSON");
         assert!(matches!(err, crate::Error::Output(_)));
     }
 
@@ -545,10 +537,10 @@ mod tests {
             "{\"a\":   1,\n\"b\":   [1, 2, 3]\n}",
             &test_command_file(),
         )
-        .expect("doit réussir");
+        .expect("must succeed");
         assert!(
             !out.contains('\n'),
-            "la sortie compacte ne doit pas contenir de retour à la ligne, obtenu : {out}"
+            "the compact output must not contain a newline, got: {out}"
         );
         assert_eq!(out, "{\"a\":1,\"b\":[1,2,3]}");
     }
@@ -577,7 +569,7 @@ mod tests {
             "{\"category\": \"bug\", \"confidence\": 0.9}",
             &test_command_file(),
         )
-        .expect("doit réussir contre un schéma satisfait");
+        .expect("must succeed against a satisfied schema");
         assert_eq!(out, "{\"category\":\"bug\",\"confidence\":0.9}");
     }
 
@@ -600,10 +592,10 @@ mod tests {
             schema: Some(schema_path),
             max_lines: None,
         };
-        // « confidence » manquant (required) ET « category » du mauvais type :
-        // deux violations distinctes.
+        // "confidence" missing (required) AND "category" of the wrong type:
+        // two distinct violations.
         let err =
-            finalize(&spec, "{\"category\": 42}", &test_command_file()).expect_err("doit échouer");
+            finalize(&spec, "{\"category\": 42}", &test_command_file()).expect_err("must fail");
         assert!(matches!(err, crate::Error::Output(_)));
     }
 
@@ -619,29 +611,29 @@ mod tests {
             schema: Some(missing),
             max_lines: None,
         };
-        let err = finalize(&spec, "{\"a\": 1}", &test_command_file()).expect_err("doit échouer");
+        let err = finalize(&spec, "{\"a\": 1}", &test_command_file()).expect_err("must fail");
         assert!(
             matches!(err, crate::Error::Config(_)),
-            "un schéma introuvable est une erreur de CONFIGURATION, pas de sortie : {err:?}"
+            "a schema that is not found is a CONFIGURATION error, not an output one: {err:?}"
         );
     }
 
     #[test]
     fn schema_file_invalid_json_is_config_error() {
-        let schema_path = fixture_file("broken-schema", "pas du JSON");
+        let schema_path = fixture_file("broken-schema", "not JSON");
         let spec = OutputSpec {
             format: Format::Json,
             schema: Some(schema_path),
             max_lines: None,
         };
-        let err = finalize(&spec, "{\"a\": 1}", &test_command_file()).expect_err("doit échouer");
+        let err = finalize(&spec, "{\"a\": 1}", &test_command_file()).expect_err("must fail");
         assert!(
             matches!(err, crate::Error::Config(_)),
-            "un schéma syntaxiquement invalide est une erreur de CONFIGURATION : {err:?}"
+            "a syntactically invalid schema is a CONFIGURATION error: {err:?}"
         );
     }
 
-    // -- code de sortie ---------------------------------------------------------
+    // -- exit code ---------------------------------------------------------
 
     #[test]
     fn output_error_exit_code_is_four() {
@@ -650,7 +642,7 @@ mod tests {
             schema: None,
             max_lines: Some(0),
         };
-        let err = finalize(&spec, "une ligne", &test_command_file()).expect_err("doit échouer");
+        let err = finalize(&spec, "one line", &test_command_file()).expect_err("must fail");
         assert!(matches!(err, crate::Error::Output(_)));
         assert_eq!(err.exit_code(), 4);
     }

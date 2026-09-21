@@ -1,15 +1,15 @@
-//! Chargement de la configuration : backends et modèles.
+//! Configuration loading: backends and models.
 //!
-//! `load` charge un scope unique (cf. IMPLEMENTATION.md §2, phase 1).
-//! `load_scopes` compose plusieurs scopes en couches (phase 2, décision 3) :
-//! remplacement par `id`, le scope le plus local gagnant intégralement — pas
-//! de fusion champ par champ (cf. npu-cli-spec.md §5).
+//! `load` loads a single scope (cf. IMPLEMENTATION.md §2, phase 1).
+//! `load_scopes` composes several scopes in layers (phase 2, decision 3):
+//! replacement by `id`, with the most local scope winning entirely — no
+//! field-by-field merge (cf. npu-cli-spec.md §5).
 
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Une opération HTTP exposée par un backend (ex. `chat`).
+/// An HTTP operation exposed by a backend (e.g. `chat`).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Operation {
@@ -17,19 +17,19 @@ pub struct Operation {
     pub path: String,
 }
 
-/// Un backend IA configuré dans `backends/*.toml`.
+/// An AI backend configured in `backends/*.toml`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Backend {
     pub id: String,
     pub base_url: String,
-    /// Champ TOML `type` (mot réservé Rust), ex. `"openai-compatible"`.
+    /// TOML field `type` (a reserved Rust word), e.g. `"openai-compatible"`.
     #[serde(rename = "type")]
     pub kind: String,
     pub operations: HashMap<String, Operation>,
 }
 
-/// Paramètres de génération optionnels d'un modèle.
+/// Optional generation parameters for a model.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Generation {
@@ -37,7 +37,7 @@ pub struct Generation {
     pub max_tokens: Option<u32>,
 }
 
-/// Un modèle configuré dans `models/*.toml`, référençant un backend.
+/// A model configured in `models/*.toml`, referencing a backend.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Model {
@@ -49,34 +49,34 @@ pub struct Model {
     pub generation: Generation,
 }
 
-/// Seul type de backend supporté en phase 1 (cf. npu-cli-spec.md §7).
+/// Only backend type supported in phase 1 (cf. npu-cli-spec.md §7).
 ///
-/// Un backend déclarant un autre `type` serait, faute de validation, traité
-/// silencieusement comme `openai-compatible` par `backend.rs` : on rejette au
-/// chargement plutôt que d'ignorer la valeur (cf. revue L3).
+/// A backend declaring a different `type` would, absent validation, be
+/// silently treated as `openai-compatible` by `backend.rs`: we reject it at
+/// load time rather than ignore the value (cf. review L3).
 const SUPPORTED_BACKEND_KIND: &str = "openai-compatible";
 
-/// Seule méthode HTTP supportée en phase 1 : `backend.rs` code `client.post()`
-/// en dur (cf. npu-cli-spec.md §7). Une `Operation.method` différente serait
-/// donc silencieusement ignorée sans cette validation (cf. revue L3).
+/// Only HTTP method supported in phase 1: `backend.rs` hardcodes
+/// `client.post()` (cf. npu-cli-spec.md §7). A different `Operation.method`
+/// would therefore be silently ignored without this validation (cf. review
+/// L3).
 const SUPPORTED_METHOD: &str = "POST";
 
-/// Valide qu'un backend chargé ne déclare que des propriétés honorées en
-/// phase 1 : `type = "openai-compatible"` et `method = "POST"` pour chacune
-/// de ses opérations. Toute autre valeur est une erreur de configuration
-/// détectée au chargement, pas une fonctionnalité à implémenter.
+/// Validates that a loaded backend only declares properties honored in
+/// phase 1: `type = "openai-compatible"` and `method = "POST"` for each of
+/// its operations. Any other value is a configuration error detected at
+/// load time, not a feature to implement.
 ///
-/// Tourne APRÈS la fusion des scopes (cf. `load_scopes`), sur les entrées
-/// survivantes uniquement : un backend invalide d'un scope général,
-/// intégralement remplacé par un scope plus local, ne doit jamais atteindre
-/// cette fonction (cf. revue L3, phase 2). `source` est le chemin du fichier
-/// dont vient l'entrée survivante, pour que le message nomme le fichier que
-/// l'utilisateur doit effectivement corriger.
+/// Runs AFTER scope merging (cf. `load_scopes`), on surviving entries only:
+/// an invalid backend from a general scope, entirely replaced by a more
+/// local scope, must never reach this function (cf. review L3, phase 2).
+/// `source` is the path of the file the surviving entry comes from, so that
+/// the message names the file the user must actually fix.
 fn validate_backend(backend: &Backend, source: &Path) -> crate::Result<()> {
     if backend.kind != SUPPORTED_BACKEND_KIND {
         return Err(crate::Error::Config(format!(
-            "{} : backend « {} » : type « {} » non supporté (seul « {SUPPORTED_BACKEND_KIND} » \
-             est supporté en phase 1)",
+            "{}: backend \"{}\": type \"{}\" not supported (only \"{SUPPORTED_BACKEND_KIND}\" \
+             is supported in phase 1)",
             source.display(),
             backend.id,
             backend.kind
@@ -86,8 +86,8 @@ fn validate_backend(backend: &Backend, source: &Path) -> crate::Result<()> {
     for (operation_name, operation) in &backend.operations {
         if !operation.method.eq_ignore_ascii_case(SUPPORTED_METHOD) {
             return Err(crate::Error::Config(format!(
-                "{} : backend « {} », opération « {operation_name} » : méthode « {} » non \
-                 supportée (seule « {SUPPORTED_METHOD} » est supportée en phase 1)",
+                "{}: backend \"{}\", operation \"{operation_name}\": method \"{}\" not \
+                 supported (only \"{SUPPORTED_METHOD}\" is supported in phase 1)",
                 source.display(),
                 backend.id,
                 operation.method
@@ -98,37 +98,36 @@ fn validate_backend(backend: &Backend, source: &Path) -> crate::Result<()> {
     Ok(())
 }
 
-/// Configuration résolue : backends et modèles indexés par leur `id`.
+/// Resolved configuration: backends and models indexed by their `id`.
 #[derive(Debug, Default)]
 pub struct Config {
     pub backends: HashMap<String, Backend>,
     pub models: HashMap<String, Model>,
 }
 
-/// Charge et désérialise chaque fichier `*.toml` de `dir`, indexé par la clé `id`
-/// que produit `key_of` sur la valeur désérialisée. Chaque entrée est
-/// accompagnée du chemin du fichier dont elle vient, pour que le scope le
-/// plus local puisse transporter son origine jusqu'à la validation
-/// sémantique qui tourne après la fusion (cf. `load_scopes`).
+/// Loads and deserializes each `*.toml` file in `dir`, indexed by the `id`
+/// key that `key_of` produces from the deserialized value. Each entry is
+/// paired with the path of the file it comes from, so that the most local
+/// scope can carry its origin through to the semantic validation that runs
+/// after the merge (cf. `load_scopes`).
 ///
-/// Un dossier absent produit une `HashMap` vide (ce n'est pas une erreur). Un
-/// fichier illisible ou un TOML invalide produit une `Error::Config` qui
-/// mentionne le chemin du fichier fautif — cette erreur de PARSING reste
-/// fatale dans tous les scopes, contrairement à la validation sémantique :
-/// avant que `key_of` ait pu être appelée, l'identité de l'entrée (donc la
-/// question « est-elle masquée ? ») n'est pas connaissable (cf. revue L3,
-/// phase 2).
+/// A missing directory produces an empty `HashMap` (this is not an error).
+/// An unreadable file or invalid TOML produces an `Error::Config` that
+/// mentions the path of the offending file — this PARSING error remains
+/// fatal in every scope, unlike semantic validation: before `key_of` could
+/// be called, the entry's identity (and thus the question "is it
+/// shadowed?") is not knowable (cf. review L3, phase 2).
 ///
-/// Deux fichiers de `dir` qui déclarent le même `id` sont une ambiguïté de
-/// configuration, pas une intention (cf. revue L3) : `Error::Config` nomme
-/// l'identifiant en double et les deux chemins de fichiers concernés. Les
-/// entrées du dossier sont triées avant lecture pour que ce diagnostic (quel
-/// fichier est « le premier », quel fichier est « le doublon ») soit
-/// déterministe plutôt que dépendant de l'ordre du système de fichiers.
+/// Two files in `dir` declaring the same `id` are a configuration
+/// ambiguity, not an intention (cf. review L3): `Error::Config` names the
+/// duplicated identifier and both file paths involved. The directory's
+/// entries are sorted before reading so that this diagnostic (which file is
+/// "the first", which file is "the duplicate") is deterministic rather than
+/// dependent on filesystem order.
 ///
-/// Cette contrainte ne vaut qu'à l'intérieur de `dir` : `load_scopes` fusionne
-/// plusieurs appels à cette fonction (un par scope) où le remplacement par
-/// `id` est précisément la fonctionnalité demandée, pas une ambiguïté.
+/// This constraint only holds within `dir`: `load_scopes` merges several
+/// calls to this function (one per scope), where replacement by `id` is
+/// precisely the requested feature, not an ambiguity.
 fn load_toml_dir<T, F>(dir: &Path, key_of: F) -> crate::Result<HashMap<String, (T, PathBuf)>>
 where
     T: for<'de> Deserialize<'de>,
@@ -142,7 +141,7 @@ where
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
         Err(err) => {
             return Err(crate::Error::Config(format!(
-                "impossible de lire le dossier {} : {err}",
+                "cannot read directory {}: {err}",
                 dir.display()
             )));
         }
@@ -152,7 +151,7 @@ where
     for entry in entries {
         let entry = entry.map_err(|err| {
             crate::Error::Config(format!(
-                "impossible de lire une entrée du dossier {} : {err}",
+                "cannot read a directory entry from {}: {err}",
                 dir.display()
             ))
         })?;
@@ -165,21 +164,18 @@ where
 
     for path in paths {
         let contents = std::fs::read_to_string(&path).map_err(|err| {
-            crate::Error::Config(format!(
-                "impossible de lire le fichier {} : {err}",
-                path.display()
-            ))
+            crate::Error::Config(format!("cannot read file {}: {err}", path.display()))
         })?;
         let value: T = toml::from_str(&contents).map_err(|err| {
-            crate::Error::Config(format!("TOML invalide dans {} : {err}", path.display()))
+            crate::Error::Config(format!("invalid TOML in {}: {err}", path.display()))
         })?;
         let key = key_of(&value);
 
         if let Some(previous_path) = sources.get(&key) {
             return Err(crate::Error::Config(format!(
-                "identifiant « {key} » défini plusieurs fois dans le même scope : {} et {} \
-                 (dans un même scope, chaque identifiant doit être unique ; entre scopes, la \
-                 redéfinition est la fonctionnalité attendue)",
+                "identifier \"{key}\" defined multiple times in the same scope: {} and {} \
+                 (within a single scope, each identifier must be unique; across scopes, \
+                 redefinition is the expected feature)",
                 previous_path.display(),
                 path.display()
             )));
@@ -192,41 +188,39 @@ where
     Ok(out)
 }
 
-/// Charge `<root>/backends/*.toml` et `<root>/models/*.toml` : un simple
-/// mono-scope, en termes de `load_scopes`. Ce n'est pas dupliqué en un
-/// chemin de chargement distinct : mono-scope et multi-scope ne peuvent donc
-/// jamais diverger sur le moment où la validation sémantique tourne (cf.
-/// revue L3, phase 2).
+/// Loads `<root>/backends/*.toml` and `<root>/models/*.toml`: a simple
+/// single scope, in `load_scopes` terms. This is not duplicated into a
+/// separate loading path: single-scope and multi-scope loading can
+/// therefore never diverge on when semantic validation runs (cf. review L3,
+/// phase 2).
 ///
-/// La clé de chaque table est le champ `id` du fichier.
+/// The key of each table is the file's `id` field.
 pub fn load(root: &Path) -> crate::Result<Config> {
     load_scopes(&[root.to_path_buf()])
 }
 
-/// Charge et fusionne plusieurs scopes de configuration (cf.
-/// npu-cli-spec.md §5, IMPLEMENTATION.md décision 3).
+/// Loads and merges several configuration scopes (cf. npu-cli-spec.md §5,
+/// IMPLEMENTATION.md decision 3).
 ///
-/// `roots` doit être ordonné du plus général au plus local — c'est l'ordre
-/// que produit `scope::roots()`. Chaque racine est chargée avec
-/// `load_toml_dir`, puis fusionnée dans l'ordre reçu : pour `backends` comme
-/// pour `models`, l'entrée d'un scope plus local remplace intégralement
-/// celle de même `id` venue d'un scope plus général (`HashMap::extend`
-/// appliqué dans l'ordre des racines — pas de fusion champ par champ, un
-/// champ absent d'une redéfinition locale n'est pas hérité du scope
-/// général).
+/// `roots` must be ordered from most general to most local — this is the
+/// order `scope::roots()` produces. Each root is loaded with
+/// `load_toml_dir`, then merged in the order received: for both `backends`
+/// and `models`, an entry from a more local scope entirely replaces the one
+/// with the same `id` coming from a more general scope (`HashMap::extend`
+/// applied in root order — no field-by-field merge; a field missing from a
+/// local redefinition is not inherited from the general scope).
 ///
-/// La validation sémantique (`validate_backend`) tourne APRÈS cette fusion,
-/// et seulement sur les entrées survivantes : un backend invalide d'un scope
-/// général, intégralement masqué par un scope plus local, ne doit jamais
-/// faire échouer le chargement (cf. revue L3, phase 2 — contrairement à une
-/// erreur de PARSING TOML, qui reste fatale dans tous les scopes puisque
-/// l'identité d'un fichier illisible n'est pas connaissable, donc son
-/// masquage non plus : cf. `load_toml_dir`).
+/// Semantic validation (`validate_backend`) runs AFTER this merge, and only
+/// on surviving entries: an invalid backend from a general scope, entirely
+/// shadowed by a more local scope, must never make loading fail (cf. review
+/// L3, phase 2 — unlike a TOML PARSING error, which remains fatal in every
+/// scope since the identity of an unreadable file is not knowable, and thus
+/// neither is whether it is shadowed: cf. `load_toml_dir`).
 ///
-/// Une racine de `roots` qui n'existe pas sur le disque n'est pas une
-/// erreur : `load_toml_dir` renvoie déjà des tables vides dans ce cas (un
-/// dossier `NotFound` est traité comme vide), donc rien de spécial n'est
-/// nécessaire ici. Une liste `roots` vide produit une `Config` vide.
+/// A root in `roots` that does not exist on disk is not an error:
+/// `load_toml_dir` already returns empty tables in that case (a `NotFound`
+/// directory is treated as empty), so nothing special is needed here. An
+/// empty `roots` list produces an empty `Config`.
 pub fn load_scopes(roots: &[PathBuf]) -> crate::Result<Config> {
     let mut backends: HashMap<String, (Backend, PathBuf)> = HashMap::new();
     let mut models: HashMap<String, (Model, PathBuf)> = HashMap::new();
@@ -249,21 +243,21 @@ pub fn load_scopes(roots: &[PathBuf]) -> crate::Result<Config> {
 }
 
 impl Config {
-    /// Résout un identifiant de modèle vers le couple `(Model, Backend)` correspondant.
+    /// Resolves a model identifier to the corresponding `(Model, Backend)` pair.
     ///
-    /// Renvoie `Error::Config` si le modèle est inconnu, ou si son backend n'existe
-    /// pas ; dans les deux cas le message liste les identifiants disponibles.
+    /// Returns `Error::Config` if the model is unknown, or if its backend does
+    /// not exist; in both cases the message lists the available identifiers.
     pub fn resolve(&self, model_id: &str) -> crate::Result<(&Model, &Backend)> {
         let Some(model) = self.models.get(model_id) else {
             return Err(crate::Error::Config(format!(
-                "modèle inconnu : « {model_id} » (modèles disponibles : {})",
+                "unknown model: \"{model_id}\" (available models: {})",
                 crate::error::format_available(self.models.keys())
             )));
         };
 
         let Some(backend) = self.backends.get(&model.backend) else {
             return Err(crate::Error::Config(format!(
-                "backend inconnu : « {} » (référencé par le modèle « {model_id} », backends disponibles : {})",
+                "unknown backend: \"{}\" (referenced by model \"{model_id}\", available backends: {})",
                 model.backend,
                 crate::error::format_available(self.backends.keys())
             )));
@@ -274,13 +268,13 @@ impl Config {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)] // toléré dans les tests (cf. Cargo.toml [lints.clippy]).
+#[allow(clippy::expect_used)] // tolerated in tests (cf. Cargo.toml [lints.clippy]).
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// Crée un dossier de fixture unique sous `target/`, pour ne pas polluer le
-    /// dépôt ni entrer en collision entre tests exécutés en parallèle.
+    /// Creates a unique fixture directory under `target/`, so as not to
+    /// pollute the repo or collide between tests run in parallel.
     fn fixture_dir(name: &str) -> std::path::PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -288,16 +282,16 @@ mod tests {
             .join("target")
             .join("test-fixtures")
             .join(format!("config-{name}-{n}"));
-        std::fs::create_dir_all(&dir).expect("création du dossier de fixture");
+        std::fs::create_dir_all(&dir).expect("fixture directory creation");
         dir
     }
 
     fn write(dir: &Path, rel: &str, contents: &str) {
         let path = dir.join(rel);
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("création du dossier parent");
+            std::fs::create_dir_all(parent).expect("parent directory creation");
         }
-        std::fs::write(path, contents).expect("écriture de la fixture");
+        std::fs::write(path, contents).expect("fixture write");
     }
 
     #[test]
@@ -327,8 +321,8 @@ mod tests {
             "#,
         );
 
-        let config = load(&root).expect("chargement de la config");
-        let (model, backend) = config.resolve("gpt").expect("résolution du modèle");
+        let config = load(&root).expect("config loading");
+        let (model, backend) = config.resolve("gpt").expect("model resolution");
         assert_eq!(model.id, "gpt");
         assert_eq!(backend.id, "openai");
         assert_eq!(backend.kind, "openai-compatible");
@@ -361,8 +355,8 @@ mod tests {
             "#,
         );
 
-        let config = load(&root).expect("chargement de la config");
-        let err = config.resolve("inconnu").expect_err("doit échouer");
+        let config = load(&root).expect("config loading");
+        let err = config.resolve("unknown").expect_err("must fail");
         assert!(matches!(err, crate::Error::Config(_)));
         assert!(err.to_string().contains("gpt"));
     }
@@ -381,8 +375,8 @@ mod tests {
             "#,
         );
 
-        let config = load(&root).expect("chargement de la config");
-        let err = config.resolve("gpt").expect_err("doit échouer");
+        let config = load(&root).expect("config loading");
+        let err = config.resolve("gpt").expect_err("must fail");
         assert!(matches!(err, crate::Error::Config(_)));
         let msg = err.to_string();
         assert!(msg.contains("absent"));
@@ -391,7 +385,7 @@ mod tests {
     #[test]
     fn load_missing_directories_yields_empty_config() {
         let root = fixture_dir("load-missing-dirs");
-        let config = load(&root).expect("un dossier absent n'est pas une erreur");
+        let config = load(&root).expect("a missing directory is not an error");
         assert!(config.backends.is_empty());
         assert!(config.models.is_empty());
     }
@@ -401,7 +395,7 @@ mod tests {
         let root = fixture_dir("load-invalid-toml");
         write(&root, "backends/broken.toml", "not = [valid");
 
-        let err = load(&root).expect_err("TOML invalide doit échouer");
+        let err = load(&root).expect_err("invalid TOML must fail");
         assert!(matches!(err, crate::Error::Config(_)));
         assert!(err.to_string().contains("broken.toml"));
     }
@@ -423,7 +417,7 @@ mod tests {
             "#,
         );
 
-        let err = load(&root).expect_err("une méthode non-POST doit être rejetée");
+        let err = load(&root).expect_err("a non-POST method must be rejected");
         assert!(matches!(err, crate::Error::Config(_)));
         let msg = err.to_string();
         assert!(msg.contains("ovms"));
@@ -446,7 +440,7 @@ mod tests {
             "#,
         );
 
-        let err = load(&root).expect_err("un type de backend inconnu doit être rejeté");
+        let err = load(&root).expect_err("an unknown backend type must be rejected");
         assert!(matches!(err, crate::Error::Config(_)));
         let msg = err.to_string();
         assert!(msg.contains("ollama"));
@@ -472,7 +466,7 @@ mod tests {
             "#,
         );
 
-        let err = load(&root).expect_err("une clé TOML inconnue sur un backend doit être rejetée");
+        let err = load(&root).expect_err("an unknown TOML key on a backend must be rejected");
         assert!(matches!(err, crate::Error::Config(_)));
     }
 
@@ -494,26 +488,26 @@ mod tests {
             "#,
         );
 
-        let err = load(&root).expect_err("une clé TOML inconnue sur un modèle doit être rejetée");
+        let err = load(&root).expect_err("an unknown TOML key on a model must be rejected");
         assert!(matches!(err, crate::Error::Config(_)));
     }
 
     #[test]
     fn real_npu_fixture_still_parses() {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".npu");
-        let config = load(&root).expect("la fixture .npu/ réelle doit toujours charger");
+        let config = load(&root).expect("the real .npu/ fixture must always load");
 
         let backend = config
             .backends
             .get("ovms")
-            .expect("le backend ovms doit être présent");
+            .expect("the ovms backend must be present");
         assert_eq!(backend.kind, "openai-compatible");
         assert!(backend.operations.contains_key("chat"));
 
         let model = config
             .models
             .get("qwen-fast")
-            .expect("le modèle qwen-fast doit être présent");
+            .expect("the qwen-fast model must be present");
         assert_eq!(model.generation.temperature, Some(0.0));
         assert_eq!(model.generation.max_tokens, Some(512));
     }
@@ -542,7 +536,7 @@ mod tests {
             "#,
         );
 
-        let err = load(&root).expect_err("un id dupliqué dans un même scope doit échouer");
+        let err = load(&root).expect_err("a duplicate id within the same scope must fail");
         assert!(matches!(err, crate::Error::Config(_)));
         let msg = err.to_string();
         assert!(msg.contains("qwen-fast"));
@@ -586,15 +580,15 @@ mod tests {
             "#,
         );
 
-        let config = load_scopes(&[general, local]).expect("la fusion de scopes doit réussir");
+        let config = load_scopes(&[general, local]).expect("scope merging must succeed");
         let backend = config
             .backends
             .get("ovms")
-            .expect("le backend ovms doit être présent");
+            .expect("the ovms backend must be present");
         assert_eq!(backend.base_url, "http://local:8000");
-        // Le champ absent de la redéfinition locale (embeddings) ne doit PAS
-        // être hérité du scope général : remplacement intégral, pas de fusion
-        // champ par champ.
+        // The field absent from the local redefinition (embeddings) must NOT
+        // be inherited from the general scope: full replacement, not a
+        // field-by-field merge.
         assert!(!backend.operations.contains_key("embeddings"));
         assert!(backend.operations.contains_key("chat"));
     }
@@ -628,10 +622,10 @@ mod tests {
             "#,
         );
 
-        let config = load_scopes(&[general, local]).expect("la fusion de scopes doit réussir");
+        let config = load_scopes(&[general, local]).expect("scope merging must succeed");
         let (model, backend) = config
             .resolve("qwen-fast")
-            .expect("le modèle local doit résoudre le backend général");
+            .expect("the local model must resolve the general backend");
         assert_eq!(model.id, "qwen-fast");
         assert_eq!(backend.id, "ovms");
     }
@@ -651,14 +645,14 @@ mod tests {
         );
         let missing = existing.join("does-not-exist");
 
-        let config = load_scopes(&[missing, existing])
-            .expect("une racine absente ne doit pas faire échouer la fusion");
+        let config =
+            load_scopes(&[missing, existing]).expect("a missing root must not make the merge fail");
         assert!(config.models.contains_key("gpt"));
     }
 
     #[test]
     fn load_scopes_empty_roots_yields_empty_config() {
-        let config = load_scopes(&[]).expect("une liste de racines vide doit réussir");
+        let config = load_scopes(&[]).expect("an empty root list must succeed");
         assert!(config.backends.is_empty());
         assert!(config.models.is_empty());
     }
@@ -702,16 +696,16 @@ mod tests {
         );
 
         let config =
-            load_scopes(&[etc.clone(), xdg.clone(), cwd.clone()]).expect("la fusion doit réussir");
+            load_scopes(&[etc.clone(), xdg.clone(), cwd.clone()]).expect("the merge must succeed");
         assert_eq!(
             config.models.get("qwen-fast").expect("qwen-fast").model,
             "cwd-model",
-            "la racine la plus locale (cwd, en fin de liste) doit gagner"
+            "the most local root (cwd, at the end of the list) must win"
         );
 
-        // Un ordre partiel (juste etc puis xdg, sans cwd) doit également
-        // respecter général -> local.
-        let config2 = load_scopes(&[etc, xdg]).expect("la fusion à deux racines doit réussir");
+        // A partial order (just etc then xdg, without cwd) must also
+        // respect general -> local.
+        let config2 = load_scopes(&[etc, xdg]).expect("the two-root merge must succeed");
         assert_eq!(
             config2.models.get("qwen-fast").expect("qwen-fast").model,
             "xdg-model"
@@ -720,9 +714,9 @@ mod tests {
 
     #[test]
     fn load_scopes_invalid_backend_fully_masked_by_local_scope_resolves_successfully() {
-        // Revue L3 (phase 2) : un backend invalide d'un scope général,
-        // intégralement remplacé par un scope local valide, ne doit jamais
-        // atteindre la validation sémantique.
+        // Review L3 (phase 2): an invalid backend from a general scope,
+        // entirely replaced by a valid local scope, must never reach
+        // semantic validation.
         let general = fixture_dir("scopes-invalid-backend-masked-general");
         write(
             &general,
@@ -754,22 +748,22 @@ mod tests {
         );
 
         let config = load_scopes(&[general, local])
-            .expect("le backend invalide masqué ne doit pas empêcher la résolution");
+            .expect("the shadowed invalid backend must not prevent resolution");
         let backend = config
             .backends
             .get("ovms")
-            .expect("le backend ovms (version locale) doit être présent");
+            .expect("the ovms backend (local version) must be present");
         assert_eq!(backend.kind, "openai-compatible");
         assert_eq!(backend.base_url, "http://local:8000");
     }
 
     #[test]
     fn load_scopes_invalid_backend_not_masked_still_fails_and_names_its_file() {
-        // Le cas inverse, le plus facile à casser en corrigeant le premier :
-        // un backend invalide présent UNIQUEMENT dans un scope général doit
-        // toujours échouer, et le message doit nommer son fichier (pas
-        // seulement son id), puisque la validation tourne maintenant après
-        // la fusion sur une entrée qui transporte son origine.
+        // The reverse case, the easiest to break by fixing the first one: an
+        // invalid backend present ONLY in a general scope must always fail,
+        // and the message must name its file (not just its id), since
+        // validation now runs after the merge on an entry that carries its
+        // origin.
         let general = fixture_dir("scopes-invalid-backend-unmasked-general");
         write(
             &general,
@@ -785,22 +779,22 @@ mod tests {
             "#,
         );
 
-        let err = load_scopes(&[general])
-            .expect_err("un backend invalide non masqué doit toujours échouer");
+        let err =
+            load_scopes(&[general]).expect_err("an unshadowed invalid backend must always fail");
         assert!(matches!(err, crate::Error::Config(_)));
         let msg = err.to_string();
         assert!(
             msg.contains("ovms.toml"),
-            "le message doit nommer le fichier fautif, obtenu : {msg}"
+            "the message must name the offending file, got: {msg}"
         );
     }
 
     #[test]
     fn load_scopes_toml_parse_error_in_general_scope_remains_fatal_even_when_masked() {
-        // Contrairement à la validation sémantique, une erreur de PARSING
-        // reste fatale dans tous les scopes : un fichier illisible n'a pas
-        // d'identité connaissable, donc on ne peut pas savoir s'il est
-        // masqué (cf. revue L3, phase 2). Ce n'est pas un bug.
+        // Unlike semantic validation, a PARSING error remains fatal in
+        // every scope: an unreadable file has no knowable identity, so we
+        // cannot know whether it is shadowed (cf. review L3, phase 2). This
+        // is not a bug.
         let general = fixture_dir("scopes-parse-error-masked-general");
         write(&general, "backends/ovms.toml", "not = [valid");
 
@@ -820,8 +814,8 @@ mod tests {
         );
 
         let err = load_scopes(&[general, local]).expect_err(
-            "une erreur de parsing TOML dans un scope général doit rester fatale même \
-             lorsqu'un id valide existe en local",
+            "a TOML parsing error in a general scope must remain fatal even when a valid id \
+             exists locally",
         );
         assert!(matches!(err, crate::Error::Config(_)));
         assert!(err.to_string().contains("ovms.toml"));

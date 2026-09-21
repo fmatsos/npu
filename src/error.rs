@@ -1,27 +1,27 @@
-//! Erreur unifiée du crate.
+//! Unified crate error.
 //!
-//! Un enum écrit à la main plutôt qu'un `anyhow`/`thiserror` : quatre variantes,
-//! un code de sortie chacune (cf. IMPLEMENTATION.md §1.7 / npu-cli-spec.md §14).
-//! stdout reste réservé au résultat de la commande ; ces messages sont destinés
-//! à stderr.
+//! A hand-written enum rather than `anyhow`/`thiserror`: four variants,
+//! one exit code each (see IMPLEMENTATION.md §1.7 / npu-cli-spec.md §14).
+//! stdout stays reserved for the command's result; these messages are meant
+//! for stderr.
 
 use std::fmt;
 
-/// Erreur unifiée du crate, une variante par famille de code de sortie.
+/// Unified crate error, one variant per exit-code family.
 #[derive(Debug)]
 pub enum Error {
-    /// Configuration invalide ou introuvable (backends/modèles/commandes).
+    /// Invalid or missing configuration (backends/models/commands).
     Config(String),
-    /// Échec côté backend IA (requête, réseau, réponse inattendue).
+    /// Failure on the AI backend side (request, network, unexpected response).
     Backend(String),
-    /// Échec de production ou de validation de la sortie.
+    /// Failure producing or validating the output.
     Output(String),
-    /// Erreur d'entrée/sortie système (fichier, stdin, ...).
+    /// System I/O error (file, stdin, ...).
     Io(std::io::Error),
 }
 
 impl Error {
-    /// Code de sortie process associé à cette erreur.
+    /// Process exit code associated with this error.
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         match self {
@@ -36,10 +36,10 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Config(msg) => write!(f, "erreur de configuration : {msg}"),
-            Error::Backend(msg) => write!(f, "erreur backend : {msg}"),
-            Error::Output(msg) => write!(f, "erreur de sortie : {msg}"),
-            Error::Io(err) => write!(f, "erreur d'entrée/sortie : {err}"),
+            Error::Config(msg) => write!(f, "configuration error: {msg}"),
+            Error::Backend(msg) => write!(f, "backend error: {msg}"),
+            Error::Output(msg) => write!(f, "output error: {msg}"),
+            Error::Io(err) => write!(f, "I/O error: {err}"),
         }
     }
 }
@@ -59,20 +59,20 @@ impl From<std::io::Error> for Error {
     }
 }
 
-/// Alias de résultat du crate.
+/// Crate result alias.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Formate une liste d'identifiants disponibles pour un message d'erreur
-/// actionnable : triée, jointe par virgule, ou `"aucune"` si vide.
+/// Formats a list of available identifiers for an actionable error
+/// message: sorted, comma-joined, or `"none"` if empty.
 ///
-/// Centralise un idiome répété à l'identique dans `config::resolve` (modèles,
-/// backends), `backend::chat` (opérations) et `run` (commandes), pour que les
-/// messages d'erreur restent homogènes d'un module à l'autre.
+/// Centralizes an idiom repeated identically in `config::resolve` (models,
+/// backends), `backend::chat` (operations) and `run` (commands), so that
+/// error messages stay consistent across modules.
 pub(crate) fn format_available<S: AsRef<str>>(ids: impl Iterator<Item = S>) -> String {
     let mut sorted: Vec<String> = ids.map(|s| s.as_ref().to_string()).collect();
     sorted.sort_unstable();
     if sorted.is_empty() {
-        "aucune".to_string()
+        "none".to_string()
     } else {
         sorted.join(", ")
     }
@@ -103,7 +103,7 @@ mod tests {
     }
 
     #[test]
-    fn format_available_empty_is_aucune() {
-        assert_eq!(format_available(std::iter::empty::<&str>()), "aucune");
+    fn format_available_empty_is_none() {
+        assert_eq!(format_available(std::iter::empty::<&str>()), "none");
     }
 }

@@ -1,9 +1,9 @@
-//! Découverte et parsing des commandes définies sous `commands/**/*.md`.
+//! Discovery and parsing of commands defined under `commands/**/*.md`.
 
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Mode de résolution de l'entrée d'une commande.
+/// Input resolution mode for a command.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InputMode {
@@ -13,14 +13,14 @@ pub enum InputMode {
     StdinOrFile,
 }
 
-/// Un argument CLI déclaré par une commande (npu-cli-spec.md §11).
+/// A CLI argument declared by a command (npu-cli-spec.md §11).
 ///
-/// Contrat d'API partagé : voir la doc de module pour la façon dont ce type
-/// est peuplé. `short` est écrit en TOML comme une chaîne (`short = "l"`) ;
-/// `ArgSpec` porte le `char` déjà validé, jamais la chaîne brute — la
-/// conversion (avec vérification explicite qu'elle ne tronque rien) est
-/// faite par [`convert_args`], pas par ce `#[derive(Deserialize)]`, qui
-/// n'est jamais exercé directement sur du TOML (cf. [`RawArgSpec`]).
+/// Shared API contract: see the module doc for how this type is
+/// populated. `short` is written in TOML as a string (`short = "l"`);
+/// `ArgSpec` carries the already-validated `char`, never the raw string —
+/// the conversion (with an explicit check that it never truncates) is
+/// done by [`convert_args`], not by this `#[derive(Deserialize)]`, which
+/// is never exercised directly on TOML (see [`RawArgSpec`]).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArgSpec {
@@ -31,10 +31,10 @@ pub struct ArgSpec {
     pub description: String,
 }
 
-/// Une commande découverte : son chemin (dérivé de l'arborescence), le modèle
-/// à utiliser, le mode d'entrée, le prompt (corps du fichier), les
-/// arguments CLI déclarés (`[args.*]`, phase 3) et le contrat de sortie
-/// (`[output]`, phase 4 — cf. `crate::output`).
+/// A discovered command: its path (derived from the directory tree), the
+/// model to use, the input mode, the prompt (file body), the declared CLI
+/// arguments (`[args.*]`, phase 3) and the output contract (`[output]`,
+/// phase 4 — see `crate::output`).
 #[derive(Debug)]
 pub struct CommandSpec {
     pub path: Vec<String>,
@@ -44,34 +44,35 @@ pub struct CommandSpec {
     pub prompt: String,
     pub args: BTreeMap<String, ArgSpec>,
     pub output: crate::output::OutputSpec,
-    /// Chemin du fichier de commande source (ex. `.npu/commands/classify.md`)
-    /// dont ce `CommandSpec` a été parsé. Nécessaire à `output::finalize`
-    /// (revue L3, correctif 1) pour nommer, au moment de l'exécution réelle,
-    /// le fichier de commande qui réclame un schéma introuvable/illisible/
-    /// invalide — en plus du chemin résolu du schéma lui-même. `parse` seul
-    /// ne connaît pas ce chemin (il ne reçoit que la racine de scope, cf. sa
-    /// doc) : il le laisse à `std::path::PathBuf::new()` et c'est
-    /// `read_and_parse`, seul appelant qui connaît le fichier réellement lu,
-    /// qui le renseigne après coup. Un `CommandSpec` obtenu via `parse`
-    /// directement (comme le font la plupart des tests de ce module, qui ne
-    /// s'intéressent pas à ce champ) porte donc un `PathBuf` vide — jamais
-    /// atteint en dehors de `discover`/`discover_scopes`.
+    /// Path of the source command file (e.g. `.npu/commands/classify.md`)
+    /// this `CommandSpec` was parsed from. Needed by `output::finalize`
+    /// (L3 review, fix 1) to name, at real execution time, the command
+    /// file that requests a schema that is not found/readable/invalid —
+    /// in addition to the resolved path of the schema itself. `parse`
+    /// alone does not know this path (it only receives the scope root,
+    /// see its doc): it leaves it as `std::path::PathBuf::new()`, and
+    /// it's `read_and_parse`, the only caller that knows the file
+    /// actually read, that fills it in afterwards. A `CommandSpec`
+    /// obtained via `parse` directly (as most tests in this module do,
+    /// since they don't care about this field) therefore carries an
+    /// empty `PathBuf` — never reached outside `discover`/`discover_scopes`.
     pub file: std::path::PathBuf,
 }
 
-/// Version brute d'`ArgSpec` telle qu'écrite en TOML : `short` y est une
-/// chaîne, pas un `char`. `toml`/`serde` savent bien désérialiser une chaîne
-/// TOML directement vers `char` (ils rejettent une chaîne de plusieurs
-/// caractères plutôt que de la tronquer), mais le message qui en résulte ne
-/// nomme pas l'argument fautif — seulement la ligne/colonne TOML. On
-/// désérialise donc ici en `String`, et [`convert_args`] fait la conversion
-/// avec un message qui nomme l'argument et la valeur, comme le reste du
-/// module (cf. `validate_backend` dans `config.rs` pour le même idiome).
+/// Raw version of `ArgSpec` as written in TOML: `short` is a string
+/// there, not a `char`. `toml`/`serde` do know how to deserialize a TOML
+/// string directly into a `char` (they reject a multi-character string
+/// rather than truncating it), but the resulting message doesn't name the
+/// offending argument — only the TOML line/column. We therefore
+/// deserialize as `String` here, and [`convert_args`] does the conversion
+/// with a message naming the argument and the value, like the rest of
+/// this module (see `validate_backend` in `config.rs` for the same
+/// idiom).
 ///
-/// `deny_unknown_fields` doit être répété ici (et pas seulement sur
-/// `ArgSpec`, jamais exercée par `serde` sur du TOML) : sinon une clé mal
-/// orthographiée sous `[args.*]` (ex. `requred`) serait lue puis
-/// silencieusement ignorée, exactement le défaut visé par la revue L3.
+/// `deny_unknown_fields` must be repeated here (and not only on
+/// `ArgSpec`, never exercised by `serde` on TOML): otherwise a misspelled
+/// key under `[args.*]` (e.g. `requred`) would be read and then silently
+/// ignored — exactly the defect the L3 review targets.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawArgSpec {
@@ -83,13 +84,13 @@ struct RawArgSpec {
     description: String,
 }
 
-/// Frontmatter TOML brut, avant résolution des valeurs par défaut.
+/// Raw TOML frontmatter, before default values are resolved.
 ///
-/// `deny_unknown_fields` (revue L3, correctif 3) : sans lui, une clé mal
-/// orthographiée au niveau racine du frontmatter (ex. `descripton` au lieu
-/// de `description`) était lue puis silencieusement ignorée — exactement le
-/// défaut que ce projet rejette depuis la phase 1 pour `[args.*]`
-/// (`RawArgSpec`), désormais étendu au frontmatter entier.
+/// `deny_unknown_fields` (L3 review, fix 3): without it, a misspelled key
+/// at the frontmatter's root level (e.g. `descripton` instead of
+/// `description`) would be read and then silently ignored — exactly the
+/// defect this project has rejected since phase 1 for `[args.*]`
+/// (`RawArgSpec`), now extended to the whole frontmatter.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Frontmatter {
@@ -100,28 +101,27 @@ struct Frontmatter {
     input: InputSection,
     #[serde(default)]
     args: BTreeMap<String, RawArgSpec>,
-    /// Section `[output]` (phase 4, npu-cli-spec.md §15) : format de sortie,
-    /// chemin de schéma JSON, `max_lines`. Optionnelle — son absence produit
-    /// `OutputSpec::default()` (`convert_output`, plus bas). `schema` est
-    /// désérialisé en `String` brute (pas encore `PathBuf` résolu) : c'est
-    /// `convert_output` qui la résout par rapport à la racine de scope
-    /// (règle 3 du contrat partagé), jamais `serde`/`toml`.
+    /// `[output]` section (phase 4, npu-cli-spec.md §15): output format,
+    /// JSON schema path, `max_lines`. Optional — its absence produces
+    /// `OutputSpec::default()` (`convert_output`, below). `schema` is
+    /// deserialized as a raw `String` (not yet a resolved `PathBuf`):
+    /// it's `convert_output` that resolves it against the scope root
+    /// (rule 3 of the shared contract), never `serde`/`toml`.
     #[serde(default)]
     output: Option<RawOutputSpec>,
 }
 
-/// Version brute de la section `[output]` telle qu'écrite en TOML : `schema`
-/// y est une chaîne (chemin relatif à la racine de scope, ou absolu), pas
-/// encore le `PathBuf` résolu que porte `crate::output::OutputSpec`. Même
-/// idiome que [`RawArgSpec`] pour `[args.*]` : la conversion (avec ses
-/// propres vérifications et messages nommant la section) est faite par
-/// [`convert_output`], jamais directement par `#[derive(Deserialize)]`.
+/// Raw version of the `[output]` section as written in TOML: `schema` is
+/// a string there (a path relative to the scope root, or absolute), not
+/// yet the resolved `PathBuf` carried by `crate::output::OutputSpec`.
+/// Same idiom as [`RawArgSpec`] for `[args.*]`: the conversion (with its
+/// own checks and messages naming the section) is done by
+/// [`convert_output`], never directly by `#[derive(Deserialize)]`.
 ///
-/// `deny_unknown_fields` (même règle d'architecture que le reste du
-/// frontmatter, issue des revues L3 des phases 1 à 3) : une clé mal
-/// orthographiée sous `[output]` (ex. `max_line` au lieu de `max_lines`)
-/// doit échouer au chargement, pas retomber silencieusement sur « pas de
-/// limite ».
+/// `deny_unknown_fields` (same architecture rule as the rest of the
+/// frontmatter, from the L3 reviews of phases 1 to 3): a misspelled key
+/// under `[output]` (e.g. `max_line` instead of `max_lines`) must fail at
+/// load time, not silently fall back to "no limit".
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawOutputSpec {
@@ -133,12 +133,13 @@ struct RawOutputSpec {
     max_lines: Option<usize>,
 }
 
-/// Section `[input]` du frontmatter.
+/// `[input]` section of the frontmatter.
 ///
-/// `deny_unknown_fields` (revue L3, correctif 3) : une clé mal orthographiée
-/// ici (ex. `moed` au lieu de `mode`) retombait silencieusement sur le mode
-/// d'entrée par défaut (`InputMode::Stdin`) — le cas le plus dangereux des
-/// trois relevés en revue, une commande à fichier lisant stdin sans un mot.
+/// `deny_unknown_fields` (L3 review, fix 3): a misspelled key here (e.g.
+/// `moed` instead of `mode`) used to silently fall back to the default
+/// input mode (`InputMode::Stdin`) — the most dangerous of the three
+/// cases raised in review, a file-input command silently reading stdin
+/// instead.
 #[derive(Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct InputSection {
@@ -146,29 +147,28 @@ struct InputSection {
     mode: Option<InputMode>,
 }
 
-/// Découvre les commandes sur plusieurs racines de scope (phase 2,
-/// `IMPLEMENTATION.md` décision 3) et les fusionne par remplacement.
+/// Discovers commands across several scope roots (phase 2,
+/// `IMPLEMENTATION.md` decision 3) and merges them by replacement.
 ///
-/// `roots` est ordonnée de la plus générale à la plus locale (cf.
-/// `scope::roots`). La clé de commande (son chemin, ex. `"git/review"`) vient
-/// du CHEMIN DU FICHIER, pas de son contenu : on peut donc résoudre le
-/// gagnant de chaque chemin sur tous les scopes AVANT d'ouvrir le moindre
-/// fichier (cf. revue L3, phase 2). Une commande dont le chemin complet a
-/// déjà été vue dans un scope plus général est REMPLACÉE intégralement par
-/// la version du scope plus local — pas de fusion champ par champ. Un
-/// fichier cassé mais masqué par un override plus local n'est donc jamais
-/// lu ni parsé. Une racine absente n'est pas une erreur : `collect_command_files`
-/// renvoie déjà un `Vec` vide pour un dossier `commands/` manquant.
+/// `roots` is ordered from most general to most local (see
+/// `scope::roots`). The command key (its path, e.g. `"git/review"`) comes
+/// from the FILE PATH, not its content: the winner for each path can
+/// therefore be resolved across all scopes BEFORE opening a single file
+/// (see L3 review, phase 2). A command whose full path has already been
+/// seen in a more general scope is REPLACED wholesale by the more local
+/// scope's version — no field-by-field merge. A file that is broken but
+/// shadowed by a more local override is therefore never read or parsed.
+/// A missing root is not an error: `collect_command_files` already
+/// returns an empty `Vec` for a missing `commands/` directory.
 ///
-/// Le résultat est trié par chemin complet, pour que l'arbre clap et l'aide
-/// soient déterministes quel que soit l'ordre de lecture du système de
-/// fichiers.
+/// The result is sorted by full path, so that the clap tree and the help
+/// output are deterministic regardless of the filesystem's read order.
 ///
-/// Chaque gagnant transporte aussi la racine de scope (`root`) dont il vient
-/// — nécessaire à `parse` pour résoudre un `[output].schema` relatif (règle
-/// 3 du contrat partagé) — en plus de son chemin de fichier : la racine de
-/// scope d'une commande imbriquée (ex. `git/review.md`) reste la racine de
-/// scope elle-même, jamais un ancêtre dérivé du chemin du fichier.
+/// Each winner also carries the scope root (`root`) it comes from —
+/// needed by `parse` to resolve a relative `[output].schema` (rule 3 of
+/// the shared contract) — in addition to its file path: the scope root of
+/// a nested command (e.g. `git/review.md`) remains the scope root itself,
+/// never an ancestor derived from the file path.
 pub fn discover_scopes(roots: &[std::path::PathBuf]) -> crate::Result<Vec<CommandSpec>> {
     let mut winners: std::collections::BTreeMap<
         String,
@@ -190,14 +190,14 @@ pub fn discover_scopes(roots: &[std::path::PathBuf]) -> crate::Result<Vec<Comman
     Ok(specs)
 }
 
-/// Parcourt `<root>/commands/**/*.md` et renvoie, pour chaque fichier trouvé,
-/// le chemin de commande dérivé de son emplacement (ex. `["git", "review"]`
-/// pour `commands/git/review.md`) accompagné du chemin du fichier — sans
-/// lire ni parser son contenu. Extrait de `discover` pour que
-/// `discover_scopes` puisse résoudre l'override par chemin de fichier avant
-/// d'ouvrir le moindre fichier (cf. revue L3, phase 2).
+/// Walks `<root>/commands/**/*.md` and returns, for each file found, the
+/// command path derived from its location (e.g. `["git", "review"]` for
+/// `commands/git/review.md`) along with the file path — without reading
+/// or parsing its content. Extracted out of `discover` so that
+/// `discover_scopes` can resolve the file-path override before opening a
+/// single file (see L3 review, phase 2).
 ///
-/// Renvoie un `Vec` vide si le dossier `commands/` n'existe pas.
+/// Returns an empty `Vec` if the `commands/` directory does not exist.
 fn collect_command_files(
     root: &std::path::Path,
 ) -> crate::Result<Vec<(Vec<String>, std::path::PathBuf)>> {
@@ -213,7 +213,7 @@ fn collect_command_files(
     for file in files {
         let relative = file.strip_prefix(&commands_root).map_err(|_| {
             crate::Error::Config(format!(
-                "chemin de commande hors de commands/ : {}",
+                "command path outside commands/: {}",
                 file.display()
             ))
         })?;
@@ -228,34 +228,34 @@ fn collect_command_files(
     Ok(result)
 }
 
-/// Rejette un chemin de commande dont le PREMIER segment entre en collision
-/// avec un nom réservé aux built-ins du CLI (`builtin::RESERVED` : `doctor`,
-/// `models`, `describe`, ainsi que `help`, réservé par `clap` lui-même —
-/// phase 5, point 2 du contrat partagé).
+/// Rejects a command path whose FIRST segment collides with a name
+/// reserved for the CLI's built-ins (`builtin::RESERVED`: `doctor`,
+/// `models`, `describe`, as well as `help`, reserved by `clap` itself —
+/// phase 5, point 2 of the shared contract).
 ///
-/// Sans ce rejet, `commands/doctor.md` serait silencieusement masqué par le
-/// built-in `doctor` construit dans `lib.rs` (ou, selon l'ordre de
-/// construction de l'arbre `clap`, le masquerait lui-même) — un conflit de
-/// noms qui ne se manifesterait qu'au moment de l'exécution, de façon
-/// déroutante, plutôt que d'être détecté au chargement comme toute autre
-/// erreur de configuration de ce module.
+/// Without this rejection, `commands/doctor.md` would be silently
+/// shadowed by the `doctor` built-in built in `lib.rs` (or, depending on
+/// the clap tree's build order, would shadow it instead) — a naming
+/// conflict that would only surface at execution time, confusingly,
+/// rather than being caught at load time like any other configuration
+/// error in this module.
 ///
-/// Ne porte QUE sur le premier segment : `commands/git/describe.md` donne le
-/// chemin `["git", "describe"]`, qui n'entre en conflit avec rien (les
-/// built-ins n'existent qu'au premier niveau) et reste valide.
+/// Applies ONLY to the first segment: `commands/git/describe.md` gives
+/// the path `["git", "describe"]`, which conflicts with nothing (built-ins
+/// only exist at the top level) and stays valid.
 ///
-/// Appelée en tout premier depuis `read_and_parse`, donc AVANT toute lecture
-/// disque et uniquement sur les fichiers GAGNANTS de la résolution de scopes
-/// (`discover`/`discover_scopes` n'appellent `read_and_parse` que sur les
-/// entrées survivantes de la fusion par chemin) : un `commands/doctor.md`
-/// d'un scope général, masqué par un override local valide de même chemin,
-/// n'est jamais ouvert par cette fonction — mais l'override local, ayant
-/// lui-même pour premier segment « doctor », reste tout autant rejeté. Il
-/// n'existe aucune façon de rendre un chemin de premier segment réservé
-/// valide, quel que soit le scope d'où il vient : c'est précisément l'objet
-/// de ce rejet (cf. revue L3, phase 2, même garantie de « jamais ouvert »
-/// que pour un frontmatter cassé masqué, mais PAS la même conclusion — un
-/// nom réservé reste rejeté même en tant que gagnant).
+/// Called first thing from `read_and_parse`, therefore BEFORE any disk
+/// read and only on the WINNING files of scope resolution
+/// (`discover`/`discover_scopes` only call `read_and_parse` on entries
+/// surviving the path merge): a `commands/doctor.md` from a general
+/// scope, shadowed by a valid local override at the same path, is never
+/// opened by this function — but the local override, itself having
+/// "doctor" as its first segment, remains just as rejected. There is no
+/// way to make a path with a reserved first segment valid, whatever scope
+/// it comes from: that is precisely the point of this rejection (see L3
+/// review, phase 2, the same "never opened" guarantee as for a broken
+/// frontmatter that's shadowed, but NOT the same conclusion — a reserved
+/// name stays rejected even as a winner).
 fn reject_reserved_path(path: &[String], file: &std::path::Path) -> crate::Result<()> {
     let Some(first) = path.first() else {
         return Ok(());
@@ -263,9 +263,9 @@ fn reject_reserved_path(path: &[String], file: &std::path::Path) -> crate::Resul
 
     if crate::builtin::RESERVED.contains(&first.as_str()) {
         return Err(crate::Error::Config(format!(
-            "{} : « {first} » est réservé aux commandes intégrées du CLI ({}) ; renommez le \
-             fichier ou déplacez-le sous un sous-dossier (seul le premier segment du chemin de \
-             commande est réservé, ex. « git/{first}.md » resterait valide)",
+            "{}: \"{first}\" is reserved for the CLI's built-in commands ({}); rename the \
+             file or move it under a subdirectory (only the first segment of the command \
+             path is reserved, e.g. \"git/{first}.md\" would remain valid)",
             file.display(),
             crate::builtin::RESERVED.join(", ")
         )));
@@ -274,21 +274,20 @@ fn reject_reserved_path(path: &[String], file: &std::path::Path) -> crate::Resul
     Ok(())
 }
 
-/// Lit et parse le fichier de commande `file`, dont le chemin de commande
-/// dérivé est `path` et la racine de scope est `scope_root` (thread jusqu'à
-/// `parse`, cf. sa doc, pour résoudre un `[output].schema` relatif).
+/// Reads and parses the command file `file`, whose derived command path
+/// is `path` and whose scope root is `scope_root` (threaded through to
+/// `parse`, see its doc, to resolve a relative `[output].schema`).
 ///
-/// Commence par [`reject_reserved_path`] (phase 5, point 2 du contrat
-/// partagé), AVANT même la lecture disque : un chemin de premier segment
-/// réservé est rejeté sur la seule base du chemin, sans jamais avoir besoin
-/// d'ouvrir le fichier.
+/// Starts with [`reject_reserved_path`] (phase 5, point 2 of the shared
+/// contract), even before reading from disk: a path with a reserved
+/// first segment is rejected based on the path alone, without ever
+/// needing to open the file.
 ///
-/// Enveloppe le MESSAGE d'une erreur de parsing avec le chemin du fichier
-/// fautif, jamais l'erreur déjà formatée : `parse` renvoie une
-/// `Error::Config` dont le `Display` porte déjà le préfixe « erreur de
-/// configuration : » ; ré-envelopper cette erreur (plutôt que son message)
-/// dans une nouvelle `Error::Config` dupliquerait ce préfixe (cf. revue L3,
-/// phase 2).
+/// Wraps the MESSAGE of a parsing error with the offending file's path,
+/// never the already-formatted error: `parse` returns an `Error::Config`
+/// whose `Display` already carries the "configuration error: " prefix;
+/// re-wrapping this error (rather than its message) in a new
+/// `Error::Config` would duplicate that prefix (see L3 review, phase 2).
 fn read_and_parse(
     path: Vec<String>,
     file: &std::path::Path,
@@ -297,25 +296,22 @@ fn read_and_parse(
     reject_reserved_path(&path, file)?;
 
     let source = std::fs::read_to_string(file).map_err(|err| {
-        crate::Error::Config(format!(
-            "impossible de lire le fichier {} : {err}",
-            file.display()
-        ))
+        crate::Error::Config(format!("cannot read file {}: {err}", file.display()))
     })?;
     let mut spec = parse(&source, path, scope_root).map_err(|err| match err {
-        crate::Error::Config(msg) => crate::Error::Config(format!("{} : {msg}", file.display())),
+        crate::Error::Config(msg) => crate::Error::Config(format!("{}: {msg}", file.display())),
         other => other,
     })?;
     spec.file = file.to_path_buf();
     Ok(spec)
 }
 
-/// Parcourt `<root>/commands/**/*.md`.
+/// Walks `<root>/commands/**/*.md`.
 ///
-/// Renvoie un `Vec` vide si le dossier `commands/` n'existe pas. `root` sert
-/// aussi de racine de scope pour la résolution d'un `[output].schema`
-/// relatif (règle 3 du contrat partagé) : c'est la MÊME racine que celle
-/// passée en argument, jamais devinée depuis le chemin de chaque fichier.
+/// Returns an empty `Vec` if the `commands/` directory does not exist.
+/// `root` also serves as the scope root for resolving a relative
+/// `[output].schema` (rule 3 of the shared contract): it's the SAME root
+/// passed as the argument, never guessed from each file's path.
 pub fn discover(root: &std::path::Path) -> crate::Result<Vec<CommandSpec>> {
     let mut specs = Vec::new();
     for (path, file) in collect_command_files(root)? {
@@ -324,8 +320,8 @@ pub fn discover(root: &std::path::Path) -> crate::Result<Vec<CommandSpec>> {
     Ok(specs)
 }
 
-/// Parcourt récursivement `dir` et accumule dans `out` les chemins des
-/// fichiers `.md` trouvés.
+/// Recursively walks `dir` and accumulates the paths of the `.md` files
+/// found into `out`.
 fn collect_markdown_files(
     dir: &std::path::Path,
     out: &mut Vec<std::path::PathBuf>,
@@ -342,76 +338,75 @@ fn collect_markdown_files(
     Ok(())
 }
 
-/// Noms d'argument réservés par `clap` ou par `lib.rs` : construire l'arbre
-/// de commandes avec un argument nommé `help` ou `version` entrerait en
-/// collision avec les flags que `clap` gère lui-même ; un argument nommé
-/// `FILE` entrerait en collision avec l'argument positionnel `FILE` que
-/// `lib.rs` (`build_clap_node`) ajoute déjà pour les commandes dont le mode
-/// d'entrée accepte un fichier (`InputMode::File`/`StdinOrFile`, phase 3).
-/// Refuser ici, au chargement, plutôt que de laisser l'erreur remonter (bien
-/// moins clairement, voire faire paniquer `clap::Command::arg` sur un id
-/// dupliqué) depuis la construction de l'arbre `clap` en aval, dans `lib.rs`.
+/// Argument names reserved by `clap` or by `lib.rs`: building the command
+/// tree with an argument named `help` or `version` would collide with the
+/// flags `clap` handles itself; an argument named `FILE` would collide
+/// with the positional `FILE` argument that `lib.rs` (`build_clap_node`)
+/// already adds for commands whose input mode accepts a file
+/// (`InputMode::File`/`StdinOrFile`, phase 3). Reject here, at load time,
+/// rather than letting the error surface (much less clearly, or even
+/// panicking `clap::Command::arg` on a duplicate id) from the clap tree's
+/// construction downstream, in `lib.rs`.
 const RESERVED_ARG_NAMES: [&str; 3] = ["help", "version", "FILE"];
 
-/// Lettre courte réservée par `clap` : chaque `Command` reçoit un flag
-/// `-h`/`--help` automatique, que `disable_help_flag` ne soit pas appelé ou
-/// non — vérifié dans `lib.rs`, qui ne l'appelle pas. `-V`/`--version`
-/// n'existe en revanche que si `Command::version(..)` est appelé, ce que
-/// `lib.rs` ne fait pas non plus : on ne réserve donc pas `V` ici, pour ne
-/// pas rejeter une configuration qui n'entre en collision avec rien de
-/// construit. Si `lib.rs` se met un jour à appeler `.version(..)`, cette
-/// liste devra suivre.
+/// Short letter reserved by `clap`: every `Command` gets an automatic
+/// `-h`/`--help` flag, whether or not `disable_help_flag` is called —
+/// verified in `lib.rs`, which does not call it. `-V`/`--version`, on the
+/// other hand, only exists if `Command::version(..)` is called, which
+/// `lib.rs` also does not do: we therefore do not reserve `V` here, so as
+/// not to reject a configuration that collides with nothing actually
+/// built. If `lib.rs` ever starts calling `.version(..)`, this list will
+/// need to follow.
 const RESERVED_SHORT_LETTERS: [char; 1] = ['h'];
 
-/// Valide le nom d'un argument déclaré (la clé `[args.<nom>]`) : non vide,
-/// composé uniquement des caractères qu'un placeholder `{{ args.<nom> }}`
-/// peut porter, ne commençant pas par `-` (qui le ferait prendre pour un
-/// flag par `clap`), et pas l'un des noms réservés ci-dessus.
+/// Validates the name of a declared argument (the `[args.<name>]` key):
+/// non-empty, made only of the characters a `{{ args.<name> }}`
+/// placeholder can carry, not starting with `-` (which would make `clap`
+/// mistake it for a flag), and not one of the reserved names above.
 ///
-/// La vérification de caractères réutilise `prompt::is_valid_name_char` (la
-/// MÊME règle que celle qui reconnaît `{{ args.<nom> }}`) plutôt que d'en
-/// écrire une seconde : TOML accepte une clé de table entre guillemets
-/// (`[args."café"]`, `[args."foo.bar"]`) sur des caractères qu'un
-/// placeholder n'accepte jamais. Sans ce partage, un tel nom passait la
-/// validation ici (aucune de ces deux formes n'a d'espace ni ne commence par
-/// `-`) puis échouait plus tard, au mieux avec un message pointant sur le
-/// placeholder plutôt que sur la déclaration fautive (« placeholder inconnu
-/// » au lieu de « nom d'argument invalide »), au pire jamais : un argument
-/// déclaré mais non référencé dans le prompt chargeait alors silencieusement
-/// avec un nom qu'aucun prompt ne peut jamais référencer validement.
+/// The character check reuses `prompt::is_valid_name_char` (the SAME
+/// rule that recognizes `{{ args.<name> }}`) rather than writing a second
+/// one: TOML accepts a quoted table key (`[args."café"]`,
+/// `[args."foo.bar"]`) with characters a placeholder never accepts.
+/// Without this sharing, such a name would pass validation here (neither
+/// form has a space nor starts with `-`) and then fail later, at best
+/// with a message pointing at the placeholder rather than the offending
+/// declaration ("unknown placeholder" instead of "invalid argument
+/// name"), at worst never: a declared but unreferenced argument would
+/// then silently load with a name no prompt could ever validly
+/// reference.
 fn validate_arg_name(name: &str) -> crate::Result<()> {
     if name.is_empty() {
         return Err(crate::Error::Config(
-            "un argument a un nom vide (`[args.\"\"]`) : les arguments doivent être nommés"
-                .to_string(),
+            "an argument has an empty name (`[args.\"\"]`): arguments must be named".to_string(),
         ));
     }
     if !name.chars().all(crate::prompt::is_valid_name_char) {
         return Err(crate::Error::Config(format!(
-            "argument « {name} » : le nom d'un argument ne peut contenir que des lettres et \
-             chiffres ASCII, « _ » ou « - » (mêmes caractères qu'un placeholder valide {{{{ \
-             args.<nom> }}}} côté prompt)"
+            "argument \"{name}\": an argument name may only contain ASCII letters and \
+             digits, \"_\" or \"-\" (the same characters a valid placeholder {{{{ \
+             args.<name> }}}} accepts on the prompt side)"
         )));
     }
     if name.starts_with('-') {
         return Err(crate::Error::Config(format!(
-            "argument « {name} » : le nom d'un argument ne peut pas commencer par « - »"
+            "argument \"{name}\": an argument name cannot start with \"-\""
         )));
     }
     if RESERVED_ARG_NAMES.contains(&name) {
         return Err(crate::Error::Config(format!(
-            "argument « {name} » : nom réservé par clap ({}) ; choisissez un autre nom",
+            "argument \"{name}\": name reserved by clap ({}); choose another name",
             RESERVED_ARG_NAMES.join("/")
         )));
     }
     Ok(())
 }
 
-/// Convertit un `short` brut (chaîne TOML, éventuellement absente) en `char`
-/// validé, ou renvoie l'erreur de configuration nommant l'argument `name` et
-/// la valeur fautive `raw`. Ne tronque jamais silencieusement : une chaîne
-/// vide ou de plusieurs caractères est un rejet, pas une troncature au
-/// premier caractère.
+/// Converts a raw `short` (TOML string, possibly absent) into a validated
+/// `char`, or returns the configuration error naming the argument `name`
+/// and the offending value `raw`. Never truncates silently: an empty or
+/// multi-character string is a rejection, not a truncation to the first
+/// character.
 fn convert_short(name: &str, raw: Option<String>) -> crate::Result<Option<char>> {
     let Some(raw) = raw else {
         return Ok(None);
@@ -420,46 +415,47 @@ fn convert_short(name: &str, raw: Option<String>) -> crate::Result<Option<char>>
     let mut chars = raw.chars();
     let (Some(c), None) = (chars.next(), chars.next()) else {
         return Err(crate::Error::Config(format!(
-            "argument « {name} » : « short » doit être un seul caractère, obtenu « {raw} » \
-             ({} caractère(s))",
+            "argument \"{name}\": \"short\" must be a single character, got \"{raw}\" \
+             ({} character(s))",
             raw.chars().count()
         )));
     };
 
     if RESERVED_SHORT_LETTERS.contains(&c) {
         return Err(crate::Error::Config(format!(
-            "argument « {name} » : la lettre courte « {c} » est réservée par clap (aide, \
-             version) ; choisissez-en une autre"
+            "argument \"{name}\": short letter \"{c}\" is reserved by clap (help, version); \
+             choose another one"
         )));
     }
 
-    // `clap::Arg::short` refuse `-` : `debug_assert!(s != '-', "short option
-    // name cannot be `-`")` (clap_builder 4.6.7, `builder/arg.rs`). Un
-    // `debug_assert!` ne s'exécute qu'en profil debug — `cargo run`/`cargo
-    // test`/`make test` paniquent (code de sortie 101, hors contrat) ; `make
-    // qa`/`cargo build --release` (assertions de debug désactivées par
-    // défaut) laisseraient passer silencieusement un flag court `-` inutile
-    // (ambigu avec le préfixe d'option lui-même). Rejeter ici, à la
-    // conversion, referme les deux : pas de dépendance au profil de
-    // compilation pour un comportement correct.
+    // `clap::Arg::short` refuses `-`: `debug_assert!(s != '-', "short option
+    // name cannot be `-`")` (clap_builder 4.6.7, `builder/arg.rs`). A
+    // `debug_assert!` only runs in debug profile — `cargo run`/`cargo
+    // test`/`make test` panic (exit code 101, out of contract); `make
+    // qa`/`cargo build --release` (debug assertions disabled by default)
+    // would silently let a useless `-` short flag through (ambiguous with
+    // the option prefix itself). Rejecting here, at conversion time,
+    // closes both: no dependency on the compilation profile for correct
+    // behavior.
     if c == '-' {
         return Err(crate::Error::Config(format!(
-            "argument « {name} » : la lettre courte ne peut pas être « - » (confondue avec le \
-             préfixe d'option lui-même) ; choisissez-en une autre"
+            "argument \"{name}\": the short letter cannot be \"-\" (confused with the option \
+             prefix itself); choose another one"
         )));
     }
 
     Ok(Some(c))
 }
 
-/// Convertit les `[args.*]` bruts du frontmatter en `ArgSpec`, en validant :
-/// le nom de chaque argument ([`validate_arg_name`]), la conversion de
-/// `short` en `char` ([`convert_short`]), et l'absence de collision entre
-/// deux arguments déclarant la même lettre `short` dans la même commande.
+/// Converts the raw `[args.*]` from the frontmatter into `ArgSpec`,
+/// validating: each argument's name ([`validate_arg_name`]), the
+/// conversion of `short` into a `char` ([`convert_short`]), and the
+/// absence of a collision between two arguments declaring the same
+/// `short` letter within the same command.
 ///
-/// L'itération sur `raw` (un `BTreeMap`) est triée par nom d'argument, donc
-/// le message de collision est déterministe : il nomme toujours l'argument
-/// déjà vu (alphabétiquement antérieur) en premier.
+/// The iteration over `raw` (a `BTreeMap`) is sorted by argument name, so
+/// the collision message is deterministic: it always names the argument
+/// already seen (alphabetically earlier) first.
 fn convert_args(raw: BTreeMap<String, RawArgSpec>) -> crate::Result<BTreeMap<String, ArgSpec>> {
     let mut args = BTreeMap::new();
     let mut shorts_used: BTreeMap<char, String> = BTreeMap::new();
@@ -472,7 +468,7 @@ fn convert_args(raw: BTreeMap<String, RawArgSpec>) -> crate::Result<BTreeMap<Str
             && let Some(existing) = shorts_used.insert(c, name.clone())
         {
             return Err(crate::Error::Config(format!(
-                "arguments « {existing} » et « {name} » partagent la même lettre courte « {c} »"
+                "arguments \"{existing}\" and \"{name}\" share the same short letter \"{c}\""
             )));
         }
 
@@ -489,41 +485,40 @@ fn convert_args(raw: BTreeMap<String, RawArgSpec>) -> crate::Result<BTreeMap<Str
     Ok(args)
 }
 
-/// Résout le chemin d'un schéma JSON déclaré dans `[output].schema` par
-/// rapport à `scope_root` (règle 3 du contrat partagé, §4/§6 de la spec :
-/// `schemas/` est un dossier frère de `commands/`, tous deux enfants directs
-/// de la racine de scope). `declared` porte déjà le segment `schemas/` (cf.
-/// l'exemple de §6 : `schema = "schemas/classification.json"`) — on le
-/// joint donc directement à `scope_root`, sans réinsérer `schemas/` une
-/// seconde fois. Un chemin ABSOLU dans le frontmatter est accepté tel quel,
-/// sans jamais être recomposé avec `scope_root`.
+/// Resolves the path of a JSON schema declared in `[output].schema`
+/// against `scope_root` (rule 3 of the shared contract, §4/§6 of the
+/// spec: `schemas/` is a sibling directory of `commands/`, both direct
+/// children of the scope root). `declared` already carries the
+/// `schemas/` segment (see the §6 example:
+/// `schema = "schemas/classification.json"`) — it is therefore joined
+/// directly to `scope_root`, without inserting `schemas/` a second time.
+/// An ABSOLUTE path in the frontmatter is accepted as-is, never
+/// recomposed with `scope_root`.
 ///
-/// PUREMENT SYNTAXIQUE : ne touche JAMAIS le disque, ne vérifie ni
-/// l'existence ni la lisibilité ni la validité du fichier obtenu — c'est une
-/// simple composition de chemins, infaillible. C'est un changement
-/// DÉLIBÉRÉ de la revue L3 de cette phase : la version précédente vérifiait
-/// l'existence ICI, donc dès `discover_scopes`/`discover`, c'est-à-dire
-/// avant même la construction de l'arbre `clap` dans `build_cli` (cf.
-/// `lib.rs::run`) — un schéma absent pour UNE SEULE commande, même une
-/// commande générale que personne n'invoque jamais, faisait donc échouer
-/// jusqu'à `npu --help` pour tout le CLI. C'était strictement PIRE qu'un
-/// schéma présent mais syntaxiquement cassé, qui restait toléré : la
-/// compilation du schéma (`output::compile_schema`) est PARESSEUSE par
-/// conception (règle 4 du contrat partagé, cf. doc de `output.rs`),
-/// réservée à la commande réellement invoquée, donc une erreur de contenu
-/// (JSON cassé) ne se déclenchait jamais avant l'usage — seule l'existence
-/// se déclenchait trop tôt. Les deux vérifications sont désormais alignées :
-/// PARESSEUSES TOUTES LES DEUX, jusqu'à l'exécution réelle de la commande
-/// qui réclame le schéma (`output::compile_schema`, qui produit alors une
-/// `Error::Config` nommant à la fois le chemin résolu ET le fichier de
-/// commande fautif). Même leçon que la revue L3 de la phase 2 pour un
-/// backend/modèle cassé masqué par un scope plus local : un élément cassé
-/// appartenant à une commande que personne n'invoque ne doit jamais
-/// désactiver le CLI entier. La vérification exhaustive de tous les
-/// schémas de tous les scopes, invoqués ou non, est le travail de
-/// `npu doctor` (phase 5, hors périmètre ici) — NE PAS rétablir de
-/// vérification d'existence ici en croyant corriger un oubli : ce serait
-/// réintroduire précisément le bogue que ce correctif élimine.
+/// PURELY SYNTACTIC: never touches the disk, checks neither the
+/// existence, readability nor validity of the resulting file — it's a
+/// simple, infallible path composition. This is a DELIBERATE change from
+/// this phase's L3 review: the previous version checked existence HERE,
+/// i.e. as early as `discover_scopes`/`discover`, that is before even the
+/// clap tree is built in `build_cli` (see `lib.rs::run`) — a schema
+/// missing for a SINGLE command, even a general command nobody ever
+/// invokes, would therefore make `npu --help` fail for the whole CLI.
+/// That was strictly WORSE than a schema present but syntactically
+/// broken, which stayed tolerated: schema compilation
+/// (`output::compile_schema`) is LAZY by design (rule 4 of the shared
+/// contract, see `output.rs`'s doc), reserved for the command actually
+/// invoked, so a content error (broken JSON) never triggered before use —
+/// only existence triggered too early. Both checks are now aligned: BOTH
+/// LAZY, until the actual execution of the command requesting the schema
+/// (`output::compile_schema`, which then produces an `Error::Config`
+/// naming both the resolved path AND the offending command file). Same
+/// lesson as the L3 review of phase 2 for a broken backend/model shadowed
+/// by a more local scope: a broken element belonging to a command nobody
+/// invokes must never disable the whole CLI. Exhaustively checking every
+/// schema of every scope, invoked or not, is `npu doctor`'s job (phase 5,
+/// out of scope here) — DO NOT reinstate an existence check here thinking
+/// you're fixing an oversight: that would reintroduce exactly the bug
+/// this fix eliminates.
 fn resolve_schema_path(declared: &str, scope_root: &std::path::Path) -> std::path::PathBuf {
     let declared_path = std::path::Path::new(declared);
     if declared_path.is_absolute() {
@@ -533,27 +528,28 @@ fn resolve_schema_path(declared: &str, scope_root: &std::path::Path) -> std::pat
     }
 }
 
-/// Convertit la section `[output]` brute du frontmatter (`RawOutputSpec`) en
-/// `crate::output::OutputSpec`, résolue et validée.
+/// Converts the raw `[output]` section of the frontmatter
+/// (`RawOutputSpec`) into a resolved and validated
+/// `crate::output::OutputSpec`.
 ///
-/// Absence de `[output]` (`raw = None`) => `OutputSpec::default()` (`format
-/// = text`, pas de schéma, pas de limite) : la section est optionnelle.
+/// Absence of `[output]` (`raw = None`) => `OutputSpec::default()`
+/// (`format = text`, no schema, no limit): the section is optional.
 ///
-/// Combinaisons interdites (règle 2 du contrat partagé), rejetées ICI, au
-/// chargement :
-/// - `schema` déclaré avec `format = "text"` : un schéma ne veut rien dire
-///   sur du texte ;
-/// - `max_lines` déclaré avec `format = "json"` : `max_lines` ne s'applique
-///   qu'au texte.
+/// Forbidden combinations (rule 2 of the shared contract), rejected
+/// HERE, at load time:
+/// - `schema` declared with `format = "text"`: a schema means nothing on
+///   plain text;
+/// - `max_lines` declared with `format = "json"`: `max_lines` only
+///   applies to text.
 ///
-/// `format = "json"` SANS `schema` est explicitement AUTORISÉ (règle 2) : la
-/// sortie est alors seulement vérifiée comme étant du JSON bien formé, sans
-/// validation de schéma (cf. `output::finalize_json`, `schema: None`).
+/// `format = "json"` WITHOUT `schema` is explicitly ALLOWED (rule 2): the
+/// output is then only checked as being well-formed JSON, without schema
+/// validation (see `output::finalize_json`, `schema: None`).
 ///
-/// La résolution du chemin de schéma (`resolve_schema_path`) n'est appelée
-/// que dans la branche `Json` : par construction, `format = "text"` a déjà
-/// rejeté toute présence de `schema` juste au-dessus, donc il n'y a jamais
-/// de chemin à résoudre pour du texte.
+/// The schema path resolution (`resolve_schema_path`) is only called in
+/// the `Json` branch: by construction, `format = "text"` has already
+/// rejected any presence of `schema` right above, so there's never a
+/// path to resolve for text.
 fn convert_output(
     raw: Option<RawOutputSpec>,
     scope_root: &std::path::Path,
@@ -566,9 +562,9 @@ fn convert_output(
         crate::output::Format::Text => {
             if raw.schema.is_some() {
                 return Err(crate::Error::Config(
-                    "[output] : « schema » n'a de sens qu'avec format = \"json\" (un schéma \
-                     JSON Schema ne peut rien valider sur du texte brut) ; retirez « schema » \
-                     ou passez format = \"json\""
+                    "[output]: \"schema\" only makes sense with format = \"json\" (a JSON \
+                     Schema cannot validate anything on plain text); remove \"schema\" or set \
+                     format = \"json\""
                         .to_string(),
                 ));
             }
@@ -581,9 +577,9 @@ fn convert_output(
         crate::output::Format::Json => {
             if raw.max_lines.is_some() {
                 return Err(crate::Error::Config(
-                    "[output] : « max_lines » n'a de sens qu'avec format = \"text\" (la \
-                     commande déclare format = \"json\", compté en structure, pas en lignes) ; \
-                     retirez « max_lines » ou passez format = \"text\""
+                    "[output]: \"max_lines\" only makes sense with format = \"text\" (the \
+                     command declares format = \"json\", counted in structure, not lines); \
+                     remove \"max_lines\" or set format = \"text\""
                         .to_string(),
                 ));
             }
@@ -600,21 +596,21 @@ fn convert_output(
     }
 }
 
-/// Parse le contenu d'un fichier de commande.
+/// Parses the content of a command file.
 ///
-/// Le frontmatter est délimité par des lignes `+++` ; l'en-tête est du TOML,
-/// le corps (après le second délimiteur) est le prompt. `scope_root` est la
-/// racine de scope (§4/§6 de la spec, ex. `./.npu`) dont ce fichier de
-/// commande est issu : elle sert UNIQUEMENT à résoudre un éventuel
-/// `[output].schema` relatif (règle 3 du contrat partagé), jamais à autre
-/// chose ici. Changement de signature publique par rapport aux phases 1 à 3
-/// (revue du plan de phase 4, contrat d'API partagé) : la résolution du
-/// chemin de schéma a besoin de la racine de scope du fichier, qui n'est
-/// connaissable qu'à l'endroit où les fichiers sont collectés
-/// (`collect_command_files`) — donc threadée jusqu'ici par l'appelant
-/// (`read_and_parse`) plutôt que devinée en remontant depuis le chemin du
-/// fichier, qui décalerait faux pour une commande imbriquée (§4/§6, `git/
-/// review.md` reste sous la MÊME racine de scope que `classify.md`).
+/// The frontmatter is delimited by `+++` lines; the header is TOML, the
+/// body (after the second delimiter) is the prompt. `scope_root` is the
+/// scope root (§4/§6 of the spec, e.g. `./.npu`) this command file comes
+/// from: it is used ONLY to resolve a possible relative
+/// `[output].schema` (rule 3 of the shared contract), never for anything
+/// else here. Public signature change compared to phases 1 to 3 (phase 4
+/// plan review, shared API contract): resolving the schema path needs
+/// the file's scope root, which is only knowable where the files are
+/// collected (`collect_command_files`) — therefore threaded through here
+/// by the caller (`read_and_parse`) rather than guessed by walking up
+/// from the file path, which would resolve wrong for a nested command
+/// (§4/§6, `git/review.md` stays under the SAME scope root as
+/// `classify.md`).
 pub fn parse(
     source: &str,
     path: Vec<String>,
@@ -626,7 +622,7 @@ pub fn parse(
         Some("+++") => {}
         _ => {
             return Err(crate::Error::Config(
-                "frontmatter manquant : le fichier doit commencer par une ligne '+++'".to_string(),
+                "missing frontmatter: the file must start with a '+++' line".to_string(),
             ));
         }
     }
@@ -643,74 +639,74 @@ pub fn parse(
     }
     if !closed {
         return Err(crate::Error::Config(
-            "frontmatter non fermé : ligne '+++' de fin manquante".to_string(),
+            "unterminated frontmatter: missing closing '+++' line".to_string(),
         ));
     }
     rest_lines.extend(lines);
 
     let header = header_lines.join("\n");
     let frontmatter: Frontmatter = toml::from_str(&header)
-        .map_err(|err| crate::Error::Config(format!("frontmatter invalide : {err}")))?;
+        .map_err(|err| crate::Error::Config(format!("invalid frontmatter: {err}")))?;
 
     let prompt = rest_lines.join("\n");
     let prompt = prompt.trim_start_matches('\n').to_string();
 
     let args = convert_args(frontmatter.args)?;
 
-    // Validation statique des placeholders (npu-cli-spec.md §12) : un prompt
-    // référençant {{ args.inconnu }} doit échouer ICI, au chargement — pas
-    // au moment de l'exécution. `parse` ne tourne que sur les fichiers
-    // gagnants de la résolution de scopes (cf. `discover_scopes`), donc un
-    // fichier masqué par un override local, même avec un placeholder cassé,
-    // n'est toujours jamais ouvert ni validé (cf. revue L3, phase 2 ; test
+    // Static placeholder validation (npu-cli-spec.md §12): a prompt
+    // referencing {{ args.unknown }} must fail HERE, at load time — not
+    // at execution time. `parse` only runs on the winning files of scope
+    // resolution (see `discover_scopes`), so a file shadowed by a local
+    // override, even with a broken placeholder, is still never opened nor
+    // validated (see L3 review, phase 2; test
     // `discover_scopes_broken_placeholder_fully_masked_by_local_scope_resolves_successfully`).
     let declared: BTreeSet<String> = args.keys().cloned().collect();
     crate::prompt::validate(&prompt, &declared)?;
 
-    // Revue L3, correctif 2 : un argument référencé par le prompt via
-    // {{ args.NOM }} mais déclaré `required = false` est une contradiction
-    // dans le fichier de commande lui-même — un prompt qui interpole NOM ne
-    // peut jamais se rendre sans NOM, quelle que soit la ligne de commande
-    // effectivement tapée. On rejette ICI, au chargement, en nommant
-    // l'argument (le fichier est ajouté par l'appelant, cf. `read_and_parse`)
-    // plutôt que de laisser l'échec se produire au rendu (où il peut
-    // survenir bien après que l'entrée a été consommée, cf. correctif 1) ou,
-    // pire, de promouvoir silencieusement l'argument en `required = true` :
-    // ce serait honorer la configuration autrement qu'elle n'est déclarée,
-    // la même règle que ce projet applique depuis la phase 1 (une clé lue
-    // puis ignorée, ou une valeur réinterprétée, est un défaut).
+    // L3 review, fix 2: an argument referenced by the prompt via
+    // {{ args.NAME }} but declared `required = false` is a contradiction
+    // within the command file itself — a prompt that interpolates NAME
+    // can never be rendered without NAME, whatever the command line
+    // actually typed. Reject HERE, at load time, naming the argument (the
+    // file is added by the caller, see `read_and_parse`) rather than
+    // letting the failure happen at render time (where it can occur well
+    // after the input was consumed, see fix 1) or, worse, silently
+    // promoting the argument to `required = true`: that would honor the
+    // configuration differently from how it is declared, the same rule
+    // this project has applied since phase 1 (a key read then ignored, or
+    // a value reinterpreted, is a defect).
     //
-    // La raison de fond : en phase 5, `npu doctor`/`npu describe` doivent
-    // pouvoir dire qu'un fichier de commande est cassé SANS l'invoquer. Un
-    // fichier dont le prompt ne peut jamais être rendu (quel que soit
-    // l'appel) est cassé ; le rejeter au chargement le rend détectable
-    // gratuitement, avant toute exécution.
+    // The underlying reason: in phase 5, `npu doctor`/`npu describe` must
+    // be able to say that a command file is broken WITHOUT invoking it. A
+    // file whose prompt can never be rendered (whatever the call) is
+    // broken; rejecting it at load time makes it detectable for free,
+    // before any execution.
     //
-    // Contrainte délibérée de l'état ACTUEL, pas une vérité permanente : le
-    // jour où les valeurs par défaut (`default = "..."`) existeront pour
-    // `[args.*]`, un argument optionnel avec une valeur par défaut pourra de
-    // nouveau être référencé par le prompt sans contradiction, et ce rejet
-    // devra être assoupli en conséquence.
+    // Deliberate constraint of the CURRENT state, not a permanent truth:
+    // the day default values (`default = "..."`) exist for `[args.*]`, an
+    // optional argument with a default value will be able to be
+    // referenced by the prompt again without contradiction, and this
+    // rejection will need to be relaxed accordingly.
     for placeholder in crate::prompt::placeholders(&prompt)? {
         if let crate::prompt::Placeholder::Arg(name) = placeholder {
-            // `declared` est garanti contenir `name` : `prompt::validate`
-            // ci-dessus aurait déjà échoué sinon.
+            // `declared` is guaranteed to contain `name`: `prompt::validate`
+            // above would already have failed otherwise.
             let spec = &args[&name];
             if !spec.required {
                 return Err(crate::Error::Config(format!(
-                    "argument « {name} » référencé par {{{{ args.{name} }}}} mais déclaré \
-                     required = false : un argument référencé par le prompt doit être \
-                     required = true (aucune valeur par défaut n'existe encore pour \
+                    "argument \"{name}\" referenced by {{{{ args.{name} }}}} but declared \
+                     required = false: an argument referenced by the prompt must be \
+                     required = true (no default value exists yet for \
                      `[args.*]`)"
                 )));
             }
         }
     }
 
-    // Section `[output]` (phase 4, npu-cli-spec.md §15) : combinaisons
-    // interdites, résolution du chemin de schéma par rapport à `scope_root`,
-    // et vérification (paresseuse pour la COMPILATION du schéma, pas pour son
-    // existence) — cf. doc de `convert_output`.
+    // `[output]` section (phase 4, npu-cli-spec.md §15): forbidden
+    // combinations, resolving the schema path against `scope_root`, and
+    // verification (lazy for schema COMPILATION, not for its existence) —
+    // see `convert_output`'s doc.
     let output = convert_output(frontmatter.output, scope_root)?;
 
     Ok(CommandSpec {
@@ -721,22 +717,22 @@ pub fn parse(
         prompt,
         args,
         output,
-        // Renseigné par `read_and_parse`, seul appelant qui connaît le
-        // chemin du fichier réellement lu (cf. doc du champ sur
+        // Filled in by `read_and_parse`, the only caller that knows the
+        // path of the file actually read (see the field's doc on
         // `CommandSpec`).
         file: std::path::PathBuf::new(),
     })
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)] // toléré dans les tests (cf. Cargo.toml [lints.clippy]).
+#[allow(clippy::expect_used)] // tolerated in tests (see Cargo.toml [lints.clippy]).
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// Crée un dossier de fixture unique sous `target/`, pour ne pas polluer le
-    /// dépôt ni entrer en collision entre tests exécutés en parallèle (même
-    /// idiome que `config::tests::fixture_dir`).
+    /// Creates a unique fixture directory under `target/`, so as not to
+    /// pollute the repo nor collide between tests run in parallel (same
+    /// idiom as `config::tests::fixture_dir`).
     fn fixture_dir(name: &str) -> std::path::PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -744,15 +740,15 @@ mod tests {
             .join("target")
             .join("test-fixtures")
             .join(format!("command-{name}-{n}"));
-        std::fs::create_dir_all(&dir).expect("création du dossier de fixture");
+        std::fs::create_dir_all(&dir).expect("failed to create fixture directory");
         dir
     }
 
-    /// Racine de scope factice pour les tests de `parse` qui ne déclarent
-    /// aucun `[output].schema` : sa seule contrainte est de ne pas exister
-    /// (`resolve_schema_path` n'est jamais atteinte tant qu'aucun schéma
-    /// n'est déclaré), donc un chemin fixe suffit — pas besoin d'une
-    /// fixture par test.
+    /// Dummy scope root for `parse` tests that don't declare any
+    /// `[output].schema`: its only constraint is not to exist
+    /// (`resolve_schema_path` is never reached as long as no schema is
+    /// declared), so a fixed path is enough — no need for a fixture per
+    /// test.
     fn test_scope_root() -> std::path::PathBuf {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
@@ -763,18 +759,18 @@ mod tests {
     #[test]
     fn collect_markdown_files_recurses_into_subdirectories() {
         let dir = fixture_dir("collect-nested");
-        std::fs::create_dir_all(dir.join("git")).expect("création du sous-dossier");
-        std::fs::write(dir.join("classify.md"), "top-level").expect("écriture fixture");
-        std::fs::write(dir.join("git/review.md"), "nested").expect("écriture fixture");
-        std::fs::write(dir.join("notes.txt"), "ignoré : pas .md").expect("écriture fixture");
+        std::fs::create_dir_all(dir.join("git")).expect("failed to create subdirectory");
+        std::fs::write(dir.join("classify.md"), "top-level").expect("failed to write fixture");
+        std::fs::write(dir.join("git/review.md"), "nested").expect("failed to write fixture");
+        std::fs::write(dir.join("notes.txt"), "ignored: not .md").expect("failed to write fixture");
 
         let mut found = Vec::new();
-        collect_markdown_files(&dir, &mut found).expect("la collecte doit réussir");
+        collect_markdown_files(&dir, &mut found).expect("collection should succeed");
 
         assert_eq!(
             found.len(),
             2,
-            "seuls les .md doivent être collectés, à toute profondeur"
+            "only .md files should be collected, at any depth"
         );
         assert!(found.contains(&dir.join("classify.md")));
         assert!(found.contains(&dir.join("git/review.md")));
@@ -784,14 +780,14 @@ mod tests {
     fn discover_finds_nested_command_path() {
         let root = fixture_dir("discover-nested");
         let commands_dir = root.join("commands").join("git");
-        std::fs::create_dir_all(&commands_dir).expect("création du dossier commands/git");
+        std::fs::create_dir_all(&commands_dir).expect("failed to create commands/git directory");
         std::fs::write(
             commands_dir.join("review.md"),
             "+++\nmodel = \"qwen-fast\"\n+++\nprompt\n",
         )
-        .expect("écriture fixture");
+        .expect("failed to write fixture");
 
-        let specs = discover(&root).expect("la découverte doit réussir");
+        let specs = discover(&root).expect("discovery should succeed");
 
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].path, vec!["git".to_string(), "review".to_string()]);
@@ -799,25 +795,22 @@ mod tests {
 
     #[test]
     fn discover_reports_faulty_file_path_on_broken_frontmatter() {
-        // Revue L3 (phase 1) : une config lue mais rejetée doit nommer le
-        // fichier fautif. `parse` seul ne peut pas le faire (il ne connaît
-        // pas le chemin) ; c'est `discover` qui doit l'ajouter.
+        // L3 review (phase 1): a config read but rejected must name the
+        // offending file. `parse` alone cannot do it (it doesn't know the
+        // path); it's `discover` that must add it.
         let root = fixture_dir("discover-broken-frontmatter");
         let commands_dir = root.join("commands");
-        std::fs::create_dir_all(&commands_dir).expect("création du dossier commands");
-        std::fs::write(
-            commands_dir.join("broken.md"),
-            "pas de frontmatter du tout\n",
-        )
-        .expect("écriture fixture");
+        std::fs::create_dir_all(&commands_dir).expect("failed to create commands directory");
+        std::fs::write(commands_dir.join("broken.md"), "no frontmatter at all\n")
+            .expect("failed to write fixture");
 
-        let err = discover(&root).expect_err("un frontmatter manquant doit échouer");
+        let err = discover(&root).expect_err("missing frontmatter should fail");
 
         assert!(matches!(err, crate::Error::Config(_)));
         let message = err.to_string();
         assert!(
             message.contains("broken.md"),
-            "le message d'erreur doit nommer le fichier fautif, obtenu : {message}"
+            "the error message must name the offending file, got: {message}"
         );
     }
 
@@ -884,28 +877,28 @@ mod tests {
         assert_eq!(spec.path, vec!["git".to_string(), "review".to_string()]);
     }
 
-    /// Écrit une commande `<root>/commands/<rel_path>.md` avec le frontmatter
-    /// minimal donné, en créant les dossiers intermédiaires.
+    /// Writes a `<root>/commands/<rel_path>.md` command with the given
+    /// minimal frontmatter, creating intermediate directories.
     fn write_command(root: &std::path::Path, rel_path: &str, model: &str, prompt: &str) {
         let file = root.join("commands").join(format!("{rel_path}.md"));
-        std::fs::create_dir_all(file.parent().expect("le fichier a un parent"))
-            .expect("création des dossiers intermédiaires");
+        std::fs::create_dir_all(file.parent().expect("file has a parent"))
+            .expect("failed to create intermediate directories");
         std::fs::write(&file, format!("+++\nmodel = \"{model}\"\n+++\n{prompt}\n"))
-            .expect("écriture fixture");
+            .expect("failed to write fixture");
     }
 
     #[test]
     fn discover_scopes_local_redefinition_wins() {
         let general = fixture_dir("scopes-general");
         let local = fixture_dir("scopes-local");
-        write_command(&general, "classify", "qwen-general", "prompt général");
-        write_command(&local, "classify", "qwen-local", "prompt local");
+        write_command(&general, "classify", "qwen-general", "general prompt");
+        write_command(&local, "classify", "qwen-local", "local prompt");
 
-        let specs = discover_scopes(&[general, local]).expect("discover_scopes doit réussir");
+        let specs = discover_scopes(&[general, local]).expect("discover_scopes should succeed");
 
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].model, "qwen-local");
-        assert_eq!(specs[0].prompt, "prompt local");
+        assert_eq!(specs[0].prompt, "local prompt");
     }
 
     #[test]
@@ -915,7 +908,7 @@ mod tests {
         write_command(&general, "classify", "qwen-general", "p1");
         write_command(&local, "summarize", "qwen-local", "p2");
 
-        let specs = discover_scopes(&[general, local]).expect("discover_scopes doit réussir");
+        let specs = discover_scopes(&[general, local]).expect("discover_scopes should succeed");
 
         let mut paths: Vec<_> = specs.iter().map(|s| s.path.join("/")).collect();
         paths.sort();
@@ -926,27 +919,27 @@ mod tests {
     fn discover_scopes_nested_command_replaced_by_full_path_no_collision_with_root_sibling() {
         let general = fixture_dir("scopes-nested-general");
         let local = fixture_dir("scopes-nested-local");
-        write_command(&general, "git/review", "qwen-general", "p général");
-        write_command(&general, "review", "qwen-root", "p racine");
-        write_command(&local, "git/review", "qwen-local", "p local");
+        write_command(&general, "git/review", "qwen-general", "general p");
+        write_command(&general, "review", "qwen-root", "root p");
+        write_command(&local, "git/review", "qwen-local", "local p");
 
-        let specs = discover_scopes(&[general, local]).expect("discover_scopes doit réussir");
+        let specs = discover_scopes(&[general, local]).expect("discover_scopes should succeed");
 
         assert_eq!(specs.len(), 2);
 
         let nested = specs
             .iter()
             .find(|s| s.path == vec!["git".to_string(), "review".to_string()])
-            .expect("git/review doit être présent");
+            .expect("git/review should be present");
         assert_eq!(nested.model, "qwen-local");
-        assert_eq!(nested.prompt, "p local");
+        assert_eq!(nested.prompt, "local p");
 
         let root_level = specs
             .iter()
             .find(|s| s.path == vec!["review".to_string()])
-            .expect("review racine doit être présent, distinct de git/review");
+            .expect("root-level review should be present, distinct from git/review");
         assert_eq!(root_level.model, "qwen-root");
-        assert_eq!(root_level.prompt, "p racine");
+        assert_eq!(root_level.prompt, "root p");
     }
 
     #[test]
@@ -956,7 +949,7 @@ mod tests {
             .join("test-fixtures")
             .join("command-scopes-does-not-exist");
 
-        let specs = discover_scopes(&[nonexistent]).expect("discover_scopes doit réussir");
+        let specs = discover_scopes(&[nonexistent]).expect("discover_scopes should succeed");
 
         assert!(specs.is_empty());
     }
@@ -968,76 +961,70 @@ mod tests {
         write_command(&general, "alpha", "m", "p");
         write_command(&general, "middle/child", "m", "p");
 
-        let specs = discover_scopes(&[general]).expect("discover_scopes doit réussir");
+        let specs = discover_scopes(&[general]).expect("discover_scopes should succeed");
 
         let paths: Vec<_> = specs.iter().map(|s| s.path.join("/")).collect();
         let mut sorted = paths.clone();
         sorted.sort();
-        assert_eq!(
-            paths, sorted,
-            "le résultat doit être trié par chemin complet"
-        );
+        assert_eq!(paths, sorted, "the result must be sorted by full path");
     }
 
     #[test]
     fn discover_scopes_broken_frontmatter_fully_masked_by_local_scope_resolves_successfully() {
-        // Revue L3 (phase 2) : la clé d'une commande vient du chemin du
-        // fichier, pas de son contenu. Un override local valide doit donc
-        // masquer un fichier général cassé SANS jamais l'ouvrir.
+        // L3 review (phase 2): a command's key comes from the file path,
+        // not its content. A valid local override must therefore shadow a
+        // broken general file WITHOUT ever opening it.
         let general = fixture_dir("scopes-broken-frontmatter-masked-general");
         let commands_dir = general.join("commands");
-        std::fs::create_dir_all(&commands_dir).expect("création du dossier commands");
-        std::fs::write(
-            commands_dir.join("commit-message.md"),
-            "pas de frontmatter\n",
-        )
-        .expect("écriture fixture");
+        std::fs::create_dir_all(&commands_dir).expect("failed to create commands directory");
+        std::fs::write(commands_dir.join("commit-message.md"), "no frontmatter\n")
+            .expect("failed to write fixture");
 
         let local = fixture_dir("scopes-broken-frontmatter-masked-local");
-        write_command(&local, "commit-message", "qwen-local", "prompt local");
+        write_command(&local, "commit-message", "qwen-local", "local prompt");
 
         let specs = discover_scopes(&[general, local])
-            .expect("la version locale doit masquer le fichier cassé du scope général");
+            .expect("the local version should shadow the broken file from the general scope");
 
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].model, "qwen-local");
-        assert_eq!(specs[0].prompt, "prompt local");
+        assert_eq!(specs[0].prompt, "local prompt");
     }
 
     #[test]
     fn discover_error_message_does_not_double_config_error_prefix() {
-        // Revue L3 (phase 2) : `discover` enveloppait l'erreur déjà formatée
-        // de `parse` (qui porte déjà « erreur de configuration : ») au lieu
-        // de son message, doublant le préfixe.
+        // L3 review (phase 2): `discover` used to wrap `parse`'s
+        // already-formatted error (which already carries "configuration
+        // error: ") instead of its message, doubling the prefix.
         let root = fixture_dir("discover-double-prefix");
         let commands_dir = root.join("commands");
-        std::fs::create_dir_all(&commands_dir).expect("création du dossier commands");
-        std::fs::write(commands_dir.join("broken.md"), "pas de frontmatter\n")
-            .expect("écriture fixture");
+        std::fs::create_dir_all(&commands_dir).expect("failed to create commands directory");
+        std::fs::write(commands_dir.join("broken.md"), "no frontmatter\n")
+            .expect("failed to write fixture");
 
-        let err = discover(&root).expect_err("un frontmatter manquant doit échouer");
+        let err = discover(&root).expect_err("missing frontmatter should fail");
         let msg = err.to_string();
         assert!(msg.contains("broken.md"));
     }
 
-    // -- noms réservés (phase 5, point 2 du contrat partagé) --------------------
+    // -- reserved names (phase 5, point 2 of the shared contract) --------------
 
     #[test]
     fn discover_rejects_doctor_naming_file_and_reserved_name() {
         let root = fixture_dir("reserved-doctor");
         write_command(&root, "doctor", "qwen-fast", "prompt");
 
-        let err = discover(&root).expect_err("« doctor » doit être rejeté comme nom réservé");
+        let err = discover(&root).expect_err("\"doctor\" should be rejected as a reserved name");
 
         assert!(matches!(err, crate::Error::Config(_)));
         let msg = err.to_string();
         assert!(
             msg.contains("doctor.md"),
-            "le message doit nommer le fichier fautif, obtenu : {msg}"
+            "the message must name the offending file, got: {msg}"
         );
         assert!(
-            msg.contains("« doctor »"),
-            "le message doit nommer le nom réservé en conflit, obtenu : {msg}"
+            msg.contains("\"doctor\""),
+            "the message must name the conflicting reserved name, got: {msg}"
         );
     }
 
@@ -1046,11 +1033,11 @@ mod tests {
         let root = fixture_dir("reserved-models");
         write_command(&root, "models", "qwen-fast", "prompt");
 
-        let err = discover(&root).expect_err("« models » doit être rejeté comme nom réservé");
+        let err = discover(&root).expect_err("\"models\" should be rejected as a reserved name");
 
         let msg = err.to_string();
-        assert!(msg.contains("models.md"), "obtenu : {msg}");
-        assert!(msg.contains("« models »"), "obtenu : {msg}");
+        assert!(msg.contains("models.md"), "got: {msg}");
+        assert!(msg.contains("\"models\""), "got: {msg}");
     }
 
     #[test]
@@ -1058,37 +1045,37 @@ mod tests {
         let root = fixture_dir("reserved-describe");
         write_command(&root, "describe", "qwen-fast", "prompt");
 
-        let err = discover(&root).expect_err("« describe » doit être rejeté comme nom réservé");
+        let err = discover(&root).expect_err("\"describe\" should be rejected as a reserved name");
 
         let msg = err.to_string();
-        assert!(msg.contains("describe.md"), "obtenu : {msg}");
-        assert!(msg.contains("« describe »"), "obtenu : {msg}");
+        assert!(msg.contains("describe.md"), "got: {msg}");
+        assert!(msg.contains("\"describe\""), "got: {msg}");
     }
 
     #[test]
     fn discover_rejects_help_reserved_name() {
-        // « help » n'est pas un built-in au sens de `builtin::doctor`, mais
-        // fait partie de `builtin::RESERVED` (réservé par clap lui-même) :
-        // le rejet doit s'appliquer identiquement.
+        // "help" is not a built-in in the sense of `builtin::doctor`, but
+        // is part of `builtin::RESERVED` (reserved by clap itself): the
+        // rejection must apply identically.
         let root = fixture_dir("reserved-help");
         write_command(&root, "help", "qwen-fast", "prompt");
 
-        let err = discover(&root).expect_err("« help » doit être rejeté comme nom réservé");
+        let err = discover(&root).expect_err("\"help\" should be rejected as a reserved name");
 
         let msg = err.to_string();
-        assert!(msg.contains("help.md"), "obtenu : {msg}");
-        assert!(msg.contains("« help »"), "obtenu : {msg}");
+        assert!(msg.contains("help.md"), "got: {msg}");
+        assert!(msg.contains("\"help\""), "got: {msg}");
     }
 
     #[test]
     fn nested_reserved_name_segment_is_valid() {
-        // Point 2 du contrat partagé : le rejet ne porte que sur le PREMIER
-        // segment. `commands/git/describe.md` donne `npu git describe`, qui
-        // n'entre en conflit avec rien.
+        // Point 2 of the shared contract: the rejection only applies to
+        // the FIRST segment. `commands/git/describe.md` gives
+        // `npu git describe`, which conflicts with nothing.
         let root = fixture_dir("reserved-nested-valid");
         write_command(&root, "git/describe", "qwen-fast", "prompt");
 
-        let specs = discover(&root).expect("git/describe ne doit pas être rejeté");
+        let specs = discover(&root).expect("git/describe should not be rejected");
 
         assert_eq!(specs.len(), 1);
         assert_eq!(
@@ -1099,40 +1086,39 @@ mod tests {
 
     #[test]
     fn discover_scopes_reserved_name_rejects_local_winner_without_opening_masked_general_file() {
-        // Le rejet d'un nom réservé s'applique au GAGNANT de la résolution de
-        // scopes, quel que soit le scope d'où il vient : il n'existe aucune
-        // façon de rendre un chemin de premier segment réservé valide en le
-        // faisant « gagner » depuis un scope plus local (cf. doc de
-        // `reject_reserved_path`). Ce test vérifie néanmoins la garantie de
-        // masquage habituelle (revue L3, phase 2) : le fichier général,
-        // masqué, n'est JAMAIS ouvert — seul le fichier local gagnant est lu,
-        // et c'est lui (pas le général) que le message d'erreur nomme.
+        // Rejecting a reserved name applies to the WINNER of scope
+        // resolution, whatever scope it comes from: there is no way to
+        // make a path with a reserved first segment valid by having it
+        // "win" from a more local scope (see `reject_reserved_path`'s
+        // doc). This test still verifies the usual shadowing guarantee
+        // (L3 review, phase 2): the general file, shadowed, is NEVER
+        // opened — only the winning local file is read, and it's that one
+        // (not the general one) that the error message names.
         //
-        // Le fichier général contient un frontmatter délibérément cassé
-        // (« pas de frontmatter ») : s'il était ouvert par erreur, l'erreur
-        // résultante nommerait ce fichier général et/ou contiendrait un
-        // indice de parsing frontmatter — ni l'un ni l'autre ne doit
-        // apparaître ici.
+        // The general file deliberately contains broken frontmatter ("no
+        // frontmatter"): if it were opened by mistake, the resulting error
+        // would name this general file and/or contain a frontmatter
+        // parsing hint — neither should appear here.
         let general = fixture_dir("reserved-masked-general");
         let commands_dir = general.join("commands");
-        std::fs::create_dir_all(&commands_dir).expect("création du dossier commands");
-        std::fs::write(commands_dir.join("doctor.md"), "pas de frontmatter\n")
-            .expect("écriture fixture");
+        std::fs::create_dir_all(&commands_dir).expect("failed to create commands directory");
+        std::fs::write(commands_dir.join("doctor.md"), "no frontmatter\n")
+            .expect("failed to write fixture");
 
         let local = fixture_dir("reserved-masked-local");
-        write_command(&local, "doctor", "qwen-local", "prompt local");
+        write_command(&local, "doctor", "qwen-local", "local prompt");
 
         let err = discover_scopes(&[general.clone(), local.clone()])
-            .expect_err("« doctor » reste réservé même en tant que gagnant local");
+            .expect_err("\"doctor\" remains reserved even as a local winner");
 
         let msg = err.to_string();
         assert!(
             msg.contains(local.to_string_lossy().as_ref()),
-            "le message doit nommer le fichier local gagnant, obtenu : {msg}"
+            "the message must name the winning local file, got: {msg}"
         );
         assert!(
             !msg.contains(general.to_string_lossy().as_ref()),
-            "le fichier général masqué ne doit jamais être nommé, obtenu : {msg}"
+            "the shadowed general file must never be named, got: {msg}"
         );
     }
 
@@ -1149,7 +1135,7 @@ mod tests {
         let arg = spec
             .args
             .get("language")
-            .expect("l'argument doit être présent");
+            .expect("the argument should be present");
         assert_eq!(arg.short, Some('l'));
         assert!(arg.required);
         assert_eq!(arg.description, "Target language");
@@ -1161,33 +1147,33 @@ mod tests {
         let spec =
             parse(source, vec!["translate".to_string()], &test_scope_root()).expect("should parse");
 
-        assert_eq!(spec.args.get("language").expect("présent").short, None);
+        assert_eq!(spec.args.get("language").expect("present").short, None);
     }
 
     #[test]
     fn arg_short_multi_character_is_config_error() {
         let source = "+++\nmodel = \"qwen-fast\"\n\n[args.language]\nshort = \"lang\"\n+++\nHello {{ args.language }}\n";
         let err = parse(source, vec!["translate".to_string()], &test_scope_root())
-            .expect_err("un short de plusieurs caractères doit échouer");
+            .expect_err("a multi-character short should fail");
 
         assert!(matches!(err, crate::Error::Config(_)));
         let message = err.to_string();
-        assert!(message.contains("language"), "obtenu : {message}");
-        assert!(message.contains("lang"), "obtenu : {message}");
+        assert!(message.contains("language"), "got: {message}");
+        assert!(message.contains("lang"), "got: {message}");
     }
 
     #[test]
     fn arg_short_dash_is_config_error_not_a_panic() {
-        // `clap::Arg::short('-')` fait `debug_assert!(s != '-', ...)`
-        // (clap_builder 4.6.7) : sans ce rejet à la conversion, un `short =
-        // "-"` paniquerait (code de sortie 101, hors contrat) en profil
-        // debug (`cargo run`/`cargo test`/`make test`), et passerait
-        // silencieusement en profil release. Vérifié empiriquement sur les
-        // deux profils avant ce correctif.
+        // `clap::Arg::short('-')` does `debug_assert!(s != '-', ...)`
+        // (clap_builder 4.6.7): without this rejection at conversion time,
+        // a `short = "-"` would panic (exit code 101, out of contract) in
+        // debug profile (`cargo run`/`cargo test`/`make test`), and would
+        // silently pass in release profile. Verified empirically on both
+        // profiles before this fix.
         let source =
             "+++\nmodel = \"qwen-fast\"\n\n[args.x]\nshort = \"-\"\n+++\nHello {{ args.x }}\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
-            .expect_err("un short « - » doit échouer au chargement, jamais paniquer");
+            .expect_err("a \"-\" short should fail at load time, never panic");
 
         assert!(matches!(err, crate::Error::Config(_)));
         assert!(err.to_string().contains('x'));
@@ -1195,46 +1181,46 @@ mod tests {
 
     #[test]
     fn arg_required_defaults_to_false() {
-        // Le prompt ne référence PAS `{{ args.language }}` : depuis le
-        // correctif 2 (revue L3), un argument référencé par le prompt doit
-        // être `required = true` (cf.
-        // `referenced_arg_with_required_false_is_a_load_error` plus bas). Ce
-        // test-ci vise uniquement la valeur par défaut de `required`, donc le
-        // prompt ne peut pas référencer l'argument sans changer ce qu'il
-        // teste.
+        // The prompt does NOT reference `{{ args.language }}`: since fix
+        // 2 (L3 review), an argument referenced by the prompt must be
+        // `required = true` (see
+        // `referenced_arg_with_required_false_is_a_load_error` below).
+        // This test targets only `required`'s default value, so the
+        // prompt cannot reference the argument without changing what it
+        // tests.
         let source = "+++\nmodel = \"qwen-fast\"\n\n[args.language]\nshort = \"l\"\n+++\nHello {{ input }}\n";
         let spec =
             parse(source, vec!["translate".to_string()], &test_scope_root()).expect("should parse");
 
-        assert!(!spec.args.get("language").expect("présent").required);
+        assert!(!spec.args.get("language").expect("present").required);
     }
 
     #[test]
     fn arg_name_with_accented_character_is_config_error_even_when_unreferenced() {
-        // TOML autorise une clé de table entre guillemets sur des
-        // caractères qu'un placeholder `{{ args.<nom> }}` n'accepte jamais
-        // (cf. doc de `validate_arg_name`). Un tel argument, même jamais
-        // référencé par le prompt, doit échouer AU CHARGEMENT — sinon il
-        // charge silencieusement avec un nom qu'aucun prompt ne peut
-        // jamais référencer validement, exactement le défaut visé par la
-        // règle d'architecture des revues L3.
+        // TOML allows a quoted table key with characters a
+        // `{{ args.<name> }}` placeholder never accepts (see
+        // `validate_arg_name`'s doc). Such an argument, even if never
+        // referenced by the prompt, must fail AT LOAD TIME — otherwise it
+        // silently loads with a name no prompt could ever validly
+        // reference, exactly the defect the L3 reviews' architecture rule
+        // targets.
         let source = "+++\nmodel = \"qwen-fast\"\n\n[args.\"café\"]\nshort = \"c\"\n+++\nHello {{ input }}\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
-            .expect_err("un nom d'argument accentué doit échouer au chargement");
+            .expect_err("an accented argument name should fail at load time");
 
         assert!(matches!(err, crate::Error::Config(_)));
         let message = err.to_string();
-        assert!(message.contains("café"), "obtenu : {message}");
+        assert!(message.contains("café"), "got: {message}");
     }
 
     #[test]
     fn arg_name_with_dot_is_config_error() {
-        // Même défaut que ci-dessus avec un caractère différent : `.` est
-        // valide dans une clé TOML guillemetée mais délimite un préfixe de
-        // placeholder (`args.`/`env.`) côté `prompt.rs`.
+        // Same defect as above with a different character: `.` is valid
+        // in a quoted TOML key but delimits a placeholder prefix
+        // (`args.`/`env.`) on the `prompt.rs` side.
         let source = "+++\nmodel = \"qwen-fast\"\n\n[args.\"foo.bar\"]\n+++\nHello {{ input }}\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
-            .expect_err("un nom d'argument contenant un point doit échouer au chargement");
+            .expect_err("an argument name containing a dot should fail at load time");
 
         assert!(matches!(err, crate::Error::Config(_)));
         assert!(err.to_string().contains("foo.bar"));
@@ -1244,7 +1230,7 @@ mod tests {
     fn arg_named_help_is_config_error() {
         let source = "+++\nmodel = \"qwen-fast\"\n\n[args.help]\nshort = \"h\"\n+++\nHello {{ args.help }}\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
-            .expect_err("un argument nommé « help » doit échouer");
+            .expect_err("an argument named \"help\" should fail");
 
         assert!(matches!(err, crate::Error::Config(_)));
         assert!(err.to_string().contains("help"));
@@ -1252,13 +1238,13 @@ mod tests {
 
     #[test]
     fn arg_named_file_is_config_error() {
-        // `FILE` est l'id de l'argument positionnel que `lib.rs` ajoute pour
-        // les commandes acceptant un fichier en entrée (phase 3) : un
-        // argument déclaré du même nom entrerait en collision (id `clap`
-        // dupliqué) et doit donc être rejeté ici, au chargement.
+        // `FILE` is the id of the positional argument `lib.rs` adds for
+        // commands accepting a file as input (phase 3): an argument
+        // declared with the same name would collide (duplicate clap id)
+        // and must therefore be rejected here, at load time.
         let source = "+++\nmodel = \"qwen-fast\"\n\n[args.FILE]\nshort = \"f\"\n+++\nHello {{ args.FILE }}\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
-            .expect_err("un argument nommé « FILE » doit échouer");
+            .expect_err("an argument named \"FILE\" should fail");
 
         assert!(matches!(err, crate::Error::Config(_)));
         assert!(err.to_string().contains("FILE"));
@@ -1269,20 +1255,20 @@ mod tests {
         let source = "+++\nmodel = \"qwen-fast\"\n\n[args.alpha]\nshort = \"x\"\n\n[args.beta]\n\
                        short = \"x\"\n+++\nHello {{ args.alpha }} {{ args.beta }}\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
-            .expect_err("deux arguments partageant la même lettre short doivent échouer");
+            .expect_err("two arguments sharing the same short letter should fail");
 
         assert!(matches!(err, crate::Error::Config(_)));
         let message = err.to_string();
-        assert!(message.contains("alpha"), "obtenu : {message}");
-        assert!(message.contains("beta"), "obtenu : {message}");
-        assert!(message.contains('x'), "obtenu : {message}");
+        assert!(message.contains("alpha"), "got: {message}");
+        assert!(message.contains("beta"), "got: {message}");
+        assert!(message.contains('x'), "got: {message}");
     }
 
     #[test]
     fn prompt_referencing_undeclared_arg_is_config_error_at_parse_time() {
         let source = "+++\nmodel = \"qwen-fast\"\n+++\nHello {{ args.language }}\n";
         let err = parse(source, vec!["translate".to_string()], &test_scope_root())
-            .expect_err("un placeholder args.* non déclaré doit échouer au parsing");
+            .expect_err("an undeclared args.* placeholder should fail at parse time");
 
         assert!(matches!(err, crate::Error::Config(_)));
         assert!(err.to_string().contains("language"));
@@ -1322,141 +1308,140 @@ mod tests {
 
     #[test]
     fn discover_scopes_broken_placeholder_fully_masked_by_local_scope_resolves_successfully() {
-        // Même exigence que la revue L3 (phase 2) pour un frontmatter cassé,
-        // appliquée à la nouvelle classe d'échec introduite en phase 3 : un
-        // placeholder {{ args.inconnu }} non déclaré est désormais détecté
-        // par `parse` elle-même. Un scope général portant ce défaut mais
-        // intégralement masqué par un override local valide ne doit
-        // toujours jamais être ouvert ni validé.
+        // Same requirement as the L3 review (phase 2) for a broken
+        // frontmatter, applied to the new failure class introduced in
+        // phase 3: an undeclared {{ args.unknown }} placeholder is now
+        // detected by `parse` itself. A general scope carrying this
+        // defect but fully shadowed by a valid local override must still
+        // never be opened nor validated.
         let general = fixture_dir("scopes-broken-placeholder-masked-general");
         let commands_dir = general.join("commands");
-        std::fs::create_dir_all(&commands_dir).expect("création du dossier commands");
+        std::fs::create_dir_all(&commands_dir).expect("failed to create commands directory");
         std::fs::write(
             commands_dir.join("translate.md"),
-            "+++\nmodel = \"qwen-general\"\n+++\nHello {{ args.inconnu }}\n",
+            "+++\nmodel = \"qwen-general\"\n+++\nHello {{ args.unknown }}\n",
         )
-        .expect("écriture fixture");
+        .expect("failed to write fixture");
 
         let local = fixture_dir("scopes-broken-placeholder-masked-local");
-        write_command(&local, "translate", "qwen-local", "prompt local");
+        write_command(&local, "translate", "qwen-local", "local prompt");
 
         let specs = discover_scopes(&[general, local])
-            .expect("la version locale doit masquer le fichier cassé du scope général");
+            .expect("the local version should shadow the broken file from the general scope");
 
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].model, "qwen-local");
-        assert_eq!(specs[0].prompt, "prompt local");
+        assert_eq!(specs[0].prompt, "local prompt");
     }
 
     #[test]
     fn discover_reports_faulty_file_path_and_declared_args_on_misspelled_placeholder() {
-        // Symétrique de `discover_reports_faulty_file_path_on_broken_frontmatter`
-        // (phase 1) et pendant NON masqué de
-        // `discover_scopes_broken_placeholder_fully_masked_by_local_scope_...` :
-        // c'est le mode de défaillance visé par la règle d'architecture des
-        // revues L3 (« une clé lue puis silencieusement ignorée est un
-        // défaut ») appliquée à la phase 3 — un placeholder mal orthographié
-        // ({{ args.langauge }} au lieu de {{ args.language }}) doit échouer
-        // AU CHARGEMENT avec un message nommant le fichier fautif, l'argument
-        // manquant et les arguments déclarés (règle 3 du contrat). `parse`
-        // seul ne connaît pas le chemin du fichier ; c'est `discover` (via
-        // `read_and_parse`) qui doit l'ajouter, sans doubler le préfixe
-        // « erreur de configuration : » (même invariant que
+        // Symmetric to `discover_reports_faulty_file_path_on_broken_frontmatter`
+        // (phase 1) and the non-shadowed counterpart of
+        // `discover_scopes_broken_placeholder_fully_masked_by_local_scope_...`:
+        // this is the failure mode targeted by the L3 reviews' architecture
+        // rule ("a key read then silently ignored is a defect") applied to
+        // phase 3 — a misspelled placeholder ({{ args.langauge }} instead
+        // of {{ args.language }}) must fail AT LOAD TIME with a message
+        // naming the offending file, the missing argument and the declared
+        // arguments (rule 3 of the contract). `parse` alone does not know
+        // the file's path; it's `discover` (via `read_and_parse`) that
+        // must add it, without doubling the "configuration error: " prefix
+        // (same invariant as
         // `discover_error_message_does_not_double_config_error_prefix`).
         let root = fixture_dir("discover-misspelled-placeholder");
         let commands_dir = root.join("commands");
-        std::fs::create_dir_all(&commands_dir).expect("création du dossier commands");
+        std::fs::create_dir_all(&commands_dir).expect("failed to create commands directory");
         std::fs::write(
             commands_dir.join("translate.md"),
             "+++\nmodel = \"qwen-fast\"\n\n[args.language]\nshort = \"l\"\n+++\n\
              Translate into {{ args.langauge }}.\n",
         )
-        .expect("écriture fixture");
+        .expect("failed to write fixture");
 
-        let err = discover(&root).expect_err("un placeholder mal orthographié doit échouer");
+        let err = discover(&root).expect_err("a misspelled placeholder should fail");
 
         assert!(matches!(err, crate::Error::Config(_)));
         let message = err.to_string();
         assert!(
             message.contains("translate.md"),
-            "le message doit nommer le fichier fautif, obtenu : {message}"
+            "the message must name the offending file, got: {message}"
         );
         assert!(
             message.contains("langauge"),
-            "le message doit nommer l'argument inconnu référencé, obtenu : {message}"
+            "the message must name the referenced unknown argument, got: {message}"
         );
         assert!(
             message.contains("language"),
-            "le message doit lister les arguments déclarés (dont 'language'), obtenu : {message}"
+            "the message must list the declared arguments (including 'language'), got: {message}"
         );
     }
 
-    // -- revue L3, correctif 2 : required = false + référencé par le prompt --
+    // -- L3 review, fix 2: required = false + referenced by the prompt --
 
     #[test]
     fn referenced_arg_with_required_false_is_a_load_error_naming_the_file() {
-        // Reproduction exacte du cas 1 de la revue L3 : `[args.tone]` avec
-        // `required = false`, référencé par `{{ args.tone }}`. Doit échouer
-        // AU CHARGEMENT, pas seulement au rendu — et `discover` doit nommer
-        // le fichier fautif (même contrat que `discover_reports_faulty_
-        // file_path_and_declared_args_on_misspelled_placeholder`).
+        // Exact reproduction of case 1 from the L3 review: `[args.tone]`
+        // with `required = false`, referenced by `{{ args.tone }}`. Must
+        // fail AT LOAD TIME, not only at render time — and `discover`
+        // must name the offending file (same contract as
+        // `discover_reports_faulty_file_path_and_declared_args_on_misspelled_placeholder`).
         let root = fixture_dir("referenced-arg-optional-is-load-error");
         let commands_dir = root.join("commands");
-        std::fs::create_dir_all(&commands_dir).expect("création du dossier commands");
+        std::fs::create_dir_all(&commands_dir).expect("failed to create commands directory");
         std::fs::write(
             commands_dir.join("optarg.md"),
             "+++\nmodel = \"qwen-fast\"\n\n[args.tone]\nrequired = false\n+++\n\
-             ton {{ args.tone }} : {{ input }}\n",
+             tone {{ args.tone }}: {{ input }}\n",
         )
-        .expect("écriture fixture");
+        .expect("failed to write fixture");
 
         let err = discover(&root)
-            .expect_err("un argument référencé mais required = false doit échouer au chargement");
+            .expect_err("an argument referenced but required = false should fail at load time");
 
         assert!(matches!(err, crate::Error::Config(_)));
         let message = err.to_string();
         assert!(
             message.contains("optarg.md"),
-            "le message doit nommer le fichier fautif, obtenu : {message}"
+            "the message must name the offending file, got: {message}"
         );
-        assert!(message.contains("tone"), "obtenu : {message}");
+        assert!(message.contains("tone"), "got: {message}");
         assert!(
             message.contains("required = true"),
-            "le message doit expliquer qu'un argument référencé doit être required = true, \
-             obtenu : {message}"
+            "the message must explain that a referenced argument must be required = true, \
+             got: {message}"
         );
     }
 
     #[test]
     fn referenced_arg_with_required_true_loads_correctly() {
-        let source = "+++\nmodel = \"qwen-fast\"\n\n[args.tone]\nrequired = true\n+++\nton {{ args.tone }} : {{ input }}\n";
+        let source = "+++\nmodel = \"qwen-fast\"\n\n[args.tone]\nrequired = true\n+++\ntone {{ args.tone }}: {{ input }}\n";
         let spec =
             parse(source, vec!["optarg".to_string()], &test_scope_root()).expect("should parse");
 
-        assert!(spec.args.get("tone").expect("présent").required);
+        assert!(spec.args.get("tone").expect("present").required);
     }
 
     #[test]
     fn declared_but_unreferenced_arg_with_required_false_stays_valid() {
-        // Non-régression explicitement demandée par la revue L3 : le
-        // correctif 2 ne doit rejeter que les arguments RÉFÉRENCÉS par le
-        // prompt. Un argument déclaré mais non référencé reste un argument
-        // CLI valide et optionnel (cf. aussi
-        // `declared_but_unreferenced_arg_is_not_an_error`, qui ne fixe pas
-        // `required` explicitement).
+        // Non-regression explicitly requested by the L3 review: fix 2
+        // must only reject arguments REFERENCED by the prompt. A declared
+        // but unreferenced argument remains a valid, optional CLI
+        // argument (see also `declared_but_unreferenced_arg_is_not_an_error`,
+        // which doesn't set `required` explicitly).
         let source = "+++\nmodel = \"qwen-fast\"\n\n[args.unused]\nrequired = false\n+++\nHello {{ input }}\n";
         let spec = parse(source, vec!["x".to_string()], &test_scope_root()).expect("should parse");
 
-        assert!(!spec.args.get("unused").expect("présent").required);
+        assert!(!spec.args.get("unused").expect("present").required);
     }
 
-    // -- revue L3, correctif 3 : clés inconnues du frontmatter -----------------
+    // -- L3 review, fix 3: unknown frontmatter keys -----------------
 
     #[test]
     fn unknown_root_level_frontmatter_key_is_config_error() {
-        let source = "+++\nmodel = \"qwen-fast\"\ndescripton = \"faute de frappe\"\n+++\nprompt\n";
+        let source = "+++\nmodel = \"qwen-fast\"\ndescripton = \"typo\"\n+++\nprompt\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
-            .expect_err("une clé racine inconnue doit échouer, pas être ignorée en silence");
+            .expect_err("an unknown root key should fail, not be silently ignored");
 
         assert!(matches!(err, crate::Error::Config(_)));
     }
@@ -1465,8 +1450,8 @@ mod tests {
     fn unknown_input_section_key_is_config_error() {
         let source = "+++\nmodel = \"qwen-fast\"\n\n[input]\nmoed = \"stdin\"\n+++\nprompt\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root()).expect_err(
-            "une clé inconnue sous [input] doit échouer, pas retomber sur le mode \
-                          par défaut en silence",
+            "an unknown key under [input] should fail, not silently fall back to the \
+                          default mode",
         );
 
         assert!(matches!(err, crate::Error::Config(_)));
@@ -1474,15 +1459,15 @@ mod tests {
 
     #[test]
     fn output_section_is_accepted_and_now_interpreted() {
-        // Suite de la revue L3 (correctif 3) : `[output]` existe déjà dans la
-        // fixture versionnée `.npu/commands/commit-message.md` (format =
-        // "text", max_lines = 1). La phase 4 lui donne enfin un sens : les
-        // trois clés doivent désormais être EFFECTIVES, pas seulement
-        // acceptées par `deny_unknown_fields`.
+        // Follow-up to the L3 review (fix 3): `[output]` already exists
+        // in the versioned fixture `.npu/commands/commit-message.md`
+        // (format = "text", max_lines = 1). Phase 4 finally gives it
+        // meaning: the three keys must now be EFFECTIVE, not just
+        // accepted by `deny_unknown_fields`.
         let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"text\"\nmax_lines = 1\n\
                        +++\nprompt\n";
         let spec = parse(source, vec!["x".to_string()], &test_scope_root())
-            .expect("une section [output] valide doit parser");
+            .expect("a valid [output] section should parse");
 
         assert_eq!(spec.prompt, "prompt");
         assert_eq!(spec.output.format, crate::output::Format::Text);
@@ -1496,7 +1481,7 @@ mod tests {
     fn output_section_absent_yields_default_output_spec() {
         let source = "+++\nmodel = \"qwen-fast\"\n+++\nprompt\n";
         let spec = parse(source, vec!["x".to_string()], &test_scope_root())
-            .expect("l'absence de [output] doit toujours parser (phase 4, règle 1 de la tâche)");
+            .expect("the absence of [output] should always parse (phase 4, task rule 1)");
 
         assert_eq!(spec.output.format, crate::output::Format::Text);
         assert_eq!(spec.output.schema, None);
@@ -1505,53 +1490,52 @@ mod tests {
 
     #[test]
     fn output_json_with_schema_resolves_relative_to_scope_root_not_cwd_nor_command_file() {
-        // Point le plus facile à rater de la phase 4 (règle 3 du contrat
-        // partagé) : `schemas/` est un dossier FRÈRE de `commands/`, tous
-        // deux enfants directs de la racine de SCOPE — jamais du cwd, jamais
-        // du dossier du fichier de commande lui-même. Testé avec une
-        // commande IMBRIQUÉE (`git/review.md`, deux niveaux de profondeur)
-        // pour prouver que la profondeur du chemin de commande ne décale pas
-        // la résolution : le schéma doit se résoudre en
-        // `<scope_root>/schemas/classification.json`, PAS en
+        // The easiest point to get wrong in phase 4 (rule 3 of the shared
+        // contract): `schemas/` is a SIBLING directory of `commands/`,
+        // both direct children of the SCOPE root — never the cwd, never
+        // the command file's own directory. Tested with a NESTED command
+        // (`git/review.md`, two levels deep) to prove that the command
+        // path's depth doesn't shift the resolution: the schema must
+        // resolve to `<scope_root>/schemas/classification.json`, NOT
         // `<scope_root>/commands/git/schemas/classification.json`.
         let root = fixture_dir("output-schema-resolution-nested");
         let schemas_dir = root.join("schemas");
-        std::fs::create_dir_all(&schemas_dir).expect("création du dossier schemas");
+        std::fs::create_dir_all(&schemas_dir).expect("failed to create schemas directory");
         let schema_path = schemas_dir.join("classification.json");
-        std::fs::write(&schema_path, r#"{"type": "object"}"#).expect("écriture du schéma");
+        std::fs::write(&schema_path, r#"{"type": "object"}"#).expect("failed to write schema");
 
         let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\n\
                        schema = \"schemas/classification.json\"\n+++\nprompt\n";
         let spec = parse(source, vec!["git".to_string(), "review".to_string()], &root)
-            .expect("un schéma existant sous schemas/ à la racine de scope doit résoudre");
+            .expect("an existing schema under schemas/ at the scope root should resolve");
 
         assert_eq!(spec.output.format, crate::output::Format::Json);
         assert_eq!(
             spec.output.schema.as_deref(),
             Some(schema_path.as_path()),
-            "le schéma doit se résoudre par rapport à la racine de scope, pas au cwd ni au \
-             chemin du fichier de commande, quelle que soit la profondeur du chemin de commande"
+            "the schema must resolve against the scope root, never the cwd nor the command \
+             file's path, whatever the depth of the command path"
         );
     }
 
     #[test]
     fn output_json_schema_absolute_path_is_used_as_is_not_joined_with_scope_root() {
-        // Branche non couverte de `resolve_schema_path` (revue L1/L2 de la
-        // phase 4) : un chemin ABSOLU dans `[output].schema` doit résoudre
-        // vers lui-même, tel quel (cf. doc de `resolve_schema_path`).
-        // `test_scope_root()` désigne une racine qui n'existe même pas sur
-        // disque, pour prouver que la résolution d'un schéma absolu ne
-        // dépend jamais d'elle. Note : `std::path::Path::join` remplace déjà
-        // intégralement la base par un argument absolu (documenté par la
-        // stdlib), donc `scope_root.join(declared_path)` seul produirait le
-        // même résultat qu'avec la branche `is_absolute()` explicite —
-        // celle-ci reste écrite en toutes lettres pour la lisibilité de
-        // l'intention, pas parce qu'elle change le comportement. Ce test
-        // fige donc le RÉSULTAT observable (le chemin renvoyé), pas la
-        // branche interne empruntée pour l'obtenir.
+        // Uncovered branch of `resolve_schema_path` (L1/L2 review of
+        // phase 4): an ABSOLUTE path in `[output].schema` must resolve to
+        // itself, as-is (see `resolve_schema_path`'s doc).
+        // `test_scope_root()` designates a root that doesn't even exist
+        // on disk, to prove that resolving an absolute schema never
+        // depends on it. Note: `std::path::Path::join` already entirely
+        // replaces the base with an absolute argument (documented by the
+        // stdlib), so `scope_root.join(declared_path)` alone would
+        // produce the same result as with the explicit `is_absolute()`
+        // branch — that branch is still spelled out for the readability
+        // of the intent, not because it changes behavior. This test
+        // therefore locks the observable RESULT (the returned path), not
+        // the internal branch taken to get there.
         let root = fixture_dir("output-schema-absolute-path");
         let schema_path = root.join("classification.json");
-        std::fs::write(&schema_path, r#"{"type": "object"}"#).expect("écriture du schéma");
+        std::fs::write(&schema_path, r#"{"type": "object"}"#).expect("failed to write schema");
 
         let source = format!(
             "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\nschema = \"{}\"\n\
@@ -1559,23 +1543,23 @@ mod tests {
             schema_path.display()
         );
         let spec = parse(&source, vec!["x".to_string()], &test_scope_root())
-            .expect("un chemin de schéma absolu doit résoudre sans dépendre de la racine de scope");
+            .expect("an absolute schema path should resolve without depending on the scope root");
 
         assert_eq!(
             spec.output.schema.as_deref(),
             Some(schema_path.as_path()),
-            "un chemin absolu doit être utilisé tel quel, jamais joint à la racine de scope"
+            "an absolute path must be used as-is, never joined with the scope root"
         );
     }
 
     #[test]
     fn output_json_without_schema_is_accepted() {
-        // Règle 2 du contrat partagé : `format = "json"` SANS `schema` est
-        // explicitement autorisé, on valide alors seulement que la sortie
-        // est du JSON bien formé.
+        // Rule 2 of the shared contract: `format = "json"` WITHOUT
+        // `schema` is explicitly allowed, only checking that the output
+        // is well-formed JSON.
         let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\n+++\nprompt\n";
         let spec = parse(source, vec!["x".to_string()], &test_scope_root())
-            .expect("format = json sans schema doit parser");
+            .expect("format = json without schema should parse");
 
         assert_eq!(spec.output.format, crate::output::Format::Json);
         assert_eq!(spec.output.schema, None);
@@ -1583,70 +1567,70 @@ mod tests {
 
     #[test]
     fn output_schema_with_text_format_is_config_error() {
-        // Combinaison interdite (règle 2 du contrat partagé) : un schéma ne
-        // veut rien dire sur du texte.
+        // Forbidden combination (rule 2 of the shared contract): a schema
+        // means nothing on plain text.
         let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"text\"\n\
                        schema = \"schemas/x.json\"\n+++\nprompt\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
-            .expect_err("schema avec format = text doit être rejeté au chargement");
+            .expect_err("schema with format = text should be rejected at load time");
 
         assert!(matches!(err, crate::Error::Config(_)));
         let message = err.to_string();
-        assert!(message.contains("schema"), "obtenu : {message}");
-        assert!(message.contains("text"), "obtenu : {message}");
+        assert!(message.contains("schema"), "got: {message}");
+        assert!(message.contains("text"), "got: {message}");
     }
 
     #[test]
     fn output_max_lines_with_json_format_is_config_error() {
-        // Combinaison interdite symétrique (règle 2 du contrat partagé) :
-        // max_lines ne s'applique qu'au texte.
+        // Symmetric forbidden combination (rule 2 of the shared
+        // contract): max_lines only applies to text.
         let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\nmax_lines = 3\n\
              +++\nprompt\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
-            .expect_err("max_lines avec format = json doit être rejeté au chargement");
+            .expect_err("max_lines with format = json should be rejected at load time");
 
         assert!(matches!(err, crate::Error::Config(_)));
         let message = err.to_string();
-        assert!(message.contains("max_lines"), "obtenu : {message}");
-        assert!(message.contains("json"), "obtenu : {message}");
+        assert!(message.contains("max_lines"), "got: {message}");
+        assert!(message.contains("json"), "got: {message}");
     }
 
     #[test]
     fn output_schema_pointing_to_missing_file_resolves_lazily_at_load() {
-        // Revue L3, correctif 1 : `resolve_schema_path` est désormais
-        // PUREMENT SYNTAXIQUE — un schéma déclaré mais absent du disque ne
-        // doit plus faire échouer le chargement (`parse`), aligné sur la
-        // compilation paresseuse du schéma (cf. doc de `resolve_schema_path`
-        // et de `output.rs`). Le chemin résolu doit néanmoins rester
-        // correct : c'est `output::compile_schema`, à l'exécution réelle de
-        // la commande, qui découvrira l'absence (cf. le test suivant,
+        // L3 review, fix 1: `resolve_schema_path` is now PURELY
+        // SYNTACTIC — a declared but disk-absent schema must no longer
+        // make loading (`parse`) fail, aligned with the schema's lazy
+        // compilation (see `resolve_schema_path`'s doc and `output.rs`'s).
+        // The resolved path must nonetheless stay correct: it's
+        // `output::compile_schema`, at the command's actual execution,
+        // that discovers the absence (see the next test,
         // `output_schema_missing_file_error_names_the_command_file_via_discover`).
         let root = fixture_dir("output-schema-missing");
         let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\n\
                        schema = \"schemas/does-not-exist.json\"\n+++\nprompt\n";
         let spec = parse(source, vec!["x".to_string()], &root)
-            .expect("un schéma introuvable ne doit plus faire échouer le chargement");
+            .expect("a missing schema should no longer make loading fail");
 
         assert_eq!(
             spec.output.schema.as_deref(),
             Some(root.join("schemas").join("does-not-exist.json").as_path()),
-            "le chemin résolu doit rester correct même si le fichier n'existe pas"
+            "the resolved path must stay correct even if the file doesn't exist"
         );
     }
 
     #[test]
     fn output_schema_missing_file_error_names_the_command_file_via_discover() {
-        // Revue L3, correctif 1 : verrouille le NOUVEAU contrat, pas
-        // l'ancien. Le chargement (`discover`) réussit désormais même si le
-        // schéma déclaré est absent (résolution paresseuse, cf.
-        // `resolve_schema_path`) — `--help` et toute autre commande du même
-        // scope restent utilisables. L'erreur survient à l'USAGE, quand la
-        // commande qui réclame ce schéma est réellement invoquée
-        // (`output::finalize`, qui délègue à `compile_schema`), et doit
-        // nommer les DEUX chemins : le chemin résolu du schéma ET le fichier
-        // de commande qui le réclame — même exigence que pour un
-        // frontmatter cassé ou un placeholder inconnu (règle d'architecture
-        // des revues L3 des phases 1 à 3).
+        // L3 review, fix 1: locks in the NEW contract, not the old one.
+        // Loading (`discover`) now succeeds even if the declared schema
+        // is absent (lazy resolution, see `resolve_schema_path`) —
+        // `--help` and every other command in the same scope remain
+        // usable. The error occurs at USE, when the command requesting
+        // this schema is actually invoked (`output::finalize`, which
+        // delegates to `compile_schema`), and must name BOTH paths: the
+        // schema's resolved path AND the command file requesting it —
+        // same requirement as for a broken frontmatter or an unknown
+        // placeholder (the L3 reviews' architecture rule for phases 1 to
+        // 3).
         let root = fixture_dir("output-schema-missing-discover");
         write_command_with_output(
             &root,
@@ -1656,20 +1640,20 @@ mod tests {
             "format = \"json\"\nschema = \"schemas/absent.json\"",
         );
 
-        let specs = discover(&root).expect("le chargement doit réussir malgré le schéma absent");
+        let specs = discover(&root).expect("loading should succeed despite the missing schema");
         let spec = specs
             .iter()
             .find(|s| s.path == vec!["classify".to_string()])
-            .expect("la commande classify doit être présente");
+            .expect("the classify command should be present");
 
         let err = crate::output::finalize(&spec.output, "{}", &spec.file)
-            .expect_err("un schéma absent doit échouer À L'USAGE, pas au chargement");
+            .expect_err("a missing schema should fail AT USE, not at load time");
 
         assert!(matches!(err, crate::Error::Config(_)));
         let message = err.to_string();
         assert!(
             message.contains("classify.md"),
-            "le message doit nommer le fichier de commande fautif, obtenu : {message}"
+            "the message must name the offending command file, got: {message}"
         );
         assert!(
             message.contains(
@@ -1678,27 +1662,26 @@ mod tests {
                     .to_string_lossy()
                     .as_ref()
             ),
-            "le message doit aussi citer le chemin résolu du schéma, obtenu : {message}"
+            "the message must also cite the schema's resolved path, got: {message}"
         );
     }
 
     #[test]
     fn unknown_output_section_key_is_config_error() {
-        // Même règle d'architecture que le reste du frontmatter
-        // (`deny_unknown_fields`, revues L3 des phases 1 à 3), désormais
-        // appliquée à `[output]`.
+        // Same architecture rule as the rest of the frontmatter
+        // (`deny_unknown_fields`, L3 reviews of phases 1 to 3), now
+        // applied to `[output]`.
         let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformt = \"json\"\n+++\nprompt\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
-            .expect_err("une clé inconnue sous [output] doit échouer, pas être ignorée");
+            .expect_err("an unknown key under [output] should fail, not be ignored");
 
         assert!(matches!(err, crate::Error::Config(_)));
     }
 
-    /// Écrit une commande `<root>/commands/<rel_path>.md` avec un frontmatter
-    /// minimal et une section `[output]` donnée en TOML brut (sans les
-    /// crochets `[output]` eux-mêmes, ajoutés ici). Complète `write_command`
-    /// (qui ne déclare pas de section `[output]`) pour les tests ciblant
-    /// spécifiquement cette section via `discover`.
+    /// Writes a `<root>/commands/<rel_path>.md` command with a minimal
+    /// frontmatter and a given raw-TOML `[output]` section. Complements
+    /// `write_command` (which doesn't declare an `[output]` section) for
+    /// tests specifically targeting that section via `discover`.
     fn write_command_with_output(
         root: &std::path::Path,
         rel_path: &str,
@@ -1707,35 +1690,36 @@ mod tests {
         output_toml: &str,
     ) {
         let file = root.join("commands").join(format!("{rel_path}.md"));
-        std::fs::create_dir_all(file.parent().expect("le fichier a un parent"))
-            .expect("création des dossiers intermédiaires");
+        std::fs::create_dir_all(file.parent().expect("file has a parent"))
+            .expect("failed to create intermediate directories");
         std::fs::write(
             &file,
             format!("+++\nmodel = \"{model}\"\n\n[output]\n{output_toml}\n+++\n{prompt}\n"),
         )
-        .expect("écriture fixture");
+        .expect("failed to write fixture");
     }
 
     #[test]
     fn real_commit_message_fixture_output_section_is_now_effective() {
-        // C'est la dette précise que cette phase rembourse : la fixture
-        // versionnée `.npu/commands/commit-message.md` déclare `[output]`
-        // (format = "text", max_lines = 1) depuis la phase 3, jamais honorée
-        // jusqu'ici. Elle doit désormais parser ET donner max_lines = Some(1).
+        // This is the exact debt this phase repays: the versioned
+        // fixture `.npu/commands/commit-message.md` has declared
+        // `[output]` (format = "text", max_lines = 1) since phase 3,
+        // never honored until now. It must now parse AND yield
+        // max_lines = Some(1).
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".npu");
-        let commands = discover(&root).expect("la fixture .npu/ réelle doit toujours charger");
+        let commands = discover(&root).expect("the real .npu/ fixture should always load");
 
         let commit_message = commands
             .iter()
             .find(|spec| spec.path == vec!["commit-message".to_string()])
-            .expect("commit-message doit être présente");
+            .expect("commit-message should be present");
 
         assert_eq!(commit_message.output.format, crate::output::Format::Text);
         assert_eq!(
             commit_message.output.max_lines,
             Some(1),
-            "la dette de la revue L3 (correctif 3) est remboursée : max_lines doit être \
-             effectif, pas seulement accepté"
+            "the L3 review's debt (fix 3) is repaid: max_lines must be effective, not just \
+             accepted"
         );
         assert_eq!(commit_message.output.schema, None);
     }

@@ -162,20 +162,20 @@ fn broken_config_help_still_works_and_lists_builtins_with_stderr_signal() {
     let stdout = stdout_of(&output);
     assert!(
         stdout.contains("doctor"),
-        "stdout of --help must list « doctor », got: {stdout}"
+        "stdout of --help must list \"doctor\", got: {stdout}"
     );
     assert!(
         stdout.contains("models"),
-        "stdout of --help must list « models », got: {stdout}"
+        "stdout of --help must list \"models\", got: {stdout}"
     );
     assert!(
         stdout.contains("describe"),
-        "stdout of --help must list « describe », got: {stdout}"
+        "stdout of --help must list \"describe\", got: {stdout}"
     );
     let stderr = stderr_of(&output);
     assert!(
         stderr.contains("doctor"),
-        "PROOF (a): stderr must point to « npu doctor », got: {stderr}"
+        "PROOF (a): stderr must point to \"npu doctor\", got: {stderr}"
     );
 }
 

@@ -1,36 +1,36 @@
-//! Résolution des scopes de configuration en couches (phase 2).
+//! Resolution of layered configuration scopes (phase 2).
 //!
-//! Précédence générale -> locale (npu-cli-spec.md §5, IMPLEMENTATION.md
-//! décision 3) : `/etc/npu`, puis `$XDG_CONFIG_HOME/npu` (à défaut
-//! `$HOME/.config/npu`), puis `./.npu`. Les consommateurs (`config.rs`,
-//! `command.rs`) appliquent « le dernier gagne » sur cette liste.
+//! General -> local precedence (npu-cli-spec.md §5, IMPLEMENTATION.md
+//! decision 3): `/etc/npu`, then `$XDG_CONFIG_HOME/npu` (falling back to
+//! `$HOME/.config/npu`), then `./.npu`. Consumers (`config.rs`,
+//! `command.rs`) apply "last one wins" to this list.
 
 use std::path::PathBuf;
 
-/// Racine `/etc/npu`, en dur : ce n'est pas une variable d'environnement
-/// (cf. npu-cli-spec.md §5).
+/// `/etc/npu` root, hardcoded: this is not an environment variable
+/// (see npu-cli-spec.md §5).
 const ETC_ROOT: &str = "/etc/npu";
 
-/// Les entrées d'environnement dont dépend la résolution, isolées pour que
-/// le cœur reste une fonction pure testable sans toucher aux vraies variables.
+/// The environment inputs the resolution depends on, isolated so the
+/// core stays a pure, testable function without touching real variables.
 #[derive(Debug, Clone)]
 pub(crate) struct ScopeEnv {
     /// `/etc/npu`.
     pub etc: PathBuf,
-    /// `$XDG_CONFIG_HOME`, si définie et non vide.
+    /// `$XDG_CONFIG_HOME`, if set and non-empty.
     pub xdg_config_home: Option<PathBuf>,
-    /// `$HOME`, si définie et non vide.
+    /// `$HOME`, if set and non-empty.
     pub home: Option<PathBuf>,
-    /// Répertoire courant.
+    /// Current directory.
     pub cwd: PathBuf,
 }
 
-/// Réduit une valeur de variable d'environnement déjà lue (`None` si absente)
-/// à `None` également lorsqu'elle est vide. Extrait de `non_empty_env_var`
-/// pour rester une fonction pure testable : muter les vraies variables
-/// d'environnement pour couvrir le cas « vide » exigerait `std::env::set_var`,
-/// `unsafe` depuis l'édition 2024 et donc interdit ici (`unsafe_code =
-/// "forbid"`, cf. Cargo.toml).
+/// Reduces an already-read environment variable value (`None` if absent)
+/// to `None` as well when it is empty. Extracted from `non_empty_env_var`
+/// to stay a pure, testable function: mutating real environment variables
+/// to cover the "empty" case would require `std::env::set_var`,
+/// `unsafe` since edition 2024 and therefore forbidden here (`unsafe_code =
+/// "forbid"`, see Cargo.toml).
 fn non_empty(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
     let value = value?;
     if value.is_empty() {
@@ -39,20 +39,20 @@ fn non_empty(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
     Some(PathBuf::from(value))
 }
 
-/// Lit une variable d'environnement système ; renvoie `None` si elle est
-/// absente ou vide.
+/// Reads a system environment variable; returns `None` if it is
+/// absent or empty.
 fn non_empty_env_var(name: &str) -> Option<PathBuf> {
     non_empty(std::env::var_os(name))
 }
 
 impl ScopeEnv {
-    /// Construit un `ScopeEnv` depuis les vraies variables d'environnement et
-    /// le répertoire courant du processus.
+    /// Builds a `ScopeEnv` from the real environment variables and the
+    /// process's current directory.
     ///
-    /// Ne peut pas échouer : un `current_dir()` en échec replie silencieusement
-    /// sur `PathBuf::from(".")` plutôt que de paniquer ou de renvoyer une
-    /// erreur — cette fonction n'a rien d'assez critique pour faire échouer
-    /// tout le programme.
+    /// Cannot fail: a failing `current_dir()` silently falls back to
+    /// `PathBuf::from(".")` rather than panicking or returning an
+    /// error — this function is not critical enough to fail the whole
+    /// program.
     #[must_use]
     pub(crate) fn from_env() -> Self {
         ScopeEnv {
@@ -64,18 +64,18 @@ impl ScopeEnv {
     }
 }
 
-/// Racines candidates, de la PLUS GÉNÉRALE à la PLUS LOCALE. Fonction pure :
-/// ne lit aucune variable d'environnement, tout vient de `env`.
+/// Candidate roots, from MOST GENERAL to MOST LOCAL. Pure function:
+/// reads no environment variable, everything comes from `env`.
 ///
-/// Ordre :
-/// 1. `env.etc` (typiquement `/etc/npu`) ;
-/// 2. `env.xdg_config_home/npu` si `xdg_config_home` est `Some` (remplace la
-///    dérivation depuis `HOME`, ne s'y ajoute pas) ; sinon `env.home/.config/npu`
-///    si `home` est `Some` ;
+/// Order:
+/// 1. `env.etc` (typically `/etc/npu`);
+/// 2. `env.xdg_config_home/npu` if `xdg_config_home` is `Some` (replaces the
+///    derivation from `HOME`, does not add to it); otherwise `env.home/.config/npu`
+///    if `home` is `Some`;
 /// 3. `env.cwd/.npu`.
 ///
-/// Déduplique en préservant l'ordre : si deux entrées résolvent au même
-/// chemin (ex. `cwd` vaut `/etc`), seule la première occurrence est gardée.
+/// Deduplicates while preserving order: if two entries resolve to the same
+/// path (e.g. `cwd` is `/etc`), only the first occurrence is kept.
 #[must_use]
 pub(crate) fn candidate_roots(env: &ScopeEnv) -> Vec<PathBuf> {
     let mut candidates = vec![env.etc.clone()];
@@ -91,8 +91,8 @@ pub(crate) fn candidate_roots(env: &ScopeEnv) -> Vec<PathBuf> {
     dedup_preserve_order(candidates)
 }
 
-/// Déduplique `paths` en préservant l'ordre de la première occurrence de
-/// chaque chemin.
+/// Deduplicates `paths` while preserving the order of each path's
+/// first occurrence.
 fn dedup_preserve_order(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut seen = std::collections::HashSet::with_capacity(paths.len());
     paths
@@ -101,30 +101,30 @@ fn dedup_preserve_order(paths: Vec<PathBuf>) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Filtre `candidates` pour ne garder que les chemins qui existent réellement
-/// sur le disque en tant que dossier, en préservant l'ordre. Extrait de
-/// `roots()` pour rester testable sans passer par `ScopeEnv::from_env()`
-/// (cf. tests ci-dessous : aucun test ne doit dépendre des vraies variables
-/// d'environnement ni de `/etc`/`~/.config`).
+/// Filters `candidates` to keep only the paths that actually exist on
+/// disk as a directory, preserving order. Extracted from `roots()` to
+/// stay testable without going through `ScopeEnv::from_env()`
+/// (see tests below: no test should depend on the real environment
+/// variables or on `/etc`/`~/.config`).
 fn filter_existing_dirs(candidates: Vec<PathBuf>) -> Vec<PathBuf> {
     candidates.into_iter().filter(|p| p.is_dir()).collect()
 }
 
-/// Racines candidates qui existent réellement sur le disque, de la plus
-/// générale à la plus locale (cf. `candidate_roots`).
+/// Candidate roots that actually exist on disk, from most general
+/// to most local (see `candidate_roots`).
 ///
-/// Une racine absente n'est pas une erreur : elle est simplement filtrée. Les
-/// consommateurs (`config::load_scopes`, `command::discover_scopes`)
-/// appliquent « le dernier gagne » sur la liste renvoyée : une valeur définie
-/// dans une racine plus locale (fin de liste) remplace celle d'une racine
-/// plus générale (début de liste).
+/// A missing root is not an error: it is simply filtered out. Consumers
+/// (`config::load_scopes`, `command::discover_scopes`) apply "last one
+/// wins" to the returned list: a value defined in a more local root
+/// (end of the list) replaces one from a more general root (start of
+/// the list).
 #[must_use]
 pub fn roots() -> Vec<PathBuf> {
     filter_existing_dirs(candidate_roots(&ScopeEnv::from_env()))
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)] // toléré dans les tests (cf. Cargo.toml [lints.clippy]).
+#[allow(clippy::expect_used)] // tolerated in tests (see Cargo.toml [lints.clippy]).
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -178,8 +178,8 @@ mod tests {
 
     #[test]
     fn xdg_present_replaces_home_derivation_rather_than_adding_to_it() {
-        // HOME est renseigné aussi, mais XDG_CONFIG_HOME prime : un seul
-        // chemin utilisateur doit apparaître, pas les deux.
+        // HOME is also set, but XDG_CONFIG_HOME takes priority: only one
+        // user path should appear, not both.
         let e = env("/etc/npu", Some("/xdg"), Some("/home/alice"), "/work");
         let roots = candidate_roots(&e);
         assert!(!roots.contains(&PathBuf::from("/home/alice/.config/npu")));
@@ -197,19 +197,20 @@ mod tests {
 
     #[test]
     fn duplicate_resolved_paths_keep_only_first_occurrence() {
-        // Collision directe : xdg_config_home vaut déjà "/etc/npu", identique
-        // à la racine etc — cas réel évoqué dans le contrat (ex. cwd = /etc).
+        // Direct collision: xdg_config_home already equals "/etc/npu",
+        // identical to the etc root — a real case mentioned in the contract
+        // (e.g. cwd = /etc).
         let e = env("/etc/npu", Some("/etc"), None, "/work");
         let roots = candidate_roots(&e);
         assert_eq!(
             roots,
             vec![PathBuf::from("/etc/npu"), PathBuf::from("/work/.npu")],
-            "la seconde occurrence de /etc/npu (via xdg) doit être dédupliquée, la première conservée"
+            "the second occurrence of /etc/npu (via xdg) must be deduplicated, the first kept"
         );
 
-        // Collision entre la racine etc et la racine cwd : cwd vaut /etc/npu
-        // lui-même, donc <cwd>/.npu reste distinct, mais on vérifie que
-        // l'ordre général->local est préservé même dans ce cas limite.
+        // Collision between the etc root and the cwd root: cwd itself is
+        // /etc/npu, so <cwd>/.npu remains distinct, but we verify that
+        // the general->local order is preserved even in this edge case.
         let e2 = env("/etc/npu", None, None, "/etc/npu");
         let roots2 = candidate_roots(&e2);
         assert_eq!(
@@ -218,9 +219,9 @@ mod tests {
         );
     }
 
-    /// Crée un dossier de fixture unique sous `target/`, pour ne pas polluer
-    /// le dépôt ni entrer en collision entre tests exécutés en parallèle
-    /// (même idiome que `config::tests::fixture_dir`).
+    /// Creates a unique fixture directory under `target/`, so as not to
+    /// pollute the repo or collide between tests run in parallel
+    /// (same idiom as `config::tests::fixture_dir`).
     fn fixture_dir(name: &str) -> PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -228,15 +229,15 @@ mod tests {
             .join("target")
             .join("test-fixtures")
             .join(format!("scope-{name}-{n}"));
-        std::fs::create_dir_all(&dir).expect("création du dossier de fixture");
+        std::fs::create_dir_all(&dir).expect("fixture directory creation");
         dir
     }
 
     #[test]
     fn filter_existing_dirs_keeps_only_directories_that_exist_and_preserves_order() {
-        // Pas de `ScopeEnv::from_env()` ici : ce test ne doit dépendre ni des
-        // vraies variables d'environnement, ni de `/etc`, ni de `~/.config`
-        // (cf. revue L2), pour rester sûr en exécution parallèle.
+        // No `ScopeEnv::from_env()` here: this test must depend neither on
+        // real environment variables, nor on `/etc`, nor on `~/.config`
+        // (see review L2), to stay safe under parallel execution.
         let existing_a = fixture_dir("existing-a");
         let existing_b = fixture_dir("existing-b");
         let missing = existing_a.join("does-not-exist");
@@ -253,8 +254,8 @@ mod tests {
 
     #[test]
     fn non_empty_empty_string_becomes_none() {
-        // C'est le cas qu'une variable d'environnement définie mais vide
-        // (ex. `XDG_CONFIG_HOME=`) doit produire : traité comme absente.
+        // This is the case a variable set but empty (e.g. `XDG_CONFIG_HOME=`)
+        // must produce: treated as absent.
         assert_eq!(non_empty(Some(std::ffi::OsString::new())), None);
     }
 

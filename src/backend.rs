@@ -1,24 +1,24 @@
-//! Adaptateur de protocole `openai-compatible`, opération `chat` uniquement.
+//! Protocol adapter for `openai-compatible`, `chat` operation only.
 //!
-//! Décision d'architecture (IMPLEMENTATION.md §0) : le core embarque la
-//! connaissance du **protocole** `OpenAI` (forme du corps de requête, chemin
-//! d'extraction de la réponse), pas de sémantique métier. `chat` est la seule
-//! opération supportée en phase 1 ; les autres opérations `OpenAI`
-//! (`embeddings`, `audio_transcriptions`, ...) étendront cet adaptateur sans
-//! toucher au modèle de domaine (`config.rs`).
+//! Architecture decision (IMPLEMENTATION.md §0): the core embeds knowledge
+//! of the `OpenAI` **protocol** (request body shape, response extraction
+//! path), not business semantics. `chat` is the only operation supported in
+//! phase 1; the other `OpenAI` operations (`embeddings`,
+//! `audio_transcriptions`, ...) will extend this adapter without touching
+//! the domain model (`config.rs`).
 
 use std::time::Duration;
 
 use serde_json::Value;
 
-/// Délai maximal accordé à une requête `chat` avant échec.
+/// Maximum delay granted to a `chat` request before failure.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Nombre maximal de caractères du corps de réponse inclus dans un message
-/// d'erreur, pour rester diagnosticable sans noyer stderr.
+/// Maximum number of characters of the response body included in an error
+/// message, to stay diagnosable without flooding stderr.
 const ERROR_BODY_TRUNCATE_AT: usize = 500;
 
-/// Exécute l'opération `chat` du `model` donné auprès de `backend`, avec `prompt`.
+/// Executes the `chat` operation of the given `model` against `backend`, with `prompt`.
 pub fn chat(
     backend: &crate::config::Backend,
     model: &crate::config::Model,
@@ -26,7 +26,7 @@ pub fn chat(
 ) -> crate::Result<String> {
     let operation = backend.operations.get(&model.operation).ok_or_else(|| {
         crate::Error::Config(format!(
-            "le backend « {} » n'expose pas l'opération « {} » (opérations disponibles : {})",
+            "backend \"{}\" does not expose operation \"{}\" (available operations: {})",
             backend.id,
             model.operation,
             crate::error::format_available(backend.operations.keys())
@@ -38,15 +38,15 @@ pub fn chat(
 
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(REQUEST_TIMEOUT))
-        // Un statut non-2xx doit rester lisible : on veut son corps dans le
-        // message d'erreur, pas une erreur ureq opaque.
+        // A non-2xx status must stay readable: we want its body in the
+        // error message, not an opaque ureq error.
         .http_status_as_error(false)
         .build()
         .new_agent();
 
     let mut response = agent.post(&url).send_json(&body).map_err(|err| {
         crate::Error::Backend(format!(
-            "requête vers le backend « {} » ({url}) échouée : {err}",
+            "request to backend \"{}\" ({url}) failed: {err}",
             backend.id
         ))
     })?;
@@ -54,14 +54,14 @@ pub fn chat(
     let status = response.status();
     let response_text = response.body_mut().read_to_string().map_err(|err| {
         crate::Error::Backend(format!(
-            "lecture de la réponse du backend « {} » ({url}) échouée : {err}",
+            "reading the response from backend \"{}\" ({url}) failed: {err}",
             backend.id
         ))
     })?;
 
     if !status.is_success() {
         return Err(crate::Error::Backend(format!(
-            "le backend « {} » ({url}) a répondu avec le statut {status} : {}",
+            "backend \"{}\" ({url}) responded with status {status}: {}",
             backend.id,
             truncate(&response_text, ERROR_BODY_TRUNCATE_AT)
         )));
@@ -69,7 +69,7 @@ pub fn chat(
 
     let response_json: Value = serde_json::from_str(&response_text).map_err(|err| {
         crate::Error::Backend(format!(
-            "réponse du backend « {} » ({url}) illisible en JSON : {err} ; corps reçu : {}",
+            "response from backend \"{}\" ({url}) unreadable as JSON: {err}; body received: {}",
             backend.id,
             truncate(&response_text, ERROR_BODY_TRUNCATE_AT)
         ))
@@ -77,15 +77,15 @@ pub fn chat(
 
     extract_chat_content(&response_json).ok_or_else(|| {
         crate::Error::Backend(format!(
-            "réponse du backend « {} » ({url}) sans contenu exploitable (attendu \
-             choices[0].message.content) ; corps reçu : {}",
+            "response from backend \"{}\" ({url}) has no usable content (expected \
+             choices[0].message.content); body received: {}",
             backend.id,
             truncate(&response_text, ERROR_BODY_TRUNCATE_AT)
         ))
     })
 }
 
-/// Joint une URL de base et un chemin d'opération sans doubler ni perdre le `/`.
+/// Joins a base URL and an operation path without doubling or losing the `/`.
 fn join_url(base_url: &str, path: &str) -> String {
     let base = base_url.trim_end_matches('/');
     if path.starts_with('/') {
@@ -95,10 +95,10 @@ fn join_url(base_url: &str, path: &str) -> String {
     }
 }
 
-/// Construit le corps de requête `chat/completions` au format `OpenAI`.
+/// Builds the `chat/completions` request body in `OpenAI` format.
 ///
-/// `temperature` et `max_tokens` ne sont insérés que s'ils valent `Some` :
-/// aucune valeur `null` n'est sérialisée pour un champ absent.
+/// `temperature` and `max_tokens` are only inserted if they are `Some`: no
+/// `null` value is serialized for an absent field.
 fn build_chat_request(model: &str, prompt: &str, generation: &crate::config::Generation) -> Value {
     let mut body = serde_json::json!({
         "model": model,
@@ -109,11 +109,11 @@ fn build_chat_request(model: &str, prompt: &str, generation: &crate::config::Gen
 
     if let Value::Object(map) = &mut body {
         if let Some(temperature) = generation.temperature {
-            // Passer par `f64` directement (`Value::from(f32)`) réintroduit le
-            // bruit binaire du f32 (ex. 0.7 -> 0.699999988079071). Repasser par
-            // la représentation textuelle la plus courte du f32 (celle que
-            // `Display`/`ToString` produisent) donne un f64 qui affiche la
-            // même valeur que celle écrite en config.
+            // Going through `f64` directly (`Value::from(f32)`) reintroduces
+            // f32 binary noise (e.g. 0.7 -> 0.699999988079071). Going
+            // through the shortest textual representation of the f32 (the
+            // one `Display`/`ToString` produce) gives an f64 that displays
+            // the same value as the one written in config.
             if let Some(number) = serde_json::Number::from_f64(f64_from_f32_text(temperature)) {
                 map.insert("temperature".to_string(), Value::Number(number));
             }
@@ -126,9 +126,9 @@ fn build_chat_request(model: &str, prompt: &str, generation: &crate::config::Gen
     body
 }
 
-/// Convertit un `f32` en `f64` via sa représentation textuelle la plus courte,
-/// pour éviter d'exposer le bruit binaire introduit par un élargissement direct
-/// `f32 -> f64` (`0.7_f32 as f64` != `0.7_f64`).
+/// Converts an `f32` to `f64` via its shortest textual representation, to
+/// avoid exposing the binary noise introduced by a direct `f32 -> f64`
+/// widening (`0.7_f32 as f64` != `0.7_f64`).
 fn f64_from_f32_text(value: f32) -> f64 {
     value
         .to_string()
@@ -136,7 +136,7 @@ fn f64_from_f32_text(value: f32) -> f64 {
         .unwrap_or_else(|_| f64::from(value))
 }
 
-/// Extrait `choices[0].message.content` d'une réponse `chat/completions`.
+/// Extracts `choices[0].message.content` from a `chat/completions` response.
 fn extract_chat_content(response: &Value) -> Option<String> {
     response
         .get("choices")?
@@ -148,7 +148,7 @@ fn extract_chat_content(response: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Tronque `s` à `max_chars` caractères, en respectant les frontières UTF-8.
+/// Truncates `s` to `max_chars` characters, respecting UTF-8 boundaries.
 fn truncate(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         return s.to_string();
@@ -159,8 +159,8 @@ fn truncate(s: &str, max_chars: usize) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)] // toléré dans les tests (cf. Cargo.toml [lints.clippy]) ; même
-// convention que dans lib.rs/command.rs/config.rs/input.rs.
+#[allow(clippy::expect_used)] // tolerated in tests (cf. Cargo.toml [lints.clippy]); same
+// convention as in lib.rs/command.rs/config.rs/input.rs.
 mod tests {
     use super::*;
     use crate::config::{Generation, Operation};
@@ -195,11 +195,11 @@ mod tests {
             temperature: None,
             max_tokens: None,
         };
-        let body = build_chat_request("qwen-2.5-1.5b", "bonjour", &generation);
+        let body = build_chat_request("qwen-2.5-1.5b", "hello", &generation);
 
         assert_eq!(body["model"], "qwen-2.5-1.5b");
         assert_eq!(body["messages"][0]["role"], "user");
-        assert_eq!(body["messages"][0]["content"], "bonjour");
+        assert_eq!(body["messages"][0]["content"], "hello");
         assert!(body.get("temperature").is_none());
         assert!(body.get("max_tokens").is_none());
     }
@@ -210,7 +210,7 @@ mod tests {
             temperature: Some(0.0),
             max_tokens: Some(512),
         };
-        let body = build_chat_request("qwen-2.5-1.5b", "bonjour", &generation);
+        let body = build_chat_request("qwen-2.5-1.5b", "hello", &generation);
 
         assert_eq!(body["temperature"], 0.0);
         assert_eq!(body["max_tokens"], 512);
@@ -218,14 +218,14 @@ mod tests {
 
     #[test]
     fn build_chat_request_temperature_has_no_f32_widening_noise() {
-        // `0.7_f32 as f64` != `0.7_f64` (bruit binaire) : le corps émis doit
-        // afficher la même valeur que celle écrite en config, pas sa version
-        // élargie bruitée (ex. 0.699999988079071).
+        // `0.7_f32 as f64` != `0.7_f64` (binary noise): the emitted body
+        // must display the same value as the one written in config, not
+        // its widened noisy version (e.g. 0.699999988079071).
         let generation = Generation {
             temperature: Some(0.7),
             max_tokens: None,
         };
-        let body = build_chat_request("qwen-2.5-1.5b", "bonjour", &generation);
+        let body = build_chat_request("qwen-2.5-1.5b", "hello", &generation);
 
         assert_eq!(body["temperature"].to_string(), "0.7");
     }
@@ -234,10 +234,13 @@ mod tests {
     fn extract_chat_content_nominal() {
         let response = serde_json::json!({
             "choices": [
-                { "message": { "role": "assistant", "content": "réponse" } }
+                { "message": { "role": "assistant", "content": "response" } }
             ]
         });
-        assert_eq!(extract_chat_content(&response), Some("réponse".to_string()));
+        assert_eq!(
+            extract_chat_content(&response),
+            Some("response".to_string())
+        );
     }
 
     #[test]
@@ -254,7 +257,7 @@ mod tests {
 
     #[test]
     fn truncate_keeps_short_string_unchanged() {
-        assert_eq!(truncate("court", 500), "court");
+        assert_eq!(truncate("short", 500), "short");
     }
 
     #[test]
@@ -265,32 +268,32 @@ mod tests {
         assert!(truncated.ends_with('…'));
     }
 
-    /// Test d'intégration contre un listener HTTP bouchonné (cf.
-    /// IMPLEMENTATION.md §4) : couvre `chat()` de bout en bout, sans dépendance
-    /// supplémentaire (juste `std::net`/`std::thread`). Aucun des autres tests
-    /// de ce module n'exerce `chat()` elle-même, seulement ses fonctions
-    /// privées : c'était le trou de couverture le plus notable du module.
+    /// Integration test against a stubbed HTTP listener (cf.
+    /// IMPLEMENTATION.md §4): covers `chat()` end to end, with no extra
+    /// dependency (just `std::net`/`std::thread`). None of this module's
+    /// other tests exercise `chat()` itself, only its private functions:
+    /// this was the module's most notable coverage gap.
     #[test]
     fn chat_end_to_end_against_stubbed_http_server() {
         use std::io::{BufRead, BufReader, Read, Write};
         use std::net::TcpListener;
 
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind du listener bouchonné");
-        let addr = listener.local_addr().expect("adresse locale du listener");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind of the stubbed listener");
+        let addr = listener
+            .local_addr()
+            .expect("local address of the listener");
 
         let server = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("acceptation de la connexion");
-            let mut reader = BufReader::new(stream.try_clone().expect("clone du flux TCP"));
+            let (stream, _) = listener.accept().expect("accepting the connection");
+            let mut reader = BufReader::new(stream.try_clone().expect("cloning the TCP stream"));
 
-            // Draine les en-têtes de la requête jusqu'à la ligne vide, puis le
-            // corps annoncé par Content-Length ; son contenu exact n'a pas
-            // besoin d'être vérifié pour ce test de bout en bout.
+            // Drains the request headers up to the empty line, then the
+            // body announced by Content-Length; its exact content does not
+            // need to be checked for this end-to-end test.
             let mut content_length = 0usize;
             loop {
                 let mut line = String::new();
-                reader
-                    .read_line(&mut line)
-                    .expect("lecture d'une ligne d'en-tête");
+                reader.read_line(&mut line).expect("reading a header line");
                 if line == "\r\n" || line.is_empty() {
                     break;
                 }
@@ -301,7 +304,7 @@ mod tests {
             let mut body = vec![0u8; content_length];
             reader
                 .read_exact(&mut body)
-                .expect("lecture du corps de la requête");
+                .expect("reading the request body");
 
             let response_body =
                 r#"{"choices":[{"message":{"role":"assistant","content":"stubbed reply"}}]}"#;
@@ -313,7 +316,7 @@ mod tests {
             let mut stream = stream;
             stream
                 .write_all(response.as_bytes())
-                .expect("écriture de la réponse bouchonnée");
+                .expect("writing the stubbed response");
         });
 
         let backend = crate::config::Backend {
@@ -338,12 +341,10 @@ mod tests {
             generation: Generation::default(),
         };
 
-        let result = chat(&backend, &model, "bonjour")
-            .expect("chat() doit réussir contre le listener bouchonné");
+        let result = chat(&backend, &model, "hello")
+            .expect("chat() must succeed against the stubbed listener");
         assert_eq!(result, "stubbed reply");
 
-        server
-            .join()
-            .expect("le thread serveur ne doit pas paniquer");
+        server.join().expect("the server thread must not panic");
     }
 }
