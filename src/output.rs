@@ -242,7 +242,10 @@ fn finalize_json(schema: Option<&Path>, raw: &str, command_file: &Path) -> crate
 /// au disque, c'est cette fonction, et seulement elle, qui découvre un
 /// schéma absent, illisible ou cassé — au moment de l'exécution réelle de la
 /// commande qui le réclame, jamais avant.
-fn compile_schema(path: &Path, command_file: &Path) -> crate::Result<jsonschema::Validator> {
+pub(crate) fn compile_schema(
+    path: &Path,
+    command_file: &Path,
+) -> crate::Result<jsonschema::Validator> {
     let text = std::fs::read_to_string(path).map_err(|err| {
         crate::Error::Config(format!(
             "schéma de sortie « {} », déclaré par le fichier de commande « {} », introuvable \

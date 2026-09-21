@@ -228,9 +228,60 @@ fn collect_command_files(
     Ok(result)
 }
 
+/// Rejette un chemin de commande dont le PREMIER segment entre en collision
+/// avec un nom réservé aux built-ins du CLI (`builtin::RESERVED` : `doctor`,
+/// `models`, `describe`, ainsi que `help`, réservé par `clap` lui-même —
+/// phase 5, point 2 du contrat partagé).
+///
+/// Sans ce rejet, `commands/doctor.md` serait silencieusement masqué par le
+/// built-in `doctor` construit dans `lib.rs` (ou, selon l'ordre de
+/// construction de l'arbre `clap`, le masquerait lui-même) — un conflit de
+/// noms qui ne se manifesterait qu'au moment de l'exécution, de façon
+/// déroutante, plutôt que d'être détecté au chargement comme toute autre
+/// erreur de configuration de ce module.
+///
+/// Ne porte QUE sur le premier segment : `commands/git/describe.md` donne le
+/// chemin `["git", "describe"]`, qui n'entre en conflit avec rien (les
+/// built-ins n'existent qu'au premier niveau) et reste valide.
+///
+/// Appelée en tout premier depuis `read_and_parse`, donc AVANT toute lecture
+/// disque et uniquement sur les fichiers GAGNANTS de la résolution de scopes
+/// (`discover`/`discover_scopes` n'appellent `read_and_parse` que sur les
+/// entrées survivantes de la fusion par chemin) : un `commands/doctor.md`
+/// d'un scope général, masqué par un override local valide de même chemin,
+/// n'est jamais ouvert par cette fonction — mais l'override local, ayant
+/// lui-même pour premier segment « doctor », reste tout autant rejeté. Il
+/// n'existe aucune façon de rendre un chemin de premier segment réservé
+/// valide, quel que soit le scope d'où il vient : c'est précisément l'objet
+/// de ce rejet (cf. revue L3, phase 2, même garantie de « jamais ouvert »
+/// que pour un frontmatter cassé masqué, mais PAS la même conclusion — un
+/// nom réservé reste rejeté même en tant que gagnant).
+fn reject_reserved_path(path: &[String], file: &std::path::Path) -> crate::Result<()> {
+    let Some(first) = path.first() else {
+        return Ok(());
+    };
+
+    if crate::builtin::RESERVED.contains(&first.as_str()) {
+        return Err(crate::Error::Config(format!(
+            "{} : « {first} » est réservé aux commandes intégrées du CLI ({}) ; renommez le \
+             fichier ou déplacez-le sous un sous-dossier (seul le premier segment du chemin de \
+             commande est réservé, ex. « git/{first}.md » resterait valide)",
+            file.display(),
+            crate::builtin::RESERVED.join(", ")
+        )));
+    }
+
+    Ok(())
+}
+
 /// Lit et parse le fichier de commande `file`, dont le chemin de commande
 /// dérivé est `path` et la racine de scope est `scope_root` (thread jusqu'à
 /// `parse`, cf. sa doc, pour résoudre un `[output].schema` relatif).
+///
+/// Commence par [`reject_reserved_path`] (phase 5, point 2 du contrat
+/// partagé), AVANT même la lecture disque : un chemin de premier segment
+/// réservé est rejeté sur la seule base du chemin, sans jamais avoir besoin
+/// d'ouvrir le fichier.
 ///
 /// Enveloppe le MESSAGE d'une erreur de parsing avec le chemin du fichier
 /// fautif, jamais l'erreur déjà formatée : `parse` renvoie une
@@ -243,6 +294,8 @@ fn read_and_parse(
     file: &std::path::Path,
     scope_root: &std::path::Path,
 ) -> crate::Result<CommandSpec> {
+    reject_reserved_path(&path, file)?;
+
     let source = std::fs::read_to_string(file).map_err(|err| {
         crate::Error::Config(format!(
             "impossible de lire le fichier {} : {err}",
@@ -970,6 +1023,144 @@ mod tests {
             "le préfixe ne doit apparaître qu'une seule fois, obtenu : {msg}"
         );
         assert!(msg.contains("broken.md"));
+    }
+
+    // -- noms réservés (phase 5, point 2 du contrat partagé) --------------------
+
+    #[test]
+    fn discover_rejects_doctor_naming_file_and_reserved_name() {
+        let root = fixture_dir("reserved-doctor");
+        write_command(&root, "doctor", "qwen-fast", "prompt");
+
+        let err = discover(&root).expect_err("« doctor » doit être rejeté comme nom réservé");
+
+        assert!(matches!(err, crate::Error::Config(_)));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("doctor.md"),
+            "le message doit nommer le fichier fautif, obtenu : {msg}"
+        );
+        assert!(
+            msg.contains("« doctor »"),
+            "le message doit nommer le nom réservé en conflit, obtenu : {msg}"
+        );
+    }
+
+    #[test]
+    fn discover_rejects_models_reserved_name() {
+        let root = fixture_dir("reserved-models");
+        write_command(&root, "models", "qwen-fast", "prompt");
+
+        let err = discover(&root).expect_err("« models » doit être rejeté comme nom réservé");
+
+        let msg = err.to_string();
+        assert!(msg.contains("models.md"), "obtenu : {msg}");
+        assert!(msg.contains("« models »"), "obtenu : {msg}");
+    }
+
+    #[test]
+    fn discover_rejects_describe_reserved_name() {
+        let root = fixture_dir("reserved-describe");
+        write_command(&root, "describe", "qwen-fast", "prompt");
+
+        let err = discover(&root).expect_err("« describe » doit être rejeté comme nom réservé");
+
+        let msg = err.to_string();
+        assert!(msg.contains("describe.md"), "obtenu : {msg}");
+        assert!(msg.contains("« describe »"), "obtenu : {msg}");
+    }
+
+    #[test]
+    fn discover_rejects_help_reserved_name() {
+        // « help » n'est pas un built-in au sens de `builtin::doctor`, mais
+        // fait partie de `builtin::RESERVED` (réservé par clap lui-même) :
+        // le rejet doit s'appliquer identiquement.
+        let root = fixture_dir("reserved-help");
+        write_command(&root, "help", "qwen-fast", "prompt");
+
+        let err = discover(&root).expect_err("« help » doit être rejeté comme nom réservé");
+
+        let msg = err.to_string();
+        assert!(msg.contains("help.md"), "obtenu : {msg}");
+        assert!(msg.contains("« help »"), "obtenu : {msg}");
+    }
+
+    #[test]
+    fn discover_reserved_name_error_does_not_double_config_error_prefix() {
+        // Même garantie que `discover_error_message_does_not_double_config_error_prefix`,
+        // pour le chemin de rejet précoce de `reject_reserved_path` (qui
+        // construit directement une `Error::Config`, sans passer par le
+        // ré-enveloppement de l'erreur de `parse`).
+        let root = fixture_dir("reserved-double-prefix");
+        write_command(&root, "doctor", "qwen-fast", "prompt");
+
+        let err = discover(&root).expect_err("« doctor » doit être rejeté");
+        let msg = err.to_string();
+        assert_eq!(
+            msg.matches("erreur de configuration").count(),
+            1,
+            "le préfixe ne doit apparaître qu'une seule fois, obtenu : {msg}"
+        );
+    }
+
+    #[test]
+    fn nested_reserved_name_segment_is_valid() {
+        // Point 2 du contrat partagé : le rejet ne porte que sur le PREMIER
+        // segment. `commands/git/describe.md` donne `npu git describe`, qui
+        // n'entre en conflit avec rien.
+        let root = fixture_dir("reserved-nested-valid");
+        write_command(&root, "git/describe", "qwen-fast", "prompt");
+
+        let specs = discover(&root).expect("git/describe ne doit pas être rejeté");
+
+        assert_eq!(specs.len(), 1);
+        assert_eq!(
+            specs[0].path,
+            vec!["git".to_string(), "describe".to_string()]
+        );
+    }
+
+    #[test]
+    fn discover_scopes_reserved_name_rejects_local_winner_without_opening_masked_general_file() {
+        // Le rejet d'un nom réservé s'applique au GAGNANT de la résolution de
+        // scopes, quel que soit le scope d'où il vient : il n'existe aucune
+        // façon de rendre un chemin de premier segment réservé valide en le
+        // faisant « gagner » depuis un scope plus local (cf. doc de
+        // `reject_reserved_path`). Ce test vérifie néanmoins la garantie de
+        // masquage habituelle (revue L3, phase 2) : le fichier général,
+        // masqué, n'est JAMAIS ouvert — seul le fichier local gagnant est lu,
+        // et c'est lui (pas le général) que le message d'erreur nomme.
+        //
+        // Le fichier général contient un frontmatter délibérément cassé
+        // (« pas de frontmatter ») : s'il était ouvert par erreur, l'erreur
+        // résultante nommerait ce fichier général et/ou contiendrait un
+        // indice de parsing frontmatter — ni l'un ni l'autre ne doit
+        // apparaître ici.
+        let general = fixture_dir("reserved-masked-general");
+        let commands_dir = general.join("commands");
+        std::fs::create_dir_all(&commands_dir).expect("création du dossier commands");
+        std::fs::write(commands_dir.join("doctor.md"), "pas de frontmatter\n")
+            .expect("écriture fixture");
+
+        let local = fixture_dir("reserved-masked-local");
+        write_command(&local, "doctor", "qwen-local", "prompt local");
+
+        let err = discover_scopes(&[general.clone(), local.clone()])
+            .expect_err("« doctor » reste réservé même en tant que gagnant local");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains(local.to_string_lossy().as_ref()),
+            "le message doit nommer le fichier local gagnant, obtenu : {msg}"
+        );
+        assert!(
+            !msg.contains(general.to_string_lossy().as_ref()),
+            "le fichier général masqué ne doit jamais être nommé, obtenu : {msg}"
+        );
+        assert!(
+            !msg.contains("frontmatter"),
+            "le fichier général masqué ne doit jamais être ouvert/parsé, obtenu : {msg}"
+        );
     }
 
     // -- [args.*] (phase 3) -----------------------------------------------------
