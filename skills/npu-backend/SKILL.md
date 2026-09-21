@@ -1,6 +1,6 @@
 ---
 name: npu-backend
-description: Writes and fixes `npu` backend files (`.npu/backends/*.toml`) — the `id`, `type`, `base_url` and `[operations.<name>]` tables that tell `npu` where to send requests and on which HTTP path. Covers the constraints that are enforced at load time: `openai-compatible` is the only supported type, `POST` the only supported method, unknown keys are rejected rather than ignored, and `[timeouts]` is not implemented. Use it whenever a backend declaration is created, changed or rejected.
+description: Writes and fixes `npu` backend files (`.npu/backends/*.toml`) — the `id`, `type`, `base_url` and `[operations.<name>]` tables that tell `npu` where to send requests and on which HTTP path. Covers the constraints enforced at load time — `openai-compatible` is the only supported type, `POST` the only supported method, unknown keys are rejected rather than ignored, and `[timeouts]` is not implemented. Use it whenever a backend declaration is created, changed or rejected.
 when_to_use: >
   Trigger on "add an npu backend", "point npu at my model server / OVMS /
   llama.cpp / Ollama", "change the base_url", "add an operation", or on any
