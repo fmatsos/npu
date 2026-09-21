@@ -261,10 +261,6 @@ structured response is an execution failure, never something `npu` quietly repai
 | [Output contracts](docs/output.md) | text and JSON output, JSON Schema validation, fenced responses |
 | [Built-in commands](docs/cli.md) | `doctor`, `models`, `describe`, degraded mode |
 
-Design rationale, phase-by-phase decisions and known debt live in
-[`IMPLEMENTATION.md`](IMPLEMENTATION.md). The original functional specification is
-[`npu-cli-spec.md`](npu-cli-spec.md).
-
 ---
 
 ## Development
