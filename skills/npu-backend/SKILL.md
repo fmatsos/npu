@@ -6,6 +6,8 @@ when_to_use: >
   llama.cpp / Ollama", "change the base_url", "add an operation", or on any
   npu error mentioning a backend id, `base_url`, `type`, `method` or an
   operation name.
+model: sonnet
+effort: low
 allowed-tools: Read Write Edit Glob Grep Bash(npu:*)
 ---
 
@@ -101,3 +103,17 @@ execution with exit `3`.
 `✗ backend "ovms" reachable: TCP connection … failed` and no other failure
 gives `npu doctor` exit code `3`: the configuration is fine, the runtime is
 not started.
+
+## Reference
+
+This skill is a summary. When a case is not covered here, or when the
+behaviour it describes does not match what the binary does, the repository
+documentation is authoritative:
+
+- [Backends](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#backends)
+- [Scopes and precedence](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#scopes-and-precedence)
+- [`npu doctor`](https://github.com/fmatsos/npu/blob/main/docs/cli.md#npu-doctor)
+
+Related skills: **npu-model**, **npu-config**, **npu-doctor**.
+
+<!-- model/effort: Four keys and a table of operations; the constraints are enumerated above, not inferred. -->

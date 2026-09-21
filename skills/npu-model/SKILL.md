@@ -6,6 +6,8 @@ when_to_use: >
   "change temperature / max_tokens", "npu models", or on any npu error
   mentioning a model id, an unknown backend, or an operation a backend does
   not expose.
+model: sonnet
+effort: low
 allowed-tools: Read Write Edit Glob Grep Bash(npu:*)
 ---
 
@@ -79,3 +81,17 @@ npu doctor    # resolves every model against its backend and operation
 
 `npu models` lists what actually resolved. A model you just wrote and cannot
 see there was not loaded — `npu doctor` will say why and name the file.
+
+## Reference
+
+This skill is a summary. When a case is not covered here, or when the
+behaviour it describes does not match what the binary does, the repository
+documentation is authoritative:
+
+- [Models](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#models)
+- [Merge semantics](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#merge-semantics)
+- [`npu models`](https://github.com/fmatsos/npu/blob/main/docs/cli.md#npu-models)
+
+Related skills: **npu-backend**, **npu-command**, **npu-doctor**.
+
+<!-- model/effort: Five keys and two optional generation fields; resolution errors name what is available. -->

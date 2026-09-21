@@ -15,6 +15,27 @@ Claude loads only when it needs it — nothing runs at startup.
 `npu-config` routes to the three format skills; `npu-doctor` routes back to
 whichever one owns the file that failed.
 
+## Model and effort
+
+Each skill pins the effort its work actually needs, rather than inheriting a
+session level chosen for something else.
+
+| Skill | `model` | `effort` | Why |
+| --- | --- | --- | --- |
+| `npu-backend` | `sonnet` | `low` | four keys and a table of operations |
+| `npu-model` | `sonnet` | `low` | five keys and two optional generation fields |
+| `npu-command` | `sonnet` | `medium` | a prompt, an input mode and an output contract — judgement, and a templating mistake only surfaces at load time |
+| `npu-config` | `sonnet` | `medium` | choosing a scope and reasoning about replacement is a design call |
+| `npu-doctor` | `inherit` | `high` | diagnosis: read the report, form a hypothesis, test it against the exit code |
+
+`npu-doctor` inherits deliberately — you picked the session model for the
+debugging you are already doing. Both fields are one line each in the skill's
+frontmatter if these defaults do not suit you.
+
+Every skill ends with a **Reference** section linking back to the repository
+documentation, which stays authoritative: a skill is a summary, and when the
+two disagree the binary and `docs/` win.
+
 ## Installing
 
 Per user, available in every project:

@@ -6,6 +6,8 @@ when_to_use: >
   this command", "make this command return JSON", "nest npu commands", or on
   any npu error naming a command file, a placeholder, an argument, a short
   letter, or an `[output]` key.
+model: sonnet
+effort: medium
 allowed-tools: Read Write Edit Glob Grep Bash(npu:*)
 ---
 
@@ -174,3 +176,17 @@ npu --help              # the command appears = it was discovered and parsed
 npu describe <command>  # its effective definition, as JSON
 npu <command> --help    # the generated flags
 ```
+
+## Reference
+
+This skill is a summary. When a case is not covered here, or when the
+behaviour it describes does not match what the binary does, the repository
+documentation is authoritative:
+
+- [Writing commands](https://github.com/fmatsos/npu/blob/main/docs/commands.md)
+- [Output contracts](https://github.com/fmatsos/npu/blob/main/docs/output.md)
+- [`npu describe`](https://github.com/fmatsos/npu/blob/main/docs/cli.md#npu-describe)
+
+Related skills: **npu-model**, **npu-config**, **npu-doctor**.
+
+<!-- model/effort: Writing a prompt, choosing an input mode and declaring an output contract need judgement, and a templating mistake is only caught at load time. -->

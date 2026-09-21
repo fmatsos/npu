@@ -6,6 +6,8 @@ when_to_use: >
   "npu doctor says", "my npu command is not listed", "configuration error",
   "unknown command", or any npu invocation that failed and needs to be
   diagnosed rather than written.
+model: inherit
+effort: high
 allowed-tools: Read Write Edit Glob Grep Bash(npu:*)
 ---
 
@@ -116,3 +118,17 @@ gets a stable contract instead of a best effort.
 4. `npu doctor` again, until exit `0` — or exit `3` with only reachability
    failing, which is a configuration that is correct and a runtime that is not
    running.
+
+## Reference
+
+This skill is a summary. When a case is not covered here, or when the
+behaviour it describes does not match what the binary does, the repository
+documentation is authoritative:
+
+- [Built-in commands and degraded mode](https://github.com/fmatsos/npu/blob/main/docs/cli.md)
+- [Exit codes](https://github.com/fmatsos/npu/blob/main/docs/output.md#exit-codes)
+- [When a broader scope is broken](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#when-a-broader-scope-is-broken)
+
+Related skills: **npu-config**, **npu-backend**, **npu-model**, **npu-command**.
+
+<!-- model/effort: Diagnosis: reading a report, forming a hypothesis, testing it against the exit code. Inherits the session model on purpose — you chose it for the debugging session you are already in. -->

@@ -6,6 +6,8 @@ when_to_use: >
   .npu directory", "where should this npu config live", "why is my local npu
   config not winning", "npu scopes", or any npu request that spans more than
   one of backends / models / commands.
+model: sonnet
+effort: medium
 allowed-tools: Read Write Edit Glob Grep Bash(npu:*)
 ---
 
@@ -99,3 +101,17 @@ npu --help          # the command tree built from the configuration
 ```
 
 `npu --help` listing a command is proof it was discovered and parsed.
+
+## Reference
+
+This skill is a summary. When a case is not covered here, or when the
+behaviour it describes does not match what the binary does, the repository
+documentation is authoritative:
+
+- [Configuration reference](https://github.com/fmatsos/npu/blob/main/docs/configuration.md)
+- [Built-in commands](https://github.com/fmatsos/npu/blob/main/docs/cli.md)
+- [README](https://github.com/fmatsos/npu/blob/main/README.md)
+
+Related skills: **npu-backend**, **npu-model**, **npu-command**, **npu-doctor**.
+
+<!-- model/effort: Deciding which scope a piece of configuration belongs in, and reasoning about replacement across scopes, is a design call rather than a transcription. -->
