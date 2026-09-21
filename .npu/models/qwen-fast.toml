@@ -1,0 +1,8 @@
+id = "qwen-fast"
+backend = "ovms"
+operation = "chat"
+model = "qwen-2.5-1.5b"
+
+[generation]
+temperature = 0.0
+max_tokens = 512

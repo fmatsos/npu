@@ -62,6 +62,22 @@ impl From<std::io::Error> for Error {
 /// Alias de résultat du crate.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Formate une liste d'identifiants disponibles pour un message d'erreur
+/// actionnable : triée, jointe par virgule, ou `"aucune"` si vide.
+///
+/// Centralise un idiome répété à l'identique dans `config::resolve` (modèles,
+/// backends), `backend::chat` (opérations) et `run` (commandes), pour que les
+/// messages d'erreur restent homogènes d'un module à l'autre.
+pub(crate) fn format_available<S: AsRef<str>>(ids: impl Iterator<Item = S>) -> String {
+    let mut sorted: Vec<String> = ids.map(|s| s.as_ref().to_string()).collect();
+    sorted.sort_unstable();
+    if sorted.is_empty() {
+        "aucune".to_string()
+    } else {
+        sorted.join(", ")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,5 +101,15 @@ mod tests {
         let io_err = std::io::Error::other("boom");
         let err: Error = io_err.into();
         assert!(matches!(err, Error::Io(_)));
+    }
+
+    #[test]
+    fn format_available_sorts_and_joins() {
+        assert_eq!(format_available(["b", "a", "c"].into_iter()), "a, b, c");
+    }
+
+    #[test]
+    fn format_available_empty_is_aucune() {
+        assert_eq!(format_available(std::iter::empty::<&str>()), "aucune");
     }
 }

@@ -1,0 +1,13 @@
+# Fixture de démonstration : reflète exactement ce que la phase 1 supporte
+# (une seule opération câblée, `chat`, via l'adaptateur `openai-compatible`
+# en dur dans backend.rs). Les autres opérations de la §7 de
+# npu-cli-spec.md (embeddings, audio_transcriptions, rerank) et les timeouts
+# configurables arriveront avec leur support.
+
+id = "ovms"
+type = "openai-compatible"
+base_url = "http://127.0.0.1:8000"
+
+[operations.chat]
+method = "POST"
+path = "/v3/chat/completions"
