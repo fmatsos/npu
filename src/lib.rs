@@ -10,13 +10,9 @@ pub mod config;
 pub mod error;
 pub mod input;
 pub mod prompt;
+pub mod scope;
 
 pub use error::{Error, Result};
-
-/// Racine de configuration de la phase 1 : uniquement `./.npu` (cf.
-/// npu-cli-spec.md §5, IMPLEMENTATION.md §2 — pas de scopes `/etc` ni
-/// `~/.config` avant la phase 2).
-const CONFIG_ROOT: &str = ".npu";
 
 /// Un nœud de l'arbre de commandes construit depuis les `CommandSpec`
 /// découvertes. `spec` est renseigné sur une commande feuille ; un nœud
@@ -128,24 +124,33 @@ fn find_command<'a>(
 
 /// Point d'entrée de la bibliothèque, appelé par `main`.
 ///
-/// Pipeline (npu-cli-spec.md §18, restreint à la phase 1) : chargement de la
-/// configuration, découverte des commandes, construction de l'arbre `clap`,
-/// résolution de la commande sélectionnée, du modèle, de l'entrée, rendu du
-/// prompt, appel du backend, écriture du résultat sur stdout.
+/// Pipeline (npu-cli-spec.md §18, phase 2) : résolution des racines de scope
+/// (`scope::roots()`, de la plus générale à la plus locale — `/etc/npu`, puis
+/// `$XDG_CONFIG_HOME/npu` ou `$HOME/.config/npu`, puis `./.npu`), chargement
+/// et fusion de la configuration sur ces racines (`config::load_scopes`),
+/// découverte et fusion des commandes (`command::discover_scopes`),
+/// construction de l'arbre `clap`, résolution de la commande sélectionnée, du
+/// modèle, de l'entrée, rendu du prompt, appel du backend, écriture du
+/// résultat sur stdout. La fusion entre scopes est un remplacement par
+/// identifiant (backends/modèles) ou par chemin complet (commandes), jamais
+/// une fusion champ par champ (IMPLEMENTATION.md décision 3) ; une racine
+/// absente du disque n'est simplement pas prise en compte.
 ///
 /// Une configuration invalide (TOML mal formé, frontmatter cassé) ne panique
-/// jamais : `config::load` et `command::discover` remontent une
+/// jamais : `config::load_scopes` et `command::discover_scopes` remontent une
 /// `Error::Config` (code de sortie 2) que `main` affiche sur stderr avant de
 /// quitter — sans passer par la construction de l'arbre `clap`, puisque ce
 /// dernier a justement besoin des commandes pour exister. C'est un choix
-/// délibéré de la phase 1 : `--help` ne survit donc pas à une configuration
-/// cassée (contrairement à l'objectif général d'IMPLEMENTATION.md décision 2,
-/// qui vise les phases où `doctor` doit tourner malgré une config invalide).
+/// délibéré de la phase 1, toujours vrai en phase 2 : `--help` ne survit donc
+/// pas à une configuration cassée (contrairement à l'objectif général
+/// d'IMPLEMENTATION.md décision 2, qui vise les phases où `doctor` doit
+/// tourner malgré une config invalide — dette explicitement tracée, non
+/// résolue ici).
 pub fn run() -> Result<()> {
-    let root = std::path::Path::new(CONFIG_ROOT);
+    let roots = scope::roots();
 
-    let config = config::load(root)?;
-    let specs = command::discover(root)?;
+    let config = config::load_scopes(&roots)?;
+    let specs = command::discover_scopes(&roots)?;
 
     let cli = build_cli(&specs);
     let matches = cli.get_matches();
