@@ -260,6 +260,7 @@ structured response is an execution failure, never something `npu` quietly repai
 | [Writing commands](docs/commands.md) | command files, frontmatter, arguments, templating, input modes |
 | [Output contracts](docs/output.md) | text and JSON output, JSON Schema validation, fenced responses |
 | [Built-in commands](docs/cli.md) | `doctor`, `models`, `describe`, degraded mode |
+| [Claude Code skills](skills/README.md) | five skills that teach Claude Code to write and repair an `npu` configuration |
 
 ---
 
