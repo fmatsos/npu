@@ -20,6 +20,10 @@ allow = [
     # Portée par webpki-roots, qui n'est que le paquet de certificats racine
     # Mozilla embarqué par ureq. Autorisée délibérément, pas par défaut.
     "CDLA-Permissive-2.0",
+    # Strictement PLUS permissive que MIT (même texte, sans obligation
+    # d'attribution). Autoriser MIT sans autoriser MIT-0 serait incohérent.
+    # Portée par borrow-or-share, via jsonschema -> referencing -> fluent-uri.
+    "MIT-0",
     "Zlib",
 ]
 confidence-threshold = 0.9

@@ -97,6 +97,33 @@ mod tests {
     }
 
     #[test]
+    fn config_and_output_errors_render_with_distinct_unmistakable_prefixes() {
+        // Exigence L2 explicite de la revue de phase 4 : un utilisateur doit
+        // comprendre IMMÉDIATEMENT, à la lecture du message, si c'est SA
+        // configuration ou la réponse du MODÈLE qui est en cause. Ce test
+        // fige les deux préfixes ET prouve qu'ils ne peuvent pas être
+        // confondus l'un avec l'autre.
+        let config_msg = Error::Config("schéma introuvable".to_string()).to_string();
+        let output_msg = Error::Output("JSON invalide".to_string()).to_string();
+
+        assert!(
+            config_msg.starts_with("erreur de configuration : "),
+            "obtenu : {config_msg}"
+        );
+        assert!(
+            output_msg.starts_with("erreur de sortie : "),
+            "obtenu : {output_msg}"
+        );
+        assert_ne!(
+            config_msg.split(':').next(),
+            output_msg.split(':').next(),
+            "les préfixes de Error::Config et Error::Output ne doivent jamais coïncider, \
+             sous peine qu'un utilisateur ne puisse plus distinguer une configuration cassée \
+             d'une réponse de modèle invalide à la seule lecture du message"
+        );
+    }
+
+    #[test]
     fn from_io_error_wraps() {
         let io_err = std::io::Error::other("boom");
         let err: Error = io_err.into();

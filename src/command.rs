@@ -32,8 +32,9 @@ pub struct ArgSpec {
 }
 
 /// Une commande découverte : son chemin (dérivé de l'arborescence), le modèle
-/// à utiliser, le mode d'entrée, le prompt (corps du fichier) et les
-/// arguments CLI déclarés (`[args.*]`, phase 3).
+/// à utiliser, le mode d'entrée, le prompt (corps du fichier), les
+/// arguments CLI déclarés (`[args.*]`, phase 3) et le contrat de sortie
+/// (`[output]`, phase 4 — cf. `crate::output`).
 #[derive(Debug)]
 pub struct CommandSpec {
     pub path: Vec<String>,
@@ -42,6 +43,20 @@ pub struct CommandSpec {
     pub input: InputMode,
     pub prompt: String,
     pub args: BTreeMap<String, ArgSpec>,
+    pub output: crate::output::OutputSpec,
+    /// Chemin du fichier de commande source (ex. `.npu/commands/classify.md`)
+    /// dont ce `CommandSpec` a été parsé. Nécessaire à `output::finalize`
+    /// (revue L3, correctif 1) pour nommer, au moment de l'exécution réelle,
+    /// le fichier de commande qui réclame un schéma introuvable/illisible/
+    /// invalide — en plus du chemin résolu du schéma lui-même. `parse` seul
+    /// ne connaît pas ce chemin (il ne reçoit que la racine de scope, cf. sa
+    /// doc) : il le laisse à `std::path::PathBuf::new()` et c'est
+    /// `read_and_parse`, seul appelant qui connaît le fichier réellement lu,
+    /// qui le renseigne après coup. Un `CommandSpec` obtenu via `parse`
+    /// directement (comme le font la plupart des tests de ce module, qui ne
+    /// s'intéressent pas à ce champ) porte donc un `PathBuf` vide — jamais
+    /// atteint en dehors de `discover`/`discover_scopes`.
+    pub file: std::path::PathBuf,
 }
 
 /// Version brute d'`ArgSpec` telle qu'écrite en TOML : `short` y est une
@@ -85,24 +100,37 @@ struct Frontmatter {
     input: InputSection,
     #[serde(default)]
     args: BTreeMap<String, RawArgSpec>,
-    /// Section `[output]` (phase 4, npu-cli-spec.md — format de sortie,
-    /// JSON Schema, `max_lines`), volontairement ACCEPTÉE mais PAS
-    /// interprétée ici : aucune sémantique de sortie n'est implémentée par
-    /// ce correctif. Typée en `toml::Value` (une table libre) plutôt qu'une
-    /// struct dédiée, uniquement pour que `deny_unknown_fields` ci-dessus ne
-    /// fasse pas échouer le chargement de la fixture versionnée
-    /// `.npu/commands/commit-message.md`, qui déclare déjà `[output]`
-    /// (`format = "text"`, `max_lines = 1`). La phase 4, qui suit ce
-    /// correctif, remplacera ce champ par un vrai `OutputSpec` structuré et
-    /// lui donnera un sens ; jusque-là, sa seule valeur est d'être accepté
-    /// sans être lu.
-    // Jamais lu ici par construction (cf. doc du champ juste au-dessus) :
-    // seule sa PRÉSENCE dans le frontmatter compte pour `deny_unknown_fields`
-    // (accepter la section sans lui donner de sens), pas sa valeur. La phase
-    // 4 lira ce champ et cet `allow` disparaîtra alors.
+    /// Section `[output]` (phase 4, npu-cli-spec.md §15) : format de sortie,
+    /// chemin de schéma JSON, `max_lines`. Optionnelle — son absence produit
+    /// `OutputSpec::default()` (`convert_output`, plus bas). `schema` est
+    /// désérialisé en `String` brute (pas encore `PathBuf` résolu) : c'est
+    /// `convert_output` qui la résout par rapport à la racine de scope
+    /// (règle 3 du contrat partagé), jamais `serde`/`toml`.
     #[serde(default)]
-    #[allow(dead_code)]
-    output: Option<toml::Value>,
+    output: Option<RawOutputSpec>,
+}
+
+/// Version brute de la section `[output]` telle qu'écrite en TOML : `schema`
+/// y est une chaîne (chemin relatif à la racine de scope, ou absolu), pas
+/// encore le `PathBuf` résolu que porte `crate::output::OutputSpec`. Même
+/// idiome que [`RawArgSpec`] pour `[args.*]` : la conversion (avec ses
+/// propres vérifications et messages nommant la section) est faite par
+/// [`convert_output`], jamais directement par `#[derive(Deserialize)]`.
+///
+/// `deny_unknown_fields` (même règle d'architecture que le reste du
+/// frontmatter, issue des revues L3 des phases 1 à 3) : une clé mal
+/// orthographiée sous `[output]` (ex. `max_line` au lieu de `max_lines`)
+/// doit échouer au chargement, pas retomber silencieusement sur « pas de
+/// limite ».
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOutputSpec {
+    #[serde(default)]
+    format: crate::output::Format,
+    #[serde(default)]
+    schema: Option<String>,
+    #[serde(default)]
+    max_lines: Option<usize>,
 }
 
 /// Section `[input]` du frontmatter.
@@ -135,20 +163,28 @@ struct InputSection {
 /// Le résultat est trié par chemin complet, pour que l'arbre clap et l'aide
 /// soient déterministes quel que soit l'ordre de lecture du système de
 /// fichiers.
+///
+/// Chaque gagnant transporte aussi la racine de scope (`root`) dont il vient
+/// — nécessaire à `parse` pour résoudre un `[output].schema` relatif (règle
+/// 3 du contrat partagé) — en plus de son chemin de fichier : la racine de
+/// scope d'une commande imbriquée (ex. `git/review.md`) reste la racine de
+/// scope elle-même, jamais un ancêtre dérivé du chemin du fichier.
 pub fn discover_scopes(roots: &[std::path::PathBuf]) -> crate::Result<Vec<CommandSpec>> {
-    let mut winners: std::collections::BTreeMap<String, (Vec<String>, std::path::PathBuf)> =
-        std::collections::BTreeMap::new();
+    let mut winners: std::collections::BTreeMap<
+        String,
+        (Vec<String>, std::path::PathBuf, std::path::PathBuf),
+    > = std::collections::BTreeMap::new();
 
     for root in roots {
         for (path, file) in collect_command_files(root)? {
             let key = path.join("/");
-            winners.insert(key, (path, file));
+            winners.insert(key, (path, file, root.clone()));
         }
     }
 
     let mut specs = Vec::with_capacity(winners.len());
-    for (path, file) in winners.into_values() {
-        specs.push(read_and_parse(path, &file)?);
+    for (path, file, root) in winners.into_values() {
+        specs.push(read_and_parse(path, &file, &root)?);
     }
 
     Ok(specs)
@@ -193,7 +229,8 @@ fn collect_command_files(
 }
 
 /// Lit et parse le fichier de commande `file`, dont le chemin de commande
-/// dérivé est `path`.
+/// dérivé est `path` et la racine de scope est `scope_root` (thread jusqu'à
+/// `parse`, cf. sa doc, pour résoudre un `[output].schema` relatif).
 ///
 /// Enveloppe le MESSAGE d'une erreur de parsing avec le chemin du fichier
 /// fautif, jamais l'erreur déjà formatée : `parse` renvoie une
@@ -201,26 +238,35 @@ fn collect_command_files(
 /// configuration : » ; ré-envelopper cette erreur (plutôt que son message)
 /// dans une nouvelle `Error::Config` dupliquerait ce préfixe (cf. revue L3,
 /// phase 2).
-fn read_and_parse(path: Vec<String>, file: &std::path::Path) -> crate::Result<CommandSpec> {
+fn read_and_parse(
+    path: Vec<String>,
+    file: &std::path::Path,
+    scope_root: &std::path::Path,
+) -> crate::Result<CommandSpec> {
     let source = std::fs::read_to_string(file).map_err(|err| {
         crate::Error::Config(format!(
             "impossible de lire le fichier {} : {err}",
             file.display()
         ))
     })?;
-    parse(&source, path).map_err(|err| match err {
+    let mut spec = parse(&source, path, scope_root).map_err(|err| match err {
         crate::Error::Config(msg) => crate::Error::Config(format!("{} : {msg}", file.display())),
         other => other,
-    })
+    })?;
+    spec.file = file.to_path_buf();
+    Ok(spec)
 }
 
 /// Parcourt `<root>/commands/**/*.md`.
 ///
-/// Renvoie un `Vec` vide si le dossier `commands/` n'existe pas.
+/// Renvoie un `Vec` vide si le dossier `commands/` n'existe pas. `root` sert
+/// aussi de racine de scope pour la résolution d'un `[output].schema`
+/// relatif (règle 3 du contrat partagé) : c'est la MÊME racine que celle
+/// passée en argument, jamais devinée depuis le chemin de chaque fichier.
 pub fn discover(root: &std::path::Path) -> crate::Result<Vec<CommandSpec>> {
     let mut specs = Vec::new();
     for (path, file) in collect_command_files(root)? {
-        specs.push(read_and_parse(path, &file)?);
+        specs.push(read_and_parse(path, &file, root)?);
     }
     Ok(specs)
 }
@@ -390,11 +436,137 @@ fn convert_args(raw: BTreeMap<String, RawArgSpec>) -> crate::Result<BTreeMap<Str
     Ok(args)
 }
 
+/// Résout le chemin d'un schéma JSON déclaré dans `[output].schema` par
+/// rapport à `scope_root` (règle 3 du contrat partagé, §4/§6 de la spec :
+/// `schemas/` est un dossier frère de `commands/`, tous deux enfants directs
+/// de la racine de scope). `declared` porte déjà le segment `schemas/` (cf.
+/// l'exemple de §6 : `schema = "schemas/classification.json"`) — on le
+/// joint donc directement à `scope_root`, sans réinsérer `schemas/` une
+/// seconde fois. Un chemin ABSOLU dans le frontmatter est accepté tel quel,
+/// sans jamais être recomposé avec `scope_root`.
+///
+/// PUREMENT SYNTAXIQUE : ne touche JAMAIS le disque, ne vérifie ni
+/// l'existence ni la lisibilité ni la validité du fichier obtenu — c'est une
+/// simple composition de chemins, infaillible. C'est un changement
+/// DÉLIBÉRÉ de la revue L3 de cette phase : la version précédente vérifiait
+/// l'existence ICI, donc dès `discover_scopes`/`discover`, c'est-à-dire
+/// avant même la construction de l'arbre `clap` dans `build_cli` (cf.
+/// `lib.rs::run`) — un schéma absent pour UNE SEULE commande, même une
+/// commande générale que personne n'invoque jamais, faisait donc échouer
+/// jusqu'à `npu --help` pour tout le CLI. C'était strictement PIRE qu'un
+/// schéma présent mais syntaxiquement cassé, qui restait toléré : la
+/// compilation du schéma (`output::compile_schema`) est PARESSEUSE par
+/// conception (règle 4 du contrat partagé, cf. doc de `output.rs`),
+/// réservée à la commande réellement invoquée, donc une erreur de contenu
+/// (JSON cassé) ne se déclenchait jamais avant l'usage — seule l'existence
+/// se déclenchait trop tôt. Les deux vérifications sont désormais alignées :
+/// PARESSEUSES TOUTES LES DEUX, jusqu'à l'exécution réelle de la commande
+/// qui réclame le schéma (`output::compile_schema`, qui produit alors une
+/// `Error::Config` nommant à la fois le chemin résolu ET le fichier de
+/// commande fautif). Même leçon que la revue L3 de la phase 2 pour un
+/// backend/modèle cassé masqué par un scope plus local : un élément cassé
+/// appartenant à une commande que personne n'invoque ne doit jamais
+/// désactiver le CLI entier. La vérification exhaustive de tous les
+/// schémas de tous les scopes, invoqués ou non, est le travail de
+/// `npu doctor` (phase 5, hors périmètre ici) — NE PAS rétablir de
+/// vérification d'existence ici en croyant corriger un oubli : ce serait
+/// réintroduire précisément le bogue que ce correctif élimine.
+fn resolve_schema_path(declared: &str, scope_root: &std::path::Path) -> std::path::PathBuf {
+    let declared_path = std::path::Path::new(declared);
+    if declared_path.is_absolute() {
+        declared_path.to_path_buf()
+    } else {
+        scope_root.join(declared_path)
+    }
+}
+
+/// Convertit la section `[output]` brute du frontmatter (`RawOutputSpec`) en
+/// `crate::output::OutputSpec`, résolue et validée.
+///
+/// Absence de `[output]` (`raw = None`) => `OutputSpec::default()` (`format
+/// = text`, pas de schéma, pas de limite) : la section est optionnelle.
+///
+/// Combinaisons interdites (règle 2 du contrat partagé), rejetées ICI, au
+/// chargement :
+/// - `schema` déclaré avec `format = "text"` : un schéma ne veut rien dire
+///   sur du texte ;
+/// - `max_lines` déclaré avec `format = "json"` : `max_lines` ne s'applique
+///   qu'au texte.
+///
+/// `format = "json"` SANS `schema` est explicitement AUTORISÉ (règle 2) : la
+/// sortie est alors seulement vérifiée comme étant du JSON bien formé, sans
+/// validation de schéma (cf. `output::finalize_json`, `schema: None`).
+///
+/// La résolution du chemin de schéma (`resolve_schema_path`) n'est appelée
+/// que dans la branche `Json` : par construction, `format = "text"` a déjà
+/// rejeté toute présence de `schema` juste au-dessus, donc il n'y a jamais
+/// de chemin à résoudre pour du texte.
+fn convert_output(
+    raw: Option<RawOutputSpec>,
+    scope_root: &std::path::Path,
+) -> crate::Result<crate::output::OutputSpec> {
+    let Some(raw) = raw else {
+        return Ok(crate::output::OutputSpec::default());
+    };
+
+    match raw.format {
+        crate::output::Format::Text => {
+            if raw.schema.is_some() {
+                return Err(crate::Error::Config(
+                    "[output] : « schema » n'a de sens qu'avec format = \"json\" (un schéma \
+                     JSON Schema ne peut rien valider sur du texte brut) ; retirez « schema » \
+                     ou passez format = \"json\""
+                        .to_string(),
+                ));
+            }
+            Ok(crate::output::OutputSpec {
+                format: crate::output::Format::Text,
+                schema: None,
+                max_lines: raw.max_lines,
+            })
+        }
+        crate::output::Format::Json => {
+            if raw.max_lines.is_some() {
+                return Err(crate::Error::Config(
+                    "[output] : « max_lines » n'a de sens qu'avec format = \"text\" (la \
+                     commande déclare format = \"json\", compté en structure, pas en lignes) ; \
+                     retirez « max_lines » ou passez format = \"text\""
+                        .to_string(),
+                ));
+            }
+            let schema = raw
+                .schema
+                .as_deref()
+                .map(|declared| resolve_schema_path(declared, scope_root));
+            Ok(crate::output::OutputSpec {
+                format: crate::output::Format::Json,
+                schema,
+                max_lines: None,
+            })
+        }
+    }
+}
+
 /// Parse le contenu d'un fichier de commande.
 ///
 /// Le frontmatter est délimité par des lignes `+++` ; l'en-tête est du TOML,
-/// le corps (après le second délimiteur) est le prompt.
-pub fn parse(source: &str, path: Vec<String>) -> crate::Result<CommandSpec> {
+/// le corps (après le second délimiteur) est le prompt. `scope_root` est la
+/// racine de scope (§4/§6 de la spec, ex. `./.npu`) dont ce fichier de
+/// commande est issu : elle sert UNIQUEMENT à résoudre un éventuel
+/// `[output].schema` relatif (règle 3 du contrat partagé), jamais à autre
+/// chose ici. Changement de signature publique par rapport aux phases 1 à 3
+/// (revue du plan de phase 4, contrat d'API partagé) : la résolution du
+/// chemin de schéma a besoin de la racine de scope du fichier, qui n'est
+/// connaissable qu'à l'endroit où les fichiers sont collectés
+/// (`collect_command_files`) — donc threadée jusqu'ici par l'appelant
+/// (`read_and_parse`) plutôt que devinée en remontant depuis le chemin du
+/// fichier, qui décalerait faux pour une commande imbriquée (§4/§6, `git/
+/// review.md` reste sous la MÊME racine de scope que `classify.md`).
+pub fn parse(
+    source: &str,
+    path: Vec<String>,
+    scope_root: &std::path::Path,
+) -> crate::Result<CommandSpec> {
     let mut lines = source.lines();
 
     match lines.next() {
@@ -482,6 +654,12 @@ pub fn parse(source: &str, path: Vec<String>) -> crate::Result<CommandSpec> {
         }
     }
 
+    // Section `[output]` (phase 4, npu-cli-spec.md §15) : combinaisons
+    // interdites, résolution du chemin de schéma par rapport à `scope_root`,
+    // et vérification (paresseuse pour la COMPILATION du schéma, pas pour son
+    // existence) — cf. doc de `convert_output`.
+    let output = convert_output(frontmatter.output, scope_root)?;
+
     Ok(CommandSpec {
         path,
         description: frontmatter.description,
@@ -489,6 +667,11 @@ pub fn parse(source: &str, path: Vec<String>) -> crate::Result<CommandSpec> {
         input: frontmatter.input.mode.unwrap_or_default(),
         prompt,
         args,
+        output,
+        // Renseigné par `read_and_parse`, seul appelant qui connaît le
+        // chemin du fichier réellement lu (cf. doc du champ sur
+        // `CommandSpec`).
+        file: std::path::PathBuf::new(),
     })
 }
 
@@ -510,6 +693,18 @@ mod tests {
             .join(format!("command-{name}-{n}"));
         std::fs::create_dir_all(&dir).expect("création du dossier de fixture");
         dir
+    }
+
+    /// Racine de scope factice pour les tests de `parse` qui ne déclarent
+    /// aucun `[output].schema` : sa seule contrainte est de ne pas exister
+    /// (`resolve_schema_path` n'est jamais atteinte tant qu'aucun schéma
+    /// n'est déclaré), donc un chemin fixe suffit — pas besoin d'une
+    /// fixture par test.
+    fn test_scope_root() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-fixtures")
+            .join("command-test-scope-root-placeholder")
     }
 
     #[test]
@@ -576,7 +771,8 @@ mod tests {
     #[test]
     fn parses_nominal_command() {
         let source = "+++\ndescription = \"Classify\"\nmodel = \"qwen-fast\"\n\n[input]\nmode = \"stdin_or_file\"\n+++\nHello {{ input }}\n";
-        let spec = parse(source, vec!["classify".to_string()]).expect("should parse");
+        let spec =
+            parse(source, vec!["classify".to_string()], &test_scope_root()).expect("should parse");
         assert_eq!(spec.description, "Classify");
         assert_eq!(spec.model, "qwen-fast");
         assert!(matches!(spec.input, InputMode::StdinOrFile));
@@ -587,43 +783,51 @@ mod tests {
     #[test]
     fn missing_closing_delimiter_is_config_error() {
         let source = "+++\nmodel = \"qwen-fast\"\nHello\n";
-        let err = parse(source, vec!["x".to_string()]).expect_err("should fail");
+        let err =
+            parse(source, vec!["x".to_string()], &test_scope_root()).expect_err("should fail");
         assert!(matches!(err, crate::Error::Config(_)));
     }
 
     #[test]
     fn missing_frontmatter_is_config_error() {
         let source = "Hello {{ input }}\n";
-        let err = parse(source, vec!["x".to_string()]).expect_err("should fail");
+        let err =
+            parse(source, vec!["x".to_string()], &test_scope_root()).expect_err("should fail");
         assert!(matches!(err, crate::Error::Config(_)));
     }
 
     #[test]
     fn default_input_mode_is_stdin() {
         let source = "+++\nmodel = \"qwen-fast\"\n+++\nprompt\n";
-        let spec = parse(source, vec!["x".to_string()]).expect("should parse");
+        let spec = parse(source, vec!["x".to_string()], &test_scope_root()).expect("should parse");
         assert!(matches!(spec.input, InputMode::Stdin));
     }
 
     #[test]
     fn missing_model_field_is_config_error() {
         let source = "+++\ndescription = \"no model\"\n+++\nprompt\n";
-        let err = parse(source, vec!["x".to_string()]).expect_err("should fail");
+        let err =
+            parse(source, vec!["x".to_string()], &test_scope_root()).expect_err("should fail");
         assert!(matches!(err, crate::Error::Config(_)));
     }
 
     #[test]
     fn invalid_toml_is_config_error() {
         let source = "+++\nmodel = \n+++\nprompt\n";
-        let err = parse(source, vec!["x".to_string()]).expect_err("should fail");
+        let err =
+            parse(source, vec!["x".to_string()], &test_scope_root()).expect_err("should fail");
         assert!(matches!(err, crate::Error::Config(_)));
     }
 
     #[test]
     fn nested_path_is_preserved() {
         let source = "+++\nmodel = \"qwen-fast\"\n+++\nprompt\n";
-        let spec =
-            parse(source, vec!["git".to_string(), "review".to_string()]).expect("should parse");
+        let spec = parse(
+            source,
+            vec!["git".to_string(), "review".to_string()],
+            &test_scope_root(),
+        )
+        .expect("should parse");
         assert_eq!(spec.path, vec!["git".to_string(), "review".to_string()]);
     }
 
@@ -774,7 +978,8 @@ mod tests {
     fn parses_full_arg_spec() {
         let source = "+++\nmodel = \"qwen-fast\"\n\n[args.language]\nshort = \"l\"\n\
                        required = true\ndescription = \"Target language\"\n+++\nHello {{ args.language }}\n";
-        let spec = parse(source, vec!["translate".to_string()]).expect("should parse");
+        let spec =
+            parse(source, vec!["translate".to_string()], &test_scope_root()).expect("should parse");
 
         assert_eq!(spec.args.len(), 1);
         let arg = spec
@@ -789,7 +994,8 @@ mod tests {
     #[test]
     fn arg_short_absent_is_none() {
         let source = "+++\nmodel = \"qwen-fast\"\n\n[args.language]\nrequired = true\n+++\nHello {{ args.language }}\n";
-        let spec = parse(source, vec!["translate".to_string()]).expect("should parse");
+        let spec =
+            parse(source, vec!["translate".to_string()], &test_scope_root()).expect("should parse");
 
         assert_eq!(spec.args.get("language").expect("présent").short, None);
     }
@@ -797,7 +1003,7 @@ mod tests {
     #[test]
     fn arg_short_multi_character_is_config_error() {
         let source = "+++\nmodel = \"qwen-fast\"\n\n[args.language]\nshort = \"lang\"\n+++\nHello {{ args.language }}\n";
-        let err = parse(source, vec!["translate".to_string()])
+        let err = parse(source, vec!["translate".to_string()], &test_scope_root())
             .expect_err("un short de plusieurs caractères doit échouer");
 
         assert!(matches!(err, crate::Error::Config(_)));
@@ -816,7 +1022,7 @@ mod tests {
         // deux profils avant ce correctif.
         let source =
             "+++\nmodel = \"qwen-fast\"\n\n[args.x]\nshort = \"-\"\n+++\nHello {{ args.x }}\n";
-        let err = parse(source, vec!["x".to_string()])
+        let err = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect_err("un short « - » doit échouer au chargement, jamais paniquer");
 
         assert!(matches!(err, crate::Error::Config(_)));
@@ -833,7 +1039,8 @@ mod tests {
         // prompt ne peut pas référencer l'argument sans changer ce qu'il
         // teste.
         let source = "+++\nmodel = \"qwen-fast\"\n\n[args.language]\nshort = \"l\"\n+++\nHello {{ input }}\n";
-        let spec = parse(source, vec!["translate".to_string()]).expect("should parse");
+        let spec =
+            parse(source, vec!["translate".to_string()], &test_scope_root()).expect("should parse");
 
         assert!(!spec.args.get("language").expect("présent").required);
     }
@@ -848,7 +1055,7 @@ mod tests {
         // jamais référencer validement, exactement le défaut visé par la
         // règle d'architecture des revues L3.
         let source = "+++\nmodel = \"qwen-fast\"\n\n[args.\"café\"]\nshort = \"c\"\n+++\nHello {{ input }}\n";
-        let err = parse(source, vec!["x".to_string()])
+        let err = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect_err("un nom d'argument accentué doit échouer au chargement");
 
         assert!(matches!(err, crate::Error::Config(_)));
@@ -867,7 +1074,7 @@ mod tests {
         // valide dans une clé TOML guillemetée mais délimite un préfixe de
         // placeholder (`args.`/`env.`) côté `prompt.rs`.
         let source = "+++\nmodel = \"qwen-fast\"\n\n[args.\"foo.bar\"]\n+++\nHello {{ input }}\n";
-        let err = parse(source, vec!["x".to_string()])
+        let err = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect_err("un nom d'argument contenant un point doit échouer au chargement");
 
         assert!(matches!(err, crate::Error::Config(_)));
@@ -877,7 +1084,7 @@ mod tests {
     #[test]
     fn arg_named_help_is_config_error() {
         let source = "+++\nmodel = \"qwen-fast\"\n\n[args.help]\nshort = \"h\"\n+++\nHello {{ args.help }}\n";
-        let err = parse(source, vec!["x".to_string()])
+        let err = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect_err("un argument nommé « help » doit échouer");
 
         assert!(matches!(err, crate::Error::Config(_)));
@@ -891,7 +1098,7 @@ mod tests {
         // argument déclaré du même nom entrerait en collision (id `clap`
         // dupliqué) et doit donc être rejeté ici, au chargement.
         let source = "+++\nmodel = \"qwen-fast\"\n\n[args.FILE]\nshort = \"f\"\n+++\nHello {{ args.FILE }}\n";
-        let err = parse(source, vec!["x".to_string()])
+        let err = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect_err("un argument nommé « FILE » doit échouer");
 
         assert!(matches!(err, crate::Error::Config(_)));
@@ -902,7 +1109,7 @@ mod tests {
     fn two_args_sharing_the_same_short_letter_is_config_error() {
         let source = "+++\nmodel = \"qwen-fast\"\n\n[args.alpha]\nshort = \"x\"\n\n[args.beta]\n\
                        short = \"x\"\n+++\nHello {{ args.alpha }} {{ args.beta }}\n";
-        let err = parse(source, vec!["x".to_string()])
+        let err = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect_err("deux arguments partageant la même lettre short doivent échouer");
 
         assert!(matches!(err, crate::Error::Config(_)));
@@ -915,7 +1122,7 @@ mod tests {
     #[test]
     fn prompt_referencing_undeclared_arg_is_config_error_at_parse_time() {
         let source = "+++\nmodel = \"qwen-fast\"\n+++\nHello {{ args.language }}\n";
-        let err = parse(source, vec!["translate".to_string()])
+        let err = parse(source, vec!["translate".to_string()], &test_scope_root())
             .expect_err("un placeholder args.* non déclaré doit échouer au parsing");
 
         assert!(matches!(err, crate::Error::Config(_)));
@@ -926,7 +1133,7 @@ mod tests {
     fn declared_but_unreferenced_arg_is_not_an_error() {
         let source =
             "+++\nmodel = \"qwen-fast\"\n\n[args.unused]\nshort = \"u\"\n+++\nHello {{ input }}\n";
-        let spec = parse(source, vec!["x".to_string()]).expect("should parse");
+        let spec = parse(source, vec!["x".to_string()], &test_scope_root()).expect("should parse");
 
         assert_eq!(spec.args.len(), 1);
         assert!(spec.args.contains_key("unused"));
@@ -935,7 +1142,7 @@ mod tests {
     #[test]
     fn command_without_args_section_has_empty_args() {
         let source = "+++\nmodel = \"qwen-fast\"\n+++\nprompt\n";
-        let spec = parse(source, vec!["x".to_string()]).expect("should parse");
+        let spec = parse(source, vec!["x".to_string()], &test_scope_root()).expect("should parse");
 
         assert!(spec.args.is_empty());
     }
@@ -944,7 +1151,8 @@ mod tests {
     fn existing_commands_without_args_section_still_parse_non_regression() {
         let source = "+++\ndescription = \"Classify\"\nmodel = \"qwen-fast\"\n\n[input]\n\
                        mode = \"stdin_or_file\"\n+++\nHello {{ input }}\n";
-        let spec = parse(source, vec!["classify".to_string()]).expect("should parse");
+        let spec =
+            parse(source, vec!["classify".to_string()], &test_scope_root()).expect("should parse");
 
         assert_eq!(spec.description, "Classify");
         assert_eq!(spec.model, "qwen-fast");
@@ -1068,7 +1276,8 @@ mod tests {
     #[test]
     fn referenced_arg_with_required_true_loads_correctly() {
         let source = "+++\nmodel = \"qwen-fast\"\n\n[args.tone]\nrequired = true\n+++\nton {{ args.tone }} : {{ input }}\n";
-        let spec = parse(source, vec!["optarg".to_string()]).expect("should parse");
+        let spec =
+            parse(source, vec!["optarg".to_string()], &test_scope_root()).expect("should parse");
 
         assert!(spec.args.get("tone").expect("présent").required);
     }
@@ -1082,7 +1291,7 @@ mod tests {
         // `declared_but_unreferenced_arg_is_not_an_error`, qui ne fixe pas
         // `required` explicitement).
         let source = "+++\nmodel = \"qwen-fast\"\n\n[args.unused]\nrequired = false\n+++\nHello {{ input }}\n";
-        let spec = parse(source, vec!["x".to_string()]).expect("should parse");
+        let spec = parse(source, vec!["x".to_string()], &test_scope_root()).expect("should parse");
 
         assert!(!spec.args.get("unused").expect("présent").required);
     }
@@ -1092,7 +1301,7 @@ mod tests {
     #[test]
     fn unknown_root_level_frontmatter_key_is_config_error() {
         let source = "+++\nmodel = \"qwen-fast\"\ndescripton = \"faute de frappe\"\n+++\nprompt\n";
-        let err = parse(source, vec!["x".to_string()])
+        let err = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect_err("une clé racine inconnue doit échouer, pas être ignorée en silence");
 
         assert!(matches!(err, crate::Error::Config(_)));
@@ -1101,7 +1310,7 @@ mod tests {
     #[test]
     fn unknown_input_section_key_is_config_error() {
         let source = "+++\nmodel = \"qwen-fast\"\n\n[input]\nmoed = \"stdin\"\n+++\nprompt\n";
-        let err = parse(source, vec!["x".to_string()]).expect_err(
+        let err = parse(source, vec!["x".to_string()], &test_scope_root()).expect_err(
             "une clé inconnue sous [input] doit échouer, pas retomber sur le mode \
                           par défaut en silence",
         );
@@ -1110,19 +1319,270 @@ mod tests {
     }
 
     #[test]
-    fn output_section_is_accepted_without_failing() {
-        // Nuance de la revue L3 (correctif 3) : `[output]` existe déjà dans
-        // la fixture versionnée `.npu/commands/commit-message.md` (format =
-        // "text", max_lines = 1) et n'est pas encore interprétée (phase 4,
-        // hors périmètre de ce correctif). `deny_unknown_fields` sur
-        // `Frontmatter` ne doit donc pas la faire échouer.
+    fn output_section_is_accepted_and_now_interpreted() {
+        // Suite de la revue L3 (correctif 3) : `[output]` existe déjà dans la
+        // fixture versionnée `.npu/commands/commit-message.md` (format =
+        // "text", max_lines = 1). La phase 4 lui donne enfin un sens : les
+        // trois clés doivent désormais être EFFECTIVES, pas seulement
+        // acceptées par `deny_unknown_fields`.
         let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"text\"\nmax_lines = 1\n\
                        +++\nprompt\n";
-        let spec = parse(source, vec!["x".to_string()]).expect(
-            "une section [output] présente doit être acceptée sans échouer (phase 4 non \
-             implémentée par ce correctif)",
-        );
+        let spec = parse(source, vec!["x".to_string()], &test_scope_root())
+            .expect("une section [output] valide doit parser");
 
         assert_eq!(spec.prompt, "prompt");
+        assert_eq!(spec.output.format, crate::output::Format::Text);
+        assert_eq!(spec.output.max_lines, Some(1));
+        assert_eq!(spec.output.schema, None);
+    }
+
+    // -- [output] (phase 4) ----------------------------------------------------
+
+    #[test]
+    fn output_section_absent_yields_default_output_spec() {
+        let source = "+++\nmodel = \"qwen-fast\"\n+++\nprompt\n";
+        let spec = parse(source, vec!["x".to_string()], &test_scope_root())
+            .expect("l'absence de [output] doit toujours parser (phase 4, règle 1 de la tâche)");
+
+        assert_eq!(spec.output.format, crate::output::Format::Text);
+        assert_eq!(spec.output.schema, None);
+        assert_eq!(spec.output.max_lines, None);
+    }
+
+    #[test]
+    fn output_json_with_schema_resolves_relative_to_scope_root_not_cwd_nor_command_file() {
+        // Point le plus facile à rater de la phase 4 (règle 3 du contrat
+        // partagé) : `schemas/` est un dossier FRÈRE de `commands/`, tous
+        // deux enfants directs de la racine de SCOPE — jamais du cwd, jamais
+        // du dossier du fichier de commande lui-même. Testé avec une
+        // commande IMBRIQUÉE (`git/review.md`, deux niveaux de profondeur)
+        // pour prouver que la profondeur du chemin de commande ne décale pas
+        // la résolution : le schéma doit se résoudre en
+        // `<scope_root>/schemas/classification.json`, PAS en
+        // `<scope_root>/commands/git/schemas/classification.json`.
+        let root = fixture_dir("output-schema-resolution-nested");
+        let schemas_dir = root.join("schemas");
+        std::fs::create_dir_all(&schemas_dir).expect("création du dossier schemas");
+        let schema_path = schemas_dir.join("classification.json");
+        std::fs::write(&schema_path, r#"{"type": "object"}"#).expect("écriture du schéma");
+
+        let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\n\
+                       schema = \"schemas/classification.json\"\n+++\nprompt\n";
+        let spec = parse(source, vec!["git".to_string(), "review".to_string()], &root)
+            .expect("un schéma existant sous schemas/ à la racine de scope doit résoudre");
+
+        assert_eq!(spec.output.format, crate::output::Format::Json);
+        assert_eq!(
+            spec.output.schema.as_deref(),
+            Some(schema_path.as_path()),
+            "le schéma doit se résoudre par rapport à la racine de scope, pas au cwd ni au \
+             chemin du fichier de commande, quelle que soit la profondeur du chemin de commande"
+        );
+    }
+
+    #[test]
+    fn output_json_schema_absolute_path_is_used_as_is_not_joined_with_scope_root() {
+        // Branche non couverte de `resolve_schema_path` (revue L1/L2 de la
+        // phase 4) : un chemin ABSOLU dans `[output].schema` doit résoudre
+        // vers lui-même, tel quel (cf. doc de `resolve_schema_path`).
+        // `test_scope_root()` désigne une racine qui n'existe même pas sur
+        // disque, pour prouver que la résolution d'un schéma absolu ne
+        // dépend jamais d'elle. Note : `std::path::Path::join` remplace déjà
+        // intégralement la base par un argument absolu (documenté par la
+        // stdlib), donc `scope_root.join(declared_path)` seul produirait le
+        // même résultat qu'avec la branche `is_absolute()` explicite —
+        // celle-ci reste écrite en toutes lettres pour la lisibilité de
+        // l'intention, pas parce qu'elle change le comportement. Ce test
+        // fige donc le RÉSULTAT observable (le chemin renvoyé), pas la
+        // branche interne empruntée pour l'obtenir.
+        let root = fixture_dir("output-schema-absolute-path");
+        let schema_path = root.join("classification.json");
+        std::fs::write(&schema_path, r#"{"type": "object"}"#).expect("écriture du schéma");
+
+        let source = format!(
+            "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\nschema = \"{}\"\n\
+             +++\nprompt\n",
+            schema_path.display()
+        );
+        let spec = parse(&source, vec!["x".to_string()], &test_scope_root())
+            .expect("un chemin de schéma absolu doit résoudre sans dépendre de la racine de scope");
+
+        assert_eq!(
+            spec.output.schema.as_deref(),
+            Some(schema_path.as_path()),
+            "un chemin absolu doit être utilisé tel quel, jamais joint à la racine de scope"
+        );
+    }
+
+    #[test]
+    fn output_json_without_schema_is_accepted() {
+        // Règle 2 du contrat partagé : `format = "json"` SANS `schema` est
+        // explicitement autorisé, on valide alors seulement que la sortie
+        // est du JSON bien formé.
+        let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\n+++\nprompt\n";
+        let spec = parse(source, vec!["x".to_string()], &test_scope_root())
+            .expect("format = json sans schema doit parser");
+
+        assert_eq!(spec.output.format, crate::output::Format::Json);
+        assert_eq!(spec.output.schema, None);
+    }
+
+    #[test]
+    fn output_schema_with_text_format_is_config_error() {
+        // Combinaison interdite (règle 2 du contrat partagé) : un schéma ne
+        // veut rien dire sur du texte.
+        let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"text\"\n\
+                       schema = \"schemas/x.json\"\n+++\nprompt\n";
+        let err = parse(source, vec!["x".to_string()], &test_scope_root())
+            .expect_err("schema avec format = text doit être rejeté au chargement");
+
+        assert!(matches!(err, crate::Error::Config(_)));
+        let message = err.to_string();
+        assert!(message.contains("schema"), "obtenu : {message}");
+        assert!(message.contains("text"), "obtenu : {message}");
+    }
+
+    #[test]
+    fn output_max_lines_with_json_format_is_config_error() {
+        // Combinaison interdite symétrique (règle 2 du contrat partagé) :
+        // max_lines ne s'applique qu'au texte.
+        let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\nmax_lines = 3\n\
+             +++\nprompt\n";
+        let err = parse(source, vec!["x".to_string()], &test_scope_root())
+            .expect_err("max_lines avec format = json doit être rejeté au chargement");
+
+        assert!(matches!(err, crate::Error::Config(_)));
+        let message = err.to_string();
+        assert!(message.contains("max_lines"), "obtenu : {message}");
+        assert!(message.contains("json"), "obtenu : {message}");
+    }
+
+    #[test]
+    fn output_schema_pointing_to_missing_file_resolves_lazily_at_load() {
+        // Revue L3, correctif 1 : `resolve_schema_path` est désormais
+        // PUREMENT SYNTAXIQUE — un schéma déclaré mais absent du disque ne
+        // doit plus faire échouer le chargement (`parse`), aligné sur la
+        // compilation paresseuse du schéma (cf. doc de `resolve_schema_path`
+        // et de `output.rs`). Le chemin résolu doit néanmoins rester
+        // correct : c'est `output::compile_schema`, à l'exécution réelle de
+        // la commande, qui découvrira l'absence (cf. le test suivant,
+        // `output_schema_missing_file_error_names_the_command_file_via_discover`).
+        let root = fixture_dir("output-schema-missing");
+        let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\n\
+                       schema = \"schemas/does-not-exist.json\"\n+++\nprompt\n";
+        let spec = parse(source, vec!["x".to_string()], &root)
+            .expect("un schéma introuvable ne doit plus faire échouer le chargement");
+
+        assert_eq!(
+            spec.output.schema.as_deref(),
+            Some(root.join("schemas").join("does-not-exist.json").as_path()),
+            "le chemin résolu doit rester correct même si le fichier n'existe pas"
+        );
+    }
+
+    #[test]
+    fn output_schema_missing_file_error_names_the_command_file_via_discover() {
+        // Revue L3, correctif 1 : verrouille le NOUVEAU contrat, pas
+        // l'ancien. Le chargement (`discover`) réussit désormais même si le
+        // schéma déclaré est absent (résolution paresseuse, cf.
+        // `resolve_schema_path`) — `--help` et toute autre commande du même
+        // scope restent utilisables. L'erreur survient à l'USAGE, quand la
+        // commande qui réclame ce schéma est réellement invoquée
+        // (`output::finalize`, qui délègue à `compile_schema`), et doit
+        // nommer les DEUX chemins : le chemin résolu du schéma ET le fichier
+        // de commande qui le réclame — même exigence que pour un
+        // frontmatter cassé ou un placeholder inconnu (règle d'architecture
+        // des revues L3 des phases 1 à 3).
+        let root = fixture_dir("output-schema-missing-discover");
+        write_command_with_output(
+            &root,
+            "classify",
+            "qwen-fast",
+            "prompt",
+            "format = \"json\"\nschema = \"schemas/absent.json\"",
+        );
+
+        let specs = discover(&root).expect("le chargement doit réussir malgré le schéma absent");
+        let spec = specs
+            .iter()
+            .find(|s| s.path == vec!["classify".to_string()])
+            .expect("la commande classify doit être présente");
+
+        let err = crate::output::finalize(&spec.output, "{}", &spec.file)
+            .expect_err("un schéma absent doit échouer À L'USAGE, pas au chargement");
+
+        assert!(matches!(err, crate::Error::Config(_)));
+        let message = err.to_string();
+        assert!(
+            message.contains("classify.md"),
+            "le message doit nommer le fichier de commande fautif, obtenu : {message}"
+        );
+        assert!(
+            message.contains(
+                root.join("schemas")
+                    .join("absent.json")
+                    .to_string_lossy()
+                    .as_ref()
+            ),
+            "le message doit aussi citer le chemin résolu du schéma, obtenu : {message}"
+        );
+    }
+
+    #[test]
+    fn unknown_output_section_key_is_config_error() {
+        // Même règle d'architecture que le reste du frontmatter
+        // (`deny_unknown_fields`, revues L3 des phases 1 à 3), désormais
+        // appliquée à `[output]`.
+        let source = "+++\nmodel = \"qwen-fast\"\n\n[output]\nformt = \"json\"\n+++\nprompt\n";
+        let err = parse(source, vec!["x".to_string()], &test_scope_root())
+            .expect_err("une clé inconnue sous [output] doit échouer, pas être ignorée");
+
+        assert!(matches!(err, crate::Error::Config(_)));
+    }
+
+    /// Écrit une commande `<root>/commands/<rel_path>.md` avec un frontmatter
+    /// minimal et une section `[output]` donnée en TOML brut (sans les
+    /// crochets `[output]` eux-mêmes, ajoutés ici). Complète `write_command`
+    /// (qui ne déclare pas de section `[output]`) pour les tests ciblant
+    /// spécifiquement cette section via `discover`.
+    fn write_command_with_output(
+        root: &std::path::Path,
+        rel_path: &str,
+        model: &str,
+        prompt: &str,
+        output_toml: &str,
+    ) {
+        let file = root.join("commands").join(format!("{rel_path}.md"));
+        std::fs::create_dir_all(file.parent().expect("le fichier a un parent"))
+            .expect("création des dossiers intermédiaires");
+        std::fs::write(
+            &file,
+            format!("+++\nmodel = \"{model}\"\n\n[output]\n{output_toml}\n+++\n{prompt}\n"),
+        )
+        .expect("écriture fixture");
+    }
+
+    #[test]
+    fn real_commit_message_fixture_output_section_is_now_effective() {
+        // C'est la dette précise que cette phase rembourse : la fixture
+        // versionnée `.npu/commands/commit-message.md` déclare `[output]`
+        // (format = "text", max_lines = 1) depuis la phase 3, jamais honorée
+        // jusqu'ici. Elle doit désormais parser ET donner max_lines = Some(1).
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".npu");
+        let commands = discover(&root).expect("la fixture .npu/ réelle doit toujours charger");
+
+        let commit_message = commands
+            .iter()
+            .find(|spec| spec.path == vec!["commit-message".to_string()])
+            .expect("commit-message doit être présente");
+
+        assert_eq!(commit_message.output.format, crate::output::Format::Text);
+        assert_eq!(
+            commit_message.output.max_lines,
+            Some(1),
+            "la dette de la revue L3 (correctif 3) est remboursée : max_lines doit être \
+             effectif, pas seulement accepté"
+        );
+        assert_eq!(commit_message.output.schema, None);
     }
 }

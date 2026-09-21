@@ -9,6 +9,7 @@ pub mod command;
 pub mod config;
 pub mod error;
 pub mod input;
+pub mod output;
 pub mod prompt;
 pub mod scope;
 
@@ -267,7 +268,18 @@ pub fn run() -> Result<()> {
     let input_text = input::resolve(&spec.input, file_arg)?;
 
     let prompt = prompt::render(&spec.prompt, &input_text, &args, &env)?;
-    let output = backend::chat(backend, model, &prompt)?;
+
+    // Phase 4 (npu-cli-spec.md §15) : la réponse brute du backend n'est
+    // jamais écrite telle quelle sur stdout. `output::finalize` applique le
+    // contrat de sortie déclaré (`spec.output` — format, schéma, max_lines)
+    // et renvoie soit le texte exact à écrire, soit une `Error::Output`
+    // (code de sortie 4 : la CONFIGURATION est valide, c'est la réponse du
+    // modèle qui ne respecte pas le contrat déclaré — cf. doc de module de
+    // `output.rs`). Aucune reformulation ni retry ici : une sortie invalide
+    // est un échec d'exécution, pas quelque chose à rattraper (§15, hors
+    // périmètre de cette phase).
+    let raw_output = backend::chat(backend, model, &prompt)?;
+    let output = output::finalize(&spec.output, &raw_output, &spec.file)?;
 
     println!("{output}");
 
@@ -296,6 +308,16 @@ mod tests {
             input,
             prompt: "{{ input }}".to_string(),
             args,
+            // Phase 4 (`command::CommandSpec.output`, champ ajouté par le
+            // contrat d'API partagé) : ces tests de `lib.rs` portent sur la
+            // construction de l'arbre `clap`, jamais sur le contrat de
+            // sortie — `OutputSpec::default()` (format text, pas de schéma,
+            // pas de limite) leur est neutre.
+            output: output::OutputSpec::default(),
+            // Neutre pour les mêmes raisons que `output` ci-dessus : ces
+            // tests ne portent jamais sur le contrat de sortie ni sur le
+            // nommage du fichier de commande dans une erreur de schéma.
+            file: std::path::PathBuf::new(),
         }
     }
 

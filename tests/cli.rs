@@ -62,6 +62,41 @@ fn discovers_translate_fixture_with_declared_language_arg() {
         .expect("le prompt de translate doit passer la validation statique des placeholders");
 }
 
+/// Découvre la fixture versionnée `.npu/commands/classify.md` (phase 4,
+/// npu-cli-spec.md §6/§15) : vérifie que la commande déclare bien
+/// `format = "json"` ET que le chemin de schéma résolu (`schemas/
+/// classification.json`, relatif à la racine de scope `.npu/`) EXISTE
+/// réellement sur le disque — la dette précise que cette phase rembourse
+/// (`[output]` lu puis honoré, pas seulement accepté). N'appelle pas le
+/// réseau : `command::discover` ne fait que lire et parser des fichiers
+/// locaux.
+#[test]
+fn discovers_classify_fixture_with_json_format_and_existing_schema() {
+    let root = std::path::Path::new(".npu");
+    let commands = command::discover(root).expect("la découverte des commandes doit réussir");
+
+    let classify = commands
+        .iter()
+        .find(|spec| spec.path == vec!["classify".to_string()])
+        .expect("classify doit être découverte");
+
+    assert_eq!(
+        classify.output.format,
+        npu::output::Format::Json,
+        "classify doit déclarer format = \"json\""
+    );
+    let schema_path = classify
+        .output
+        .schema
+        .as_deref()
+        .expect("classify doit déclarer un chemin de schéma");
+    assert!(
+        schema_path.is_file(),
+        "le chemin de schéma résolu doit exister réellement sur le disque, obtenu : {}",
+        schema_path.display()
+    );
+}
+
 /// Crée un dossier de fixture unique sous `target/`, pour ne pas polluer le
 /// dépôt ni entrer en collision entre tests exécutés en parallèle (même
 /// idiome que `config::tests::fixture_dir` / `command::tests::fixture_dir`).
