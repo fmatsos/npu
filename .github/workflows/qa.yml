@@ -1,0 +1,39 @@
+# The gate, unchanged: CI runs `make qa` and nothing else. Reproducing its
+# steps here would let CI and a developer's machine drift apart, and the
+# repository has exactly one definition of "green".
+name: QA
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push on the same ref makes the previous run pointless.
+  group: qa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # No toolchain action: `rust-toolchain.toml` pins 1.98.1 with clippy and
+      # rustfmt, and rustup installs it on the first cargo invocation. Naming
+      # the version here too would create a second source of truth.
+      - name: Show the pinned toolchain
+        run: rustc --version && cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      # `make audit` needs this binary; it is not part of the toolchain.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - run: make qa

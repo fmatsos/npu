@@ -1,5 +1,7 @@
 # npu
 
+[![QA](https://github.com/fmatsos/npu/actions/workflows/qa.yml/badge.svg)](https://github.com/fmatsos/npu/actions/workflows/qa.yml)
+
 A generic CLI engine for running local AI commands, written in Rust, with a focus on models served
 by an NPU.
 
@@ -18,7 +20,8 @@ Adding, changing or removing a command never requires recompiling. A repository 
 `.npu/` directory and get project-specific AI tooling without shipping any executable code.
 
 > [!NOTE]
-> Version 0.1.0. Not published to crates.io — install from source (see below).
+> Version 0.1.0. Not published to crates.io — grab a binary from the
+> [releases](https://github.com/fmatsos/npu/releases) or build from source (see below).
 
 ---
 
@@ -73,6 +76,14 @@ Docker, and a configuration without that table never asks for it.
 ---
 
 ## Installation
+
+### From a release
+
+Each `vX.Y.Z` tag publishes a stripped binary per target — `x86_64-unknown-linux-gnu`,
+`aarch64-apple-darwin`, `x86_64-pc-windows-msvc` — on the
+[releases page](https://github.com/fmatsos/npu/releases), together with the changelog for that
+version. Unpack the archive and put `npu` anywhere on your `PATH`; there is nothing else to
+install.
 
 ### Linux and macOS
 

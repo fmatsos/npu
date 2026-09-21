@@ -1,0 +1,149 @@
+# Triggered by a `vX.Y.Z` tag, which is what the `release` skill pushes.
+#
+# Three stages, in order: the gate, the binaries, the release. The gate runs
+# first on purpose — a tag that does not pass `make qa` must not become a
+# downloadable artifact, and finding that out after publishing is too late.
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)publish, e.g. v0.2.0"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: make qa
+
+  build:
+    needs: qa
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Add the target
+        run: rustup target add ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # One archive per target, named after the tag and the target so a
+      # download says what it is without being opened. `strip = true` is
+      # already set in the release profile, nothing to post-process.
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ inputs.tag || github.ref_name }}"
+          name="npu-${version}-${{ matrix.target }}"
+          mkdir -p "dist/${name}"
+          cp "target/${{ matrix.target }}/release/npu" "dist/${name}/"
+          cp README.md "dist/${name}/"
+          tar -czf "dist/${name}.tar.gz" -C dist "${name}"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ inputs.tag || github.ref_name }}"
+          name="npu-${version}-${{ matrix.target }}"
+          mkdir -p "dist/${name}"
+          cp "target/${{ matrix.target }}/release/npu.exe" "dist/${name}/"
+          cp README.md "dist/${name}/"
+          7z a "dist/${name}.zip" "./dist/${name}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npu-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to create the release and upload its assets.
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # The notes come from CHANGELOG.md, written by the `release` skill and
+      # reviewed in the commit that bumped the version: the published notes are
+      # then exactly what the repository says, not a second rewording of it.
+      # Missing section (a tag pushed by hand) falls back to GitHub's generated
+      # notes rather than publishing an empty release.
+      - name: Extract the notes for this tag
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ inputs.tag || github.ref_name }}"
+          number="${version#v}"
+          : > notes.md
+          if [ -f CHANGELOG.md ]; then
+            awk -v v="$number" '
+              $0 ~ "^## \\[" v "\\]" { found = 1; next }
+              found && /^## \[/ { exit }
+              found { print }
+            ' CHANGELOG.md > notes.md
+          fi
+          if grep -q '[^[:space:]]' notes.md; then
+            echo "generate=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "CHANGELOG.md has no section for ${number}; falling back to generated notes" >&2
+            echo "generate=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ inputs.tag || github.ref_name }}"
+          if [ "${{ steps.notes.outputs.generate }}" = "true" ]; then
+            gh release create "$version" dist/* --title "$version" --generate-notes
+          else
+            gh release create "$version" dist/* --title "$version" --notes-file notes.md
+          fi

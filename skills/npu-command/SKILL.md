@@ -1,6 +1,6 @@
 ---
 name: npu-command
-description: Writes and fixes `npu` command files (`.npu/commands/*.md`) — the Markdown file with TOML frontmatter between `---` fences (the `+++` of earlier versions is rejected) whose path becomes the CLI command name. Covers frontmatter keys, input modes, `[args.*]` flags, the three prompt placeholders (`{{ input }}`, `{{ args.x }}`, `{{ env.X }}`), the `[output]` contract with JSON Schema, reserved command names, and the load-time rejections that catch a typo before it silently reaches the model.
+description: Writes and fixes `npu` command files (`.npu/commands/*.md`) — the Markdown file whose TOML frontmatter is fenced by three dashes (the `+++` of earlier versions is rejected) and whose path becomes the CLI command name. Covers frontmatter keys, input modes, `[args.*]` flags, the three prompt placeholders (`{{ input }}`, `{{ args.x }}`, `{{ env.X }}`), the `[output]` contract with JSON Schema, reserved command names, and the load-time rejections that catch a typo before it silently reaches the model.
 when_to_use: >
   Trigger on "add an npu command", "write a prompt for npu", "add a flag to
   this command", "make this command return JSON", "nest npu commands", or on

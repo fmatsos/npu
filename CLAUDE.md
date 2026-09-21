@@ -14,6 +14,27 @@ make fix     # rustfmt and clippy autofixes
 
 `make qa` must pass before any commit. Nothing else is a substitute.
 
+CI runs that same target and nothing else (`.github/workflows/qa.yml`):
+reproducing its steps in YAML would let CI and a developer's machine drift
+apart, and this repository has one definition of green.
+
+## Releasing
+
+A release is a tag. `.github/workflows/release.yml` fires on `vX.Y.Z`,
+re-runs the gate, builds the three target binaries and publishes the GitHub
+release with the notes **extracted verbatim from `CHANGELOG.md`** (falling
+back to generated notes when the section is missing). Nothing is released by
+hand: a local `gh release create` would skip the gate and publish binaries
+built on someone's machine.
+
+The `release` skill (`skills/release/SKILL.md`) owns the part that needs
+judgement — version from the Conventional Commits since the last tag
+(pre-1.0: a breaking change bumps the MINOR), the `CHANGELOG.md` section in
+Keep a Changelog form, one bullet per change linking to its commit by full
+sha, and the closing compare link. Anything touching the exit-code contract,
+the stdout contract, a reserved name or the meaning of a configuration key is
+breaking whatever its commit type claims.
+
 ## Architecture rule
 
 > Every configuration key that is read must be honoured, or rejected with an
@@ -136,7 +157,8 @@ build time — which is not an acceptable way to report a configuration error.
 
 ## Conventions
 
-- Source, comments, rustdoc, messages and documentation: **English**.
-  Commit messages: **French**, Conventional Commits.
+- Source, comments, rustdoc, messages, documentation and **commit messages**:
+  **English**, Conventional Commits. The whole history was translated in one
+  pass; do not reintroduce French in a message.
 - Non-ASCII test fixtures (`café`, `Montréal`) are deliberate: they exercise
   multibyte boundaries and non-ASCII argument rejection. Leave them.
