@@ -1,0 +1,50 @@
+[package]
+name = "npu"
+version = "0.1.0"
+edition = "2024"
+description = "Moteur générique d'exécution de commandes IA locales"
+license = "MIT"
+publish = false
+
+[dependencies]
+
+# --- Qualité : lints appliqués à la compilation ---------------------------
+# `priority = -1` sur un groupe est obligatoire dès qu'on surcharge un lint
+# individuel du même groupe : sans lui, Cargo refuse le manifeste.
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Correction obligatoire : ces patterns cassent le contrat CLI (§14 de la spec,
+# stdout réservé au résultat) ou masquent une erreur.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+print_stderr = "allow"
+# Ne doit jamais atteindre un binaire publié.
+dbg_macro = "deny"
+todo = "warn"
+# Bruit de fond de `pedantic` sans valeur ici.
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+# --- Profils --------------------------------------------------------------
+# panic = "abort" volontairement absent : le CLI expose des codes de sortie
+# distincts (cf. IMPLEMENTATION.md §1.7) qu'un abort remplacerait par un SIGABRT.
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "unwind"
+
+[profile.dev]
+# Compilation incrémentale rapide, mais debug info allégée.
+debug = "line-tables-only"

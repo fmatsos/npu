@@ -1,0 +1,5 @@
+# Volontairement quasi vide : la valeur de rustfmt vient de ses défauts, que
+# tout l'écosystème partage. La plupart des options « avancées »
+# (imports_granularity, group_imports, wrap_comments…) sont nightly-only et
+# seraient ignorées ici.
+edition = "2024"

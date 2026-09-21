@@ -1,0 +1,7 @@
+# Fige la version exacte de la toolchain : rustup la télécharge automatiquement.
+# Sans version explicite, "stable" flotte et un futur clippy peut casser `make qa`
+# sur du code inchangé. Bump volontaire.
+[toolchain]
+channel = "1.98.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

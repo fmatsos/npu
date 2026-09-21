@@ -1,0 +1,31 @@
+# cargo-deny : audit de l'arbre de dépendances.
+# Couvre les vulnérabilités connues, les licences, et les doublons de crates.
+
+[advisories]
+# Toute vulnérabilité RustSec connue fait échouer l'audit.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Licences autorisées pour tout l'arbre de dépendances.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Deux versions de la même crate = binaire plus gros et compilation plus lente.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
