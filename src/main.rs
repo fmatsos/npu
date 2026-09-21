@@ -1,4 +1,8 @@
+//! Coquille du binaire : toute la logique vit dans `lib.rs`.
+
 fn main() {
-    // ponytail: coquille volontairement vide, toute la logique est dans lib.rs.
-    println!("npu");
+    if let Err(err) = npu::run() {
+        eprintln!("{err}");
+        std::process::exit(err.exit_code());
+    }
 }
