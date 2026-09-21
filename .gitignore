@@ -1,3 +1,4 @@
 /target
 /IMPLEMENTATION.md
 /npu-cli-spec.md
+.claude/settings.local.json

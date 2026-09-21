@@ -38,7 +38,10 @@ two disagree the binary and `docs/` win.
 
 ## Installing
 
-Per user, available in every project:
+Working **in this repository**, nothing to do: `.claude/skills/` already
+symlinks all five, so they load in every session here.
+
+Elsewhere, per user, available in every project:
 
 ```sh
 cp -r skills/npu-* ~/.claude/skills/
