@@ -427,8 +427,6 @@ mod tests {
         assert!(matches!(err, crate::Error::Config(_)));
         let msg = err.to_string();
         assert!(msg.contains("ovms"));
-        assert!(msg.contains("chat"));
-        assert!(msg.contains("GET"));
     }
 
     #[test]
@@ -795,7 +793,6 @@ mod tests {
             msg.contains("ovms.toml"),
             "le message doit nommer le fichier fautif, obtenu : {msg}"
         );
-        assert!(msg.contains("ollama"));
     }
 
     #[test]

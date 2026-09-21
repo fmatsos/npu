@@ -1,32 +1,32 @@
-//! Vérification de bout en bout du contrat de sortie (phase 4,
-//! npu-cli-spec.md §15) — le pipeline COMPLET, pas les unités de `output.rs`
-//! ou `command.rs` prises isolément.
+//! End-to-end verification of the output contract (phase 4,
+//! npu-cli-spec.md §15) — the COMPLETE pipeline, not the units of
+//! `output.rs` or `command.rs` taken in isolation.
 //!
-//! Chaque test :
-//! 1. monte un faux backend HTTP local (`std::net::TcpListener` dans un
-//!    thread, même idiome que
-//!    `backend::tests::chat_end_to_end_against_stubbed_http_server`) qui
-//!    répond une réponse `chat/completions` fixée ;
-//! 2. écrit un scope `.npu/` temporaire sous `target/` (backend, modèle et
-//!    commande) pointant sur ce faux backend ;
-//! 3. exécute le VRAI binaire `npu` (`env!("CARGO_BIN_EXE_npu")`, pas une
-//!    fonction appelée directement dans ce processus de test) avec ce scope comme répertoire courant, et
-//!    vérifie le code de sortie, stdout et stderr.
+//! Each test:
+//! 1. mounts a fake local HTTP backend (`std::net::TcpListener` in a thread,
+//!    same idiom as
+//!    `backend::tests::chat_end_to_end_against_stubbed_http_server`) that
+//!    answers with a fixed `chat/completions` response;
+//! 2. writes a temporary `.npu/` scope under `target/` (backend, model and
+//!    command) pointing at that fake backend;
+//! 3. runs the REAL `npu` binary (`env!("CARGO_BIN_EXE_npu")`, never a
+//!    function called directly in this test process) with that scope as
+//!    the current directory, and checks the exit code, stdout and stderr.
 //!
-//! `HOME` est redirigé vers le scope temporaire lui-même (qui ne contient
-//! jamais `.config/npu`) et `XDG_CONFIG_HOME` est retiré de l'environnement
-//! de l'enfant : seule la racine de scope temporaire (`<scope>/.npu`, via le
-//! répertoire courant) doit être prise en compte par `scope::roots()`, jamais
-//! le vrai `$HOME` ni un `/etc/npu` qui existerait par ailleurs sur la
-//! machine. `Command::env`/`env_remove` ne touchent que l'environnement du
-//! PROCESSUS ENFANT : aucun test ne mute les vraies variables d'environnement
-//! (`std::env::set_var` est `unsafe` en édition 2024, interdit par
+//! `HOME` is redirected to the temporary scope itself (which never contains
+//! `.config/npu`) and `XDG_CONFIG_HOME` is removed from the child's
+//! environment: only the temporary scope root (`<scope>/.npu`, via the
+//! current directory) must be taken into account by `scope::roots()`, never
+//! the real `$HOME` nor an `/etc/npu` that might otherwise exist on the
+//! machine. `Command::env`/`env_remove` only touch the CHILD PROCESS's
+//! environment: no test mutates the real environment variables
+//! (`std::env::set_var` is `unsafe` in edition 2024, forbidden by
 //! `unsafe_code = "forbid"`, cf. Cargo.toml).
 //!
-//! Aucun test n'appelle un vrai backend réseau : le seul réseau touché est le
-//! listener bouchonné, local, créé par le test lui-même.
+//! No test calls a real network backend: the only network touched is the
+//! stubbed, local listener created by the test itself.
 
-#![allow(clippy::expect_used)] // toléré dans les tests (cf. Cargo.toml [lints.clippy]).
+#![allow(clippy::expect_used)] // tolerated in tests (cf. Cargo.toml [lints.clippy]).
 
 use std::io::Write;
 use std::net::TcpListener;
@@ -34,9 +34,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Crée un dossier de scope temporaire unique sous `target/`, distinct de la
-/// fixture versionnée `.npu/` — même idiome que les fixtures de
-/// `command::tests`/`config::tests`/`tests/cli.rs`.
+/// Creates a unique temporary scope directory under `target/`, distinct
+/// from the versioned `.npu/` fixture — same idiom as the
+/// `command::tests`/`config::tests`/`tests/cli.rs` fixtures.
 fn fixture_scope(name: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -44,32 +44,31 @@ fn fixture_scope(name: &str) -> PathBuf {
         .join("target")
         .join("test-fixtures")
         .join(format!("e2e-output-contract-{name}-{n}"));
-    std::fs::create_dir_all(&dir).expect("création du dossier de scope temporaire");
+    std::fs::create_dir_all(&dir).expect("creating the temporary scope directory");
     dir
 }
 
 fn write(dir: &Path, rel: &str, contents: &str) {
     let path = dir.join(rel);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).expect("création du dossier parent");
+        std::fs::create_dir_all(parent).expect("creating the parent directory");
     }
-    std::fs::write(path, contents).expect("écriture de la fixture");
+    std::fs::write(path, contents).expect("writing the fixture");
 }
 
-/// Écrit un scope `.npu` complet (backend + modèle) pointant sur le faux
-/// backend HTTP `addr`, plus la commande de fixture `e2e-cmd` dont la section
-/// `[output]` est `output_section` (son contenu TOML, SANS les crochets
-/// `[output]` eux-mêmes — chaque appelant de ce module en fournit un non
-/// vide, cf. les quatre scénarios ci-dessous).
+/// Writes a complete `.npu` scope (backend + model) pointing at the fake
+/// HTTP backend `addr`, plus the `e2e-cmd` fixture command whose `[output]`
+/// section is `output_section` (its TOML content, WITHOUT the `[output]`
+/// brackets themselves — every caller of this module supplies a non-empty
+/// one, cf. the four scenarios below).
 ///
-/// `scope` est le répertoire courant que reçoit le binaire (`run_npu`), PAS
-/// la racine de scope elle-même : `scope::roots()` (`src/scope.rs`) calcule
-/// la racine locale comme `<cwd>/.npu`, jamais `<cwd>` directement — chaque
-/// chemin écrit ici doit donc être préfixé par `.npu/`, sous peine que le
-/// binaire ne trouve ni backend, ni modèle, ni commande (bogue exact
-/// reproduit et corrigé pendant l'écriture de ce test : une première version
-/// écrivait directement sous `<scope>/backends/...`, que `scope::roots()`
-/// ignore).
+/// `scope` is the current directory the binary receives (`run_npu`), NOT
+/// the scope root itself: `scope::roots()` (`src/scope.rs`) computes the
+/// local root as `<cwd>/.npu`, never `<cwd>` directly — every path written
+/// here must therefore be prefixed with `.npu/`, or the binary will find
+/// neither backend, model, nor command (an exact bug reproduced and fixed
+/// while writing this test: an earlier version wrote directly under
+/// `<scope>/backends/...`, which `scope::roots()` ignores).
 fn write_scope(scope: &Path, addr: std::net::SocketAddr, output_section: &str) {
     write(
         scope,
@@ -105,32 +104,35 @@ fn write_scope(scope: &Path, addr: std::net::SocketAddr, output_section: &str) {
     );
 }
 
-/// Délai maximal accordé au serveur bouchonné pour recevoir la connexion du
-/// binaire `npu` lancé par `run_npu`. Borne le `accept()` (cf. plus bas)
-/// plutôt que de le laisser bloquer indéfiniment : sans cette borne, un
-/// changement futur qui ferait échouer `npu` AVANT qu'il ne contacte le
-/// backend (une régression de validation de config, par exemple) ne
-/// produirait pas un test rouge mais un `cargo test` qui ne se termine
-/// jamais — un défaut constaté empiriquement pendant l'écriture de ce
-/// fichier (bogue de résolution de scope ci-dessus, diagnostiqué via
-/// `/proc/<pid>/task/*/wchan` après un blocage de plusieurs minutes).
+/// Maximum delay granted to the stubbed server to receive the `npu`
+/// binary's connection when launched by `run_npu`. Bounds the `accept()`
+/// call (see below) rather than letting it block indefinitely: without this
+/// bound, a future change that made `npu` fail BEFORE it contacts the
+/// backend (a validation regression, for example) would not produce a red
+/// test but a `cargo test` run that never finishes — a defect observed
+/// empirically while writing this file (the scope resolution bug above,
+/// diagnosed via `/proc/<pid>/task/*/wchan` after several minutes of
+/// hanging).
 const ACCEPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Démarre un serveur HTTP bouchonné qui répond une seule fois avec le corps
-/// `chat/completions` portant `content` comme message, puis se termine. Même
-/// idiome que
-/// `backend::tests::chat_end_to_end_against_stubbed_http_server`, généralisé
-/// pour accepter un contenu de réponse arbitraire ET borner l'attente de
-/// connexion (`ACCEPT_TIMEOUT`, cf. sa doc) plutôt que bloquer indéfiniment.
+/// Starts a stubbed HTTP server that answers once with the
+/// `chat/completions` body carrying `content` as the message, then
+/// terminates. Same idiom as
+/// `backend::tests::chat_end_to_end_against_stubbed_http_server`,
+/// generalized to accept an arbitrary response content AND bound the wait
+/// for a connection (`ACCEPT_TIMEOUT`, see its doc) rather than block
+/// indefinitely.
 fn spawn_stub_server(content: String) -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
     use std::io::{BufRead, BufReader, Read};
     use std::time::Instant;
 
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind du listener bouchonné");
-    let addr = listener.local_addr().expect("adresse locale du listener");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("binding the stubbed listener");
+    let addr = listener
+        .local_addr()
+        .expect("getting the listener's local address");
     listener
         .set_nonblocking(true)
-        .expect("passage du listener en non-bloquant");
+        .expect("switching the listener to non-blocking");
 
     let handle = std::thread::spawn(move || {
         let deadline = Instant::now() + ACCEPT_TIMEOUT;
@@ -140,37 +142,34 @@ fn spawn_stub_server(content: String) -> (std::net::SocketAddr, std::thread::Joi
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                     assert!(
                         Instant::now() < deadline,
-                        "aucune connexion reçue sur le listener bouchonné dans le délai de \
-                         {ACCEPT_TIMEOUT:?} : le binaire npu n'a jamais contacté le backend \
-                         (a-t-il échoué plus tôt dans le pipeline ?)"
+                        "no connection received on the stubbed listener within the \
+                         {ACCEPT_TIMEOUT:?} deadline: the npu binary never contacted the \
+                         backend (did it fail earlier in the pipeline?)"
                     );
                     std::thread::sleep(std::time::Duration::from_millis(20));
                 }
-                // `panic!` direct : une erreur d'acceptation autre qu'un simple `WouldBlock`
-                // (ex. le listener a été fermé) est un défaut du test lui-même, jamais un cas
-                // à faire remonter proprement — même tolérance que pour un `#[test]` (cf.
-                // Cargo.toml `[lints.clippy]`), ici nécessairement locale (`#[allow]` ci-dessous)
-                // puisque ce code tourne dans le thread serveur, pas dans la fonction `#[test]`
-                // elle-même.
+                // Direct `panic!`: an accept error other than a plain `WouldBlock` (e.g.
+                // the listener was closed) is a defect in the test itself, never a case to
+                // propagate cleanly — same tolerance as for a `#[test]` (cf. Cargo.toml
+                // `[lints.clippy]`), here necessarily local (`#[allow]` below) since this
+                // code runs in the server thread, not in the `#[test]` function itself.
                 #[allow(clippy::panic)]
-                Err(err) => panic!("acceptation de la connexion : {err}"),
+                Err(err) => panic!("accepting the connection: {err}"),
             }
         };
-        // Le flux accepté peut hériter le mode non bloquant du listener
-        // selon la plateforme : repasser explicitement en bloquant, sinon la
-        // lecture des en-têtes ci-dessous échouerait immédiatement en
-        // `WouldBlock` plutôt que d'attendre la requête.
+        // The accepted stream may inherit the listener's non-blocking mode
+        // depending on the platform: switch it back to blocking explicitly,
+        // otherwise the header read below would fail immediately with
+        // `WouldBlock` instead of waiting for the request.
         stream
             .set_nonblocking(false)
-            .expect("repassage du flux accepté en bloquant");
-        let mut reader = BufReader::new(stream.try_clone().expect("clone du flux TCP"));
+            .expect("switching the accepted stream back to blocking");
+        let mut reader = BufReader::new(stream.try_clone().expect("cloning the TCP stream"));
 
         let mut content_length = 0usize;
         loop {
             let mut line = String::new();
-            reader
-                .read_line(&mut line)
-                .expect("lecture d'une ligne d'en-tête");
+            reader.read_line(&mut line).expect("reading a header line");
             if line == "\r\n" || line.is_empty() {
                 break;
             }
@@ -181,7 +180,7 @@ fn spawn_stub_server(content: String) -> (std::net::SocketAddr, std::thread::Joi
         let mut body = vec![0u8; content_length];
         reader
             .read_exact(&mut body)
-            .expect("lecture du corps de la requête");
+            .expect("reading the request body");
 
         let response_body = serde_json::json!({
             "choices": [
@@ -197,65 +196,64 @@ fn spawn_stub_server(content: String) -> (std::net::SocketAddr, std::thread::Joi
         let mut stream = stream;
         stream
             .write_all(response.as_bytes())
-            .expect("écriture de la réponse bouchonnée");
+            .expect("writing the stubbed response");
     });
 
     (addr, handle)
 }
 
-/// Exécute le VRAI binaire `npu` (compilé par cargo pour ce run de tests,
-/// jamais une fonction appelée directement dans ce processus de test) avec
-/// `scope` comme répertoire courant et `stdin_data` envoyé sur son entrée
-/// standard, puis attend sa fin et renvoie sa sortie complète (code, stdout,
+/// Runs the REAL `npu` binary (compiled by cargo for this test run, never a
+/// function called directly in this test process) with `scope` as the
+/// current directory and `stdin_data` sent on its standard input, then
+/// waits for it to finish and returns its complete output (code, stdout,
 /// stderr).
 fn run_npu(scope: &Path, args: &[&str], stdin_data: &str) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_npu"))
         .args(args)
         .current_dir(scope)
-        // Isolation des scopes de configuration (npu-cli-spec.md §5) : seule
-        // <scope>/.npu (via le répertoire courant) doit être vue. `HOME` est
-        // redirigé vers `scope` lui-même (qui ne contient jamais
-        // `.config/npu`) et `XDG_CONFIG_HOME` est retiré, pour que ni le vrai
-        // $HOME ni un XDG_CONFIG_HOME hérité de l'environnement du test
-        // n'introduisent une racine de scope parasite. Ceci ne touche que
-        // l'environnement du PROCESSUS ENFANT, jamais les vraies variables
-        // d'environnement de ce processus de test (`std::env::set_var` est
-        // `unsafe`, interdit ici).
+        // Configuration scope isolation (npu-cli-spec.md §5): only
+        // <scope>/.npu (via the current directory) must be visible. `HOME`
+        // is redirected to `scope` itself (which never contains
+        // `.config/npu`) and `XDG_CONFIG_HOME` is removed, so that neither
+        // the real $HOME nor an XDG_CONFIG_HOME inherited from the test's
+        // environment introduce a stray scope root. This only touches the
+        // CHILD PROCESS's environment, never the real environment
+        // variables of this test process (`std::env::set_var` is `unsafe`,
+        // forbidden here).
         .env("HOME", scope)
         .env_remove("XDG_CONFIG_HOME")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("lancement du binaire npu");
+        .expect("launching the npu binary");
 
-    // Fermer stdin (drop) après écriture : le mode d'entrée `stdin` de la
-    // commande de fixture lit jusqu'à EOF (`read_to_string`), qui ne survient
-    // jamais tant que le descripteur reste ouvert côté parent.
+    // Close stdin (drop) after writing: the fixture command's `stdin` input
+    // mode reads until EOF (`read_to_string`), which never happens while
+    // the descriptor stays open on the parent side.
     {
-        let stdin = child.stdin.as_mut().expect("stdin du processus enfant");
+        let stdin = child.stdin.as_mut().expect("stdin of the child process");
         stdin
             .write_all(stdin_data.as_bytes())
-            .expect("écriture sur stdin de npu");
+            .expect("writing to npu's stdin");
     }
     drop(child.stdin.take());
 
     child
         .wait_with_output()
-        .expect("attente de la fin du processus npu")
+        .expect("waiting for the npu process to finish")
 }
 
-/// Écrit un scope GÉNÉRAL (via `$XDG_CONFIG_HOME/npu`, jamais `<cwd>/.npu`)
-/// contenant une commande `never-invoked` dont `[output].schema` pointe sur
-/// `schemas/broken-or-missing.json` — cf. `src/scope.rs::candidate_roots` :
-/// `$XDG_CONFIG_HOME/npu` est une racine de scope à part entière, plus
-/// générale que `<cwd>/.npu`, exactement le niveau visé par la revue L3,
-/// correctif 1 (« schéma cassé appartenant à une commande que personne
-/// n'invoque »).
+/// Writes a GENERAL scope (via `$XDG_CONFIG_HOME/npu`, never `<cwd>/.npu`)
+/// containing a `never-invoked` command whose `[output].schema` points at
+/// `schemas/broken-or-missing.json` — cf. `src/scope.rs::candidate_roots`:
+/// `$XDG_CONFIG_HOME/npu` is a scope root in its own right, more general
+/// than `<cwd>/.npu`, exactly the level targeted by the L3 review, fix 1
+/// ("broken schema belonging to a command nobody invokes").
 ///
-/// Si `schema_body` est `Some`, le fichier de schéma est écrit avec ce
-/// contenu (utilisé pour simuler un JSON syntaxiquement cassé) ; si `None`,
-/// il n'est jamais écrit du tout (schéma absent).
+/// If `schema_body` is `Some`, the schema file is written with that content
+/// (used to simulate syntactically broken JSON); if `None`, it is never
+/// written at all (missing schema).
 fn write_general_scope_with_never_invoked_command(
     xdg_root: &Path,
     base_url: &str,
@@ -297,14 +295,14 @@ fn write_general_scope_with_never_invoked_command(
     }
 }
 
-/// Exécute le VRAI binaire `npu` avec `$XDG_CONFIG_HOME` pointé sur
-/// `xdg_config_home` (le scope GÉNÉRAL écrit par
-/// `write_general_scope_with_never_invoked_command`) et `cwd` comme
-/// répertoire courant — un répertoire délibérément SANS `.npu` local, pour
-/// que la seule racine de scope prise en compte soit `$XDG_CONFIG_HOME/npu`
-/// (cf. `src/scope.rs::candidate_roots`). `HOME` est redirigé vers `cwd`
-/// (qui ne contient jamais `.config/npu`) pour la même raison d'isolation
-/// que `run_npu`.
+/// Runs the REAL `npu` binary with `$XDG_CONFIG_HOME` pointed at
+/// `xdg_config_home` (the GENERAL scope written by
+/// `write_general_scope_with_never_invoked_command`) and `cwd` as the
+/// current directory — a directory deliberately WITHOUT a local `.npu`, so
+/// that the only scope root taken into account is `$XDG_CONFIG_HOME/npu`
+/// (cf. `src/scope.rs::candidate_roots`). `HOME` is redirected to `cwd`
+/// (which never contains `.config/npu`) for the same isolation reason as
+/// `run_npu`.
 fn run_npu_xdg(cwd: &Path, xdg_config_home: &Path, args: &[&str], stdin_data: &str) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_npu"))
         .args(args)
@@ -315,23 +313,24 @@ fn run_npu_xdg(cwd: &Path, xdg_config_home: &Path, args: &[&str], stdin_data: &s
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("lancement du binaire npu");
+        .expect("launching the npu binary");
 
     {
-        let stdin = child.stdin.as_mut().expect("stdin du processus enfant");
+        let stdin = child.stdin.as_mut().expect("stdin of the child process");
         stdin
             .write_all(stdin_data.as_bytes())
-            .expect("écriture sur stdin de npu");
+            .expect("writing to npu's stdin");
     }
     drop(child.stdin.take());
 
     child
         .wait_with_output()
-        .expect("attente de la fin du processus npu")
+        .expect("waiting for the npu process to finish")
 }
 
-/// Crée un répertoire de travail temporaire sans `.npu` local, distinct du
-/// scope général `$XDG_CONFIG_HOME/npu` — même idiome que `fixture_scope`.
+/// Creates a temporary working directory without a local `.npu`, distinct
+/// from the general `$XDG_CONFIG_HOME/npu` scope — same idiom as
+/// `fixture_scope`.
 fn fixture_cwd_without_local_scope(name: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -339,44 +338,42 @@ fn fixture_cwd_without_local_scope(name: &str) -> PathBuf {
         .join("target")
         .join("test-fixtures")
         .join(format!("e2e-lazy-schema-cwd-{name}-{n}"));
-    std::fs::create_dir_all(&dir).expect("création du répertoire de travail temporaire");
+    std::fs::create_dir_all(&dir).expect("creating the temporary working directory");
     dir
 }
 
-/// Revue L3, correctif 1, preuve (a) : un schéma ABSENT, déclaré par une
-/// commande d'un scope général que personne n'invoque, ne doit plus
-/// désactiver `npu --help` pour tout le CLI (résolution paresseuse de
-/// l'existence, alignée sur la compilation paresseuse — cf.
-/// `command::resolve_schema_path`).
+/// L3 review, fix 1, proof (a): a MISSING schema, declared by a command in
+/// a general scope that nobody invokes, must no longer disable
+/// `npu --help` for the whole CLI (lazy existence resolution, aligned with
+/// lazy compilation — cf. `command::resolve_schema_path`).
 #[test]
 fn help_survives_a_missing_schema_declared_by_an_uninvoked_command_in_the_general_scope() {
-    // L'URL de backend n'est ici qu'un détail d'infrastructure requis par
-    // `write_general_scope_with_never_invoked_command` (le modèle a besoin
-    // d'un backend valide pour que `config::load_scopes` réussisse) : elle
-    // n'est JAMAIS contactée, `--help` ne contacte jamais aucun backend —
-    // pas de serveur bouchonné à monter ici, contrairement à (c)/(d).
+    // The backend URL here is only an infrastructure detail required by
+    // `write_general_scope_with_never_invoked_command` (the model needs a
+    // valid backend for `config::load_scopes` to succeed): it is NEVER
+    // contacted, `--help` never contacts any backend — no stubbed server to
+    // mount here, unlike (c)/(d).
     let xdg = fixture_scope("xdg-missing-schema");
     let cwd = fixture_cwd_without_local_scope("missing-schema");
-    // Schéma jamais écrit : `schemas/broken-or-missing.json` est absent du
-    // disque.
+    // Schema never written: `schemas/broken-or-missing.json` is absent from
+    // disk.
     write_general_scope_with_never_invoked_command(&xdg, "http://127.0.0.1:1", None);
 
     let output = run_npu_xdg(&cwd, &xdg, &["--help"], "");
 
     assert!(
         output.status.success(),
-        "PREUVE (a) : npu --help doit réussir (exit 0) même avec un schéma absent dans un \
-         scope général, obtenu code {:?} ; stderr : {}",
+        "PROOF (a): npu --help must succeed (exit 0) even with a missing schema in a general \
+         scope, got code {:?}; stderr: {}",
         output.status.code(),
         String::from_utf8_lossy(&output.stderr)
     );
 }
 
-/// Revue L3, correctif 1, preuve (b) : un schéma PRÉSENT mais syntaxiquement
-/// CASSÉ, déclaré par une commande d'un scope général que personne
-/// n'invoque, ne doit pas non plus désactiver `npu --help` — la compilation
-/// du schéma reste paresseuse (règle 4 du contrat partagé), inchangée par ce
-/// correctif.
+/// L3 review, fix 1, proof (b): a schema that IS PRESENT but syntactically
+/// BROKEN, declared by a command in a general scope that nobody invokes,
+/// must not disable `npu --help` either — schema compilation stays lazy
+/// (rule 4 of the shared contract), unchanged by this fix.
 #[test]
 fn help_survives_a_syntactically_broken_schema_declared_by_an_uninvoked_command_in_the_general_scope()
  {
@@ -385,24 +382,23 @@ fn help_survives_a_syntactically_broken_schema_declared_by_an_uninvoked_command_
     write_general_scope_with_never_invoked_command(
         &xdg,
         "http://127.0.0.1:1",
-        Some("{ ceci n'est pas du JSON"),
+        Some("{ this is not JSON"),
     );
 
     let output = run_npu_xdg(&cwd, &xdg, &["--help"], "");
 
     assert!(
         output.status.success(),
-        "PREUVE (b) : npu --help doit réussir (exit 0) même avec un schéma syntaxiquement cassé \
-         dans un scope général, obtenu code {:?} ; stderr : {}",
+        "PROOF (b): npu --help must succeed (exit 0) even with a syntactically broken schema \
+         in a general scope, got code {:?}; stderr: {}",
         output.status.code(),
         String::from_utf8_lossy(&output.stderr)
     );
 }
 
-/// Revue L3, correctif 1, preuve (c) : invoquer RÉELLEMENT la commande dont
-/// le schéma est absent doit échouer avec `Error::Config` (exit 2), nommant
-/// à la fois le chemin résolu du schéma ET le fichier de commande qui le
-/// réclame.
+/// L3 review, fix 1, proof (c): actually invoking the command whose schema
+/// is missing must fail with `Error::Config` (exit 2), naming both the
+/// schema's resolved path AND the command file that requires it.
 #[test]
 fn invoking_the_command_with_a_missing_schema_fails_with_exit_code_two_naming_both_paths() {
     let (addr, server) = spawn_stub_server("{\"a\": 1}".to_string());
@@ -411,36 +407,34 @@ fn invoking_the_command_with_a_missing_schema_fails_with_exit_code_two_naming_bo
     let cwd = fixture_cwd_without_local_scope("missing-schema-invoked");
     write_general_scope_with_never_invoked_command(&xdg, &format!("http://{addr}"), None);
 
-    let output = run_npu_xdg(&cwd, &xdg, &["never-invoked"], "peu importe");
-    server
-        .join()
-        .expect("le thread serveur ne doit pas paniquer");
+    let output = run_npu_xdg(&cwd, &xdg, &["never-invoked"], "whatever");
+    server.join().expect("the server thread must not panic");
 
     assert_eq!(
         output.status.code(),
         Some(2),
-        "PREUVE (c) : un schéma absent découvert À L'USAGE doit échouer avec le code 2 \
-         (Error::Config — la configuration est cassée, pas la réponse du modèle) ; stderr : {}",
+        "PROOF (c): a missing schema discovered AT USE TIME must fail with code 2 \
+         (Error::Config — the configuration is broken, not the model's response); stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
         output.stdout.is_empty(),
-        "rien ne doit être écrit sur stdout en cas d'échec du contrat de sortie, obtenu : {}",
+        "nothing must be written to stdout when the output contract fails, got: {}",
         String::from_utf8_lossy(&output.stdout)
     );
-    let stderr = String::from_utf8(output.stderr).expect("stderr doit être de l'UTF-8 valide");
+    let stderr = String::from_utf8(output.stderr).expect("stderr must be valid UTF-8");
     assert!(
         stderr.contains("broken-or-missing.json"),
-        "PREUVE (c) : stderr doit nommer le chemin résolu du schéma, obtenu : {stderr}"
+        "PROOF (c): stderr must name the schema's resolved path, got: {stderr}"
     );
     assert!(
         stderr.contains("never-invoked.md"),
-        "PREUVE (c) : stderr doit aussi nommer le fichier de commande fautif, obtenu : {stderr}"
+        "PROOF (c): stderr must also name the offending command file, got: {stderr}"
     );
 }
 
-/// Revue L3, correctif 1, preuve (d) : même exigence que (c), pour un schéma
-/// PRÉSENT mais syntaxiquement CASSÉ.
+/// L3 review, fix 1, proof (d): same requirement as (c), for a schema that
+/// IS PRESENT but syntactically BROKEN.
 #[test]
 fn invoking_the_command_with_a_broken_schema_fails_with_exit_code_two_naming_both_paths() {
     let (addr, server) = spawn_stub_server("{\"a\": 1}".to_string());
@@ -450,39 +444,37 @@ fn invoking_the_command_with_a_broken_schema_fails_with_exit_code_two_naming_bot
     write_general_scope_with_never_invoked_command(
         &xdg,
         &format!("http://{addr}"),
-        Some("{ ceci n'est pas du JSON"),
+        Some("{ this is not JSON"),
     );
 
-    let output = run_npu_xdg(&cwd, &xdg, &["never-invoked"], "peu importe");
-    server
-        .join()
-        .expect("le thread serveur ne doit pas paniquer");
+    let output = run_npu_xdg(&cwd, &xdg, &["never-invoked"], "whatever");
+    server.join().expect("the server thread must not panic");
 
     assert_eq!(
         output.status.code(),
         Some(2),
-        "PREUVE (d) : un schéma cassé découvert À L'USAGE doit échouer avec le code 2 \
-         (Error::Config) ; stderr : {}",
+        "PROOF (d): a broken schema discovered AT USE TIME must fail with code 2 \
+         (Error::Config); stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
         output.stdout.is_empty(),
-        "rien ne doit être écrit sur stdout en cas d'échec du contrat de sortie, obtenu : {}",
+        "nothing must be written to stdout when the output contract fails, got: {}",
         String::from_utf8_lossy(&output.stdout)
     );
-    let stderr = String::from_utf8(output.stderr).expect("stderr doit être de l'UTF-8 valide");
+    let stderr = String::from_utf8(output.stderr).expect("stderr must be valid UTF-8");
     assert!(
         stderr.contains("broken-or-missing.json"),
-        "PREUVE (d) : stderr doit nommer le chemin résolu du schéma, obtenu : {stderr}"
+        "PROOF (d): stderr must name the schema's resolved path, got: {stderr}"
     );
     assert!(
         stderr.contains("never-invoked.md"),
-        "PREUVE (d) : stderr doit aussi nommer le fichier de commande fautif, obtenu : {stderr}"
+        "PROOF (d): stderr must also name the offending command file, got: {stderr}"
     );
 }
 
-/// a) le modèle répond du JSON emballé dans une clôture Markdown -> stdout
-/// reçoit du JSON compact valide, exit 0.
+/// a) the model answers with JSON wrapped in a Markdown fence -> stdout
+/// receives valid compact JSON, exit 0.
 #[test]
 fn json_wrapped_in_fence_and_schema_satisfied_succeeds_end_to_end() {
     let (addr, server) =
@@ -505,31 +497,29 @@ fn json_wrapped_in_fence_and_schema_satisfied_succeeds_end_to_end() {
         "format = \"json\"\nschema = \"schemas/classification.json\"",
     );
 
-    let output = run_npu(&scope, &["e2e-cmd"], "peu importe");
-    server
-        .join()
-        .expect("le thread serveur ne doit pas paniquer");
+    let output = run_npu(&scope, &["e2e-cmd"], "whatever");
+    server.join().expect("the server thread must not panic");
 
     assert!(
         output.status.success(),
-        "code de sortie attendu 0, obtenu {:?} ; stderr : {}",
+        "expected exit code 0, got {:?}; stderr: {}",
         output.status.code(),
         String::from_utf8_lossy(&output.stderr)
     );
-    let stdout = String::from_utf8(output.stdout).expect("stdout doit être de l'UTF-8 valide");
+    let stdout = String::from_utf8(output.stdout).expect("stdout must be valid UTF-8");
     assert_eq!(
         stdout, "{\"category\":\"bug\",\"confidence\":0.9}\n",
-        "stdout doit contenir EXACTEMENT la sérialisation JSON COMPACTE suivie d'un unique \
-         retour à la ligne (ajouté par `run()`, §14/§22 : npu classify | jq .), quel que soit \
-         l'emballage Markdown renvoyé par le modèle — rien avant, rien après"
+        "stdout must contain EXACTLY the COMPACT JSON serialization followed by a single \
+         trailing newline (added by `run()`, §14/§22: npu classify | jq .), regardless of \
+         the Markdown wrapping returned by the model — nothing before, nothing after"
     );
 }
 
-/// b) le modèle répond du JSON qui viole le schéma -> exit 4, message sur
-/// stderr, rien sur stdout.
+/// b) the model answers with JSON that violates the schema -> exit 4,
+/// message on stderr, nothing on stdout.
 #[test]
 fn json_violating_schema_fails_with_exit_code_four_end_to_end() {
-    // « confidence » manquant : viole `required`.
+    // Missing "confidence": violates `required`.
     let (addr, server) = spawn_stub_server("{\"category\": \"bug\"}".to_string());
 
     let scope = fixture_scope("schema-violation");
@@ -549,83 +539,76 @@ fn json_violating_schema_fails_with_exit_code_four_end_to_end() {
         "format = \"json\"\nschema = \"schemas/classification.json\"",
     );
 
-    let output = run_npu(&scope, &["e2e-cmd"], "peu importe");
-    server
-        .join()
-        .expect("le thread serveur ne doit pas paniquer");
+    let output = run_npu(&scope, &["e2e-cmd"], "whatever");
+    server.join().expect("the server thread must not panic");
 
     assert_eq!(
         output.status.code(),
         Some(4),
-        "une sortie JSON qui viole le schéma déclaré doit échouer avec le code 4 \
-         (Error::Output — la config est valide, c'est le modèle qui a mal répondu) ; \
-         stderr : {}",
+        "a JSON output that violates the declared schema must fail with code 4 \
+         (Error::Output — the config is valid, it's the model that answered badly); \
+         stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
         output.stdout.is_empty(),
-        "rien ne doit être écrit sur stdout en cas d'échec du contrat de sortie, obtenu : {}",
+        "nothing must be written to stdout when the output contract fails, got: {}",
         String::from_utf8_lossy(&output.stdout)
     );
-    let stderr = String::from_utf8(output.stderr).expect("stderr doit être de l'UTF-8 valide");
+    let stderr = String::from_utf8(output.stderr).expect("stderr must be valid UTF-8");
     assert!(
         stderr.contains("confidence"),
-        "stderr doit nommer la violation (propriété requise manquante), obtenu : {stderr}"
+        "stderr must name the violation (missing required property), got: {stderr}"
     );
 }
 
-/// c) le modèle répond du texte qui n'est pas du JSON alors que
-/// format = "json" -> exit 4.
+/// c) the model answers with text that is not JSON while format = "json"
+/// -> exit 4.
 #[test]
 fn non_json_response_with_json_format_fails_with_exit_code_four_end_to_end() {
-    let (addr, server) = spawn_stub_server("ceci n'est pas du JSON du tout".to_string());
+    let (addr, server) = spawn_stub_server("this is not JSON at all".to_string());
 
     let scope = fixture_scope("non-json-response");
-    // Pas de schéma déclaré : règle 2 du contrat partagé — format = "json"
-    // sans schema est autorisé, on valide alors seulement que la sortie est
-    // du JSON bien formé.
+    // No schema declared: rule 2 of the shared contract — format = "json"
+    // without a schema is allowed, we then only validate that the output is
+    // well-formed JSON.
     write_scope(&scope, addr, "format = \"json\"");
 
-    let output = run_npu(&scope, &["e2e-cmd"], "peu importe");
-    server
-        .join()
-        .expect("le thread serveur ne doit pas paniquer");
+    let output = run_npu(&scope, &["e2e-cmd"], "whatever");
+    server.join().expect("the server thread must not panic");
 
     assert_eq!(
         output.status.code(),
         Some(4),
-        "une réponse qui n'est pas du JSON alors que format = \"json\" doit échouer avec le \
-         code 4 ; stderr : {}",
+        "a response that is not JSON while format = \"json\" must fail with code 4; stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(output.stdout.is_empty());
 }
 
-/// d) une commande format = "text" avec `max_lines` = 1 dont le modèle renvoie
-/// trois lignes -> exit 4.
+/// d) a format = "text" command with `max_lines` = 1 whose model returns
+/// three lines -> exit 4.
 #[test]
 fn text_exceeding_max_lines_fails_with_exit_code_four_end_to_end() {
-    let (addr, server) = spawn_stub_server("ligne 1\nligne 2\nligne 3".to_string());
+    let (addr, server) = spawn_stub_server("line 1\nline 2\nline 3".to_string());
 
     let scope = fixture_scope("max-lines-exceeded");
     write_scope(&scope, addr, "format = \"text\"\nmax_lines = 1");
 
-    let output = run_npu(&scope, &["e2e-cmd"], "peu importe");
-    server
-        .join()
-        .expect("le thread serveur ne doit pas paniquer");
+    let output = run_npu(&scope, &["e2e-cmd"], "whatever");
+    server.join().expect("the server thread must not panic");
 
     assert_eq!(
         output.status.code(),
         Some(4),
-        "une réponse texte dépassant max_lines doit échouer avec le code 4, jamais être \
-         tronquée silencieusement (§15) ; stderr : {}",
+        "a text response exceeding max_lines must fail with code 4, never be silently \
+         truncated (§15); stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8(output.stderr).expect("stderr doit être de l'UTF-8 valide");
+    let stderr = String::from_utf8(output.stderr).expect("stderr must be valid UTF-8");
     assert!(
         stderr.contains('1') && stderr.contains('3'),
-        "stderr doit citer le nombre attendu et le nombre reçu de lignes, obtenu : {stderr}"
+        "stderr must cite the expected and the received number of lines, got: {stderr}"
     );
 }

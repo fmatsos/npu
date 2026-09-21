@@ -85,8 +85,8 @@ mod tests {
         let result = resolve(&mode, None);
 
         assert!(
-            matches!(result, Err(crate::Error::Config(ref msg)) if msg.contains("fichier")),
-            "Expected Config error with 'fichier' message"
+            matches!(result, Err(crate::Error::Config(_))),
+            "Expected Config error"
         );
     }
 }

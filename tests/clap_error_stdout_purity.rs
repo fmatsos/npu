@@ -73,9 +73,8 @@ fn unknown_subcommand_writes_nothing_to_stdout() {
     );
     let stderr = String::from_utf8(output.stderr).expect("stderr doit être de l'UTF-8 valide");
     assert!(
-        stderr.contains("sous-commande-inexistante")
-            || stderr.to_lowercase().contains("unrecognized"),
-        "stderr doit rendre compte de l'erreur clap, obtenu : {stderr}"
+        stderr.contains("sous-commande-inexistante"),
+        "stderr doit nommer la sous-commande fautive, obtenu : {stderr}"
     );
 }
 
@@ -97,8 +96,8 @@ fn missing_required_arg_writes_nothing_to_stdout() {
     );
     let stderr = String::from_utf8(output.stderr).expect("stderr doit être de l'UTF-8 valide");
     assert!(
-        stderr.to_lowercase().contains("language") || stderr.to_lowercase().contains("required"),
-        "stderr doit rendre compte de l'argument manquant, obtenu : {stderr}"
+        stderr.to_lowercase().contains("language"),
+        "stderr doit nommer l'argument requis manquant, obtenu : {stderr}"
     );
 }
 

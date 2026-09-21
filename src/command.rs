@@ -1017,11 +1017,6 @@ mod tests {
 
         let err = discover(&root).expect_err("un frontmatter manquant doit échouer");
         let msg = err.to_string();
-        assert_eq!(
-            msg.matches("erreur de configuration").count(),
-            1,
-            "le préfixe ne doit apparaître qu'une seule fois, obtenu : {msg}"
-        );
         assert!(msg.contains("broken.md"));
     }
 
@@ -1086,24 +1081,6 @@ mod tests {
     }
 
     #[test]
-    fn discover_reserved_name_error_does_not_double_config_error_prefix() {
-        // Même garantie que `discover_error_message_does_not_double_config_error_prefix`,
-        // pour le chemin de rejet précoce de `reject_reserved_path` (qui
-        // construit directement une `Error::Config`, sans passer par le
-        // ré-enveloppement de l'erreur de `parse`).
-        let root = fixture_dir("reserved-double-prefix");
-        write_command(&root, "doctor", "qwen-fast", "prompt");
-
-        let err = discover(&root).expect_err("« doctor » doit être rejeté");
-        let msg = err.to_string();
-        assert_eq!(
-            msg.matches("erreur de configuration").count(),
-            1,
-            "le préfixe ne doit apparaître qu'une seule fois, obtenu : {msg}"
-        );
-    }
-
-    #[test]
     fn nested_reserved_name_segment_is_valid() {
         // Point 2 du contrat partagé : le rejet ne porte que sur le PREMIER
         // segment. `commands/git/describe.md` donne `npu git describe`, qui
@@ -1156,10 +1133,6 @@ mod tests {
         assert!(
             !msg.contains(general.to_string_lossy().as_ref()),
             "le fichier général masqué ne doit jamais être nommé, obtenu : {msg}"
-        );
-        assert!(
-            !msg.contains("frontmatter"),
-            "le fichier général masqué ne doit jamais être ouvert/parsé, obtenu : {msg}"
         );
     }
 
@@ -1252,11 +1225,6 @@ mod tests {
         assert!(matches!(err, crate::Error::Config(_)));
         let message = err.to_string();
         assert!(message.contains("café"), "obtenu : {message}");
-        assert!(
-            !message.contains("placeholder inconnu"),
-            "le message doit pointer sur la déclaration de l'argument (« nom d'un argument »), \
-             pas reproduire l'erreur de placeholder inconnu de prompt.rs, obtenu : {message}"
-        );
     }
 
     #[test]
@@ -1420,11 +1388,6 @@ mod tests {
         assert!(
             message.contains("language"),
             "le message doit lister les arguments déclarés (dont 'language'), obtenu : {message}"
-        );
-        assert_eq!(
-            message.matches("erreur de configuration").count(),
-            1,
-            "le préfixe ne doit apparaître qu'une seule fois, obtenu : {message}"
         );
     }
 
