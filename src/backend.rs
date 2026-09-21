@@ -36,17 +36,15 @@ pub fn chat(
     let url = join_url(&backend.base_url, &operation.path);
     let body = build_chat_request(&model.model, prompt, &model.generation);
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(REQUEST_TIMEOUT))
+        // Un statut non-2xx doit rester lisible : on veut son corps dans le
+        // message d'erreur, pas une erreur ureq opaque.
+        .http_status_as_error(false)
         .build()
-        .map_err(|err| {
-            crate::Error::Backend(format!(
-                "impossible de construire le client HTTP pour le backend « {} » : {err}",
-                backend.id
-            ))
-        })?;
+        .new_agent();
 
-    let response = client.post(&url).json(&body).send().map_err(|err| {
+    let mut response = agent.post(&url).send_json(&body).map_err(|err| {
         crate::Error::Backend(format!(
             "requête vers le backend « {} » ({url}) échouée : {err}",
             backend.id
@@ -54,7 +52,7 @@ pub fn chat(
     })?;
 
     let status = response.status();
-    let response_text = response.text().map_err(|err| {
+    let response_text = response.body_mut().read_to_string().map_err(|err| {
         crate::Error::Backend(format!(
             "lecture de la réponse du backend « {} » ({url}) échouée : {err}",
             backend.id

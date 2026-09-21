@@ -16,6 +16,10 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
+    # Licence de DONNÉES (pas de code), permissive et sans copyleft aval.
+    # Portée par webpki-roots, qui n'est que le paquet de certificats racine
+    # Mozilla embarqué par ureq. Autorisée délibérément, pas par défaut.
+    "CDLA-Permissive-2.0",
     "Zlib",
 ]
 confidence-threshold = 0.9
