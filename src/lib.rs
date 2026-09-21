@@ -143,18 +143,20 @@ fn build_cli(specs: &[command::CommandSpec]) -> clap::Command {
 /// noms en premier segment de chemin : ces trois `subcommand()` ne peuvent
 /// donc jamais entrer en collision avec ceux ajoutés par [`build_cli`].
 fn add_builtins(cli: clap::Command) -> clap::Command {
+    // Textes d'aide en anglais : ils s'affichent à côté des `description` des
+    // commandes configurées, et la documentation du dépôt est en anglais.
     cli.subcommand(clap::Command::new("doctor").about(
-        "Vérifie l'environnement d'exécution : configuration, joignabilité des backends, \
-         schémas de sortie déclarés",
+        "Check the runtime environment: configuration, backend reachability, declared \
+         output schemas",
     ))
-    .subcommand(clap::Command::new("models").about("Liste les modèles configurés"))
+    .subcommand(clap::Command::new("models").about("List configured models"))
     .subcommand(
         clap::Command::new("describe")
-            .about("Décrit une commande configurée dynamiquement, au format JSON")
+            .about("Describe a dynamically configured command, as JSON")
             .arg(
                 clap::Arg::new("COMMAND")
                     .required(true)
-                    .help("Chemin de la commande à décrire (ex. « classify » ou « git/review »)"),
+                    .help("Path of the command to describe (e.g. \"classify\" or \"git/review\")"),
             ),
     )
 }

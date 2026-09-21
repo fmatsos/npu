@@ -10,9 +10,9 @@ time, naming the file.
 - [Degraded mode](#degraded-mode)
 
 > [!NOTE]
-> The built-ins' own help text is currently in French, while the example command files are in
-> English. The output below is quoted verbatim from the binary rather than translated, so that
-> this page matches what you actually see.
+> Help text is in English, but **diagnostic output is still in French** — the `doctor` report
+> labels and every error message. The output below is quoted verbatim from the binary rather
+> than translated, so that this page matches what you actually see.
 
 ---
 
@@ -130,9 +130,9 @@ $ npu --help
 Usage: npu [COMMAND]
 
 Commands:
-  doctor    Vérifie l'environnement d'exécution : configuration, joignabilité des backends, schémas de sortie déclarés
-  models    Liste les modèles configurés
-  describe  Décrit une commande configurée dynamiquement, au format JSON
+  doctor    Check the runtime environment: configuration, backend reachability, declared output schemas
+  models    List configured models
+  describe  Describe a dynamically configured command, as JSON
   help      Print this message or the help of the given subcommand(s)
 
 Options:
