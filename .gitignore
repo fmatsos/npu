@@ -2,3 +2,12 @@
 /IMPLEMENTATION.md
 /npu-cli-spec.md
 .claude/settings.local.json
+
+# Per-developer agent tooling: each contributor picks their own, and none of
+# it describes this project. The repository's own instructions live in
+# CLAUDE.md, which stays versioned.
+/.codex/
+/.gemini/
+/GEMINI.md
+/AGENTS.md
+/opencode.jsonc
