@@ -4,6 +4,67 @@ Every notable change to `npu`, newest first. Versions follow
 [semantic versioning](https://semver.org); pre-1.0, a breaking change bumps
 the minor.
 
+## [0.3.0] - 2026-09-22
+
+### Added
+
+- A backend can be started as a **local process** instead of a container: `[runtime]` with
+  `type = "process"`, a `command`, its `arguments`, an optional `[runtime.env]` overlay and a
+  `startup_timeout_secs` readiness budget. `npu serve` spawns it, prints its pid only once its port
+  answers, and `stop`, `status` and `logs` find it again through a small state record. This is
+  what lets a Mac run `llama-server` on Metal, which a Linux container cannot reach. Unix only:
+  on Windows such a backend is rejected at load time, naming the file
+  ([`552881f`](https://github.com/fmatsos/npu/commit/552881fbd0d0c7483cd986c5e4db46b95d37bbd4),
+  [`92d3cc5`](https://github.com/fmatsos/npu/commit/92d3cc50f1a2a06933ec7735802eef34444e1595))
+- `npu stop` never signals a process it cannot prove it started: the record keeps the pid and the
+  moment the system says it was born, and a recycled pid is forgotten, not killed. Two projects
+  that both declare a backend `llamacpp` get separate records and logs, and neither can stop the
+  other's server
+  ([`552881f`](https://github.com/fmatsos/npu/commit/552881fbd0d0c7483cd986c5e4db46b95d37bbd4),
+  [`92d3cc5`](https://github.com/fmatsos/npu/commit/92d3cc50f1a2a06933ec7735802eef34444e1595))
+- `fallback` on a model retries once on another model when the first one fails with a backend
+  error, which moves a prompt too long for an NPU-compiled graph onto a GPU-served twin. The
+  primary failure is always logged at `warn`, so a backend down all day does not pass for a
+  working fallback. A fallback naming an unknown model, or itself, is rejected at load time
+  ([`bdd564c`](https://github.com/fmatsos/npu/commit/bdd564c9a0dd1e29990daa0ad1089060505c5468))
+- `port` on a backend is declared once and read as `{{ backend.port }}` in `base_url` and the
+  `[runtime]` lists, so the two can no longer drift apart. `port = "auto"` lets Docker pick a free
+  port and reads it back. `npu serve` now reports a backend that is already served, or a fixed
+  port held by something else, before starting anything (exit `3`)
+  ([`bdd564c`](https://github.com/fmatsos/npu/commit/bdd564c9a0dd1e29990daa0ad1089060505c5468))
+- Two Claude Code skills for the model side of an Intel NPU deployment: `npu-discover` finds
+  Hugging Face models the NPU can actually run, `npu-export` exports one with `optimum-cli`,
+  checks it on CPU and writes the model files, GPU twin included
+  ([`8db677f`](https://github.com/fmatsos/npu/commit/8db677fbc1dea9d6019075b345f11e43e7894038),
+  [`bdd564c`](https://github.com/fmatsos/npu/commit/bdd564c9a0dd1e29990daa0ad1089060505c5468))
+- Two deployment guides: [Intel NPU](https://github.com/fmatsos/npu/blob/main/docs/intel-npu.md) (export, quantization, OVMS, the GPU
+  twin) and [Apple Silicon](https://github.com/fmatsos/npu/blob/main/docs/apple-silicon.md) (`llama-server` on Metal, started by
+  `npu serve`)
+  ([`b508085`](https://github.com/fmatsos/npu/commit/b5080852760ccb126e80f690950d2b9883148c40),
+  [`bdd564c`](https://github.com/fmatsos/npu/commit/bdd564c9a0dd1e29990daa0ad1089060505c5468),
+  [`f61c33d`](https://github.com/fmatsos/npu/commit/f61c33d3a61d6f78c7141370c2e2f24a6fec3993))
+
+### Changed
+
+- **Breaking**: `npu status` prints `BACKEND  RUNTIME  INSTANCE  URL  STATE` instead of
+  `BACKEND  CONTAINER  STATE`. A program reading its columns by position must be updated: the
+  instance (container name or pid) is now column 3
+  ([`bdd564c`](https://github.com/fmatsos/npu/commit/bdd564c9a0dd1e29990daa0ad1089060505c5468),
+  [`ad5803e`](https://github.com/fmatsos/npu/commit/ad5803e6d9f30448c02f095743361a4ee18680ba))
+- **Breaking**: `npu models` gains a trailing `FALLBACK` column (`-` when the model declares
+  none)
+  ([`bdd564c`](https://github.com/fmatsos/npu/commit/bdd564c9a0dd1e29990daa0ad1089060505c5468))
+- A backend's runtime is declared in a `[runtime]` table tagged by `type` (`"docker"` or
+  `"process"`), so an unsupported family is rejected by name. The `[docker]` table of earlier
+  versions is still accepted and means `type = "docker"`; declaring both is rejected, naming the
+  file
+  ([`ad5803e`](https://github.com/fmatsos/npu/commit/ad5803e6d9f30448c02f095743361a4ee18680ba))
+- Release binaries are built with thin LTO: the build takes half the time, and the binary is
+  about 1.5 MB larger
+  ([`2d3279e`](https://github.com/fmatsos/npu/commit/2d3279e1fc00dc230e5e887dccd4c063c550bc20))
+
+**Full changelog**: [`v0.2.0...v0.3.0`](https://github.com/fmatsos/npu/compare/v0.2.0...v0.3.0)
+
 ## [0.2.0] - 2026-09-22
 
 ### Added
