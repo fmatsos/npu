@@ -14,8 +14,9 @@ allowed-tools: Read Write Edit Grep Bash(git:*) Bash(make:*) Bash(gh:*) Bash(car
 
 A release is a tag. Everything after it is automated: pushing `vX.Y.Z` runs
 `.github/workflows/release.yml`, which re-runs `make qa`, builds the eight
-release archives and publishes the GitHub release with the notes taken from
-`CHANGELOG.md`. Your job is the part a machine cannot do — deciding the
+release archives and raw update binaries, generates `npu-update.json` with
+their SHA-256 checksums, and publishes the GitHub release with the notes taken
+from `CHANGELOG.md`. Your job is the part a machine cannot do — deciding the
 version and describing the change.
 
 ## The sequence
@@ -59,7 +60,10 @@ version and describing the change.
    ```
 
    `Cargo.lock` is committed and the workflow builds with `--locked`: a stale
-   lockfile fails the release build, not the local one.
+   lockfile fails the release build, not the local one. The workflow also
+   rejects a tag whose `vX.Y.Z` does not exactly match this package version;
+   that invariant keeps `npu update` from repeatedly installing a binary that
+   reports a different version from its release manifest.
 
 7. **Commit, tag, push.**
 

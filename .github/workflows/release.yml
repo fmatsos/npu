@@ -28,6 +28,17 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
+      - name: Verify the tag matches Cargo.toml
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          package_version="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "npu") | .version')"
+          if [ "$tag" != "v${package_version}" ]; then
+            echo "release tag ${tag} does not match Cargo.toml version ${package_version}" >&2
+            exit 1
+          fi
       - run: make qa
 
   # Six targets, eight archives. Each ARM target builds where the cross-compile
@@ -104,9 +115,11 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ inputs.tag || github.ref_name }}"
-          name="npu-${version}-${{ matrix.label || matrix.target }}"
+          platform="${{ matrix.label || matrix.target }}"
+          name="npu-${version}-${platform}"
           mkdir -p "dist/${name}"
           cp "target/${{ matrix.target }}/release/npu" "dist/${name}/"
+          cp "target/${{ matrix.target }}/release/npu" "dist/npu-${platform}"
           cp README.md "dist/${name}/"
           tar -czf "dist/${name}.tar.gz" -C dist "${name}"
 
@@ -116,9 +129,11 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ inputs.tag || github.ref_name }}"
-          name="npu-${version}-${{ matrix.label || matrix.target }}"
+          platform="${{ matrix.label || matrix.target }}"
+          name="npu-${version}-${platform}"
           mkdir -p "dist/${name}"
           cp "target/${{ matrix.target }}/release/npu.exe" "dist/${name}/"
+          cp "target/${{ matrix.target }}/release/npu.exe" "dist/npu-${platform}.exe"
           cp README.md "dist/${name}/"
           7z a "dist/${name}.zip" "./dist/${name}"
 
@@ -128,6 +143,8 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.zip
+            dist/npu-${{ matrix.label || matrix.target }}
+            dist/npu-${{ matrix.label || matrix.target }}.exe
           if-no-files-found: error
 
   publish:
@@ -145,6 +162,46 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+
+      # Stable self-update contract. Raw executables avoid making every old
+      # client understand archive formats; the manifest maps each runtime
+      # platform to its exact asset and authenticates it with SHA-256.
+      - name: Generate the update manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          version="${tag#v}"
+          assets='{}'
+          count=0
+
+          for path in dist/npu-*; do
+            case "$path" in
+              *.tar.gz|*.zip) continue ;;
+            esac
+            name="$(basename "$path")"
+            platform="${name#npu-}"
+            platform="${platform%.exe}"
+            checksum="$(sha256sum "$path" | cut -d ' ' -f 1)"
+            assets="$(jq -c \
+              --arg platform "$platform" \
+              --arg name "$name" \
+              --arg sha256 "$checksum" \
+              '. + {($platform): {name: $name, sha256: $sha256}}' \
+              <<<"$assets")"
+            count=$((count + 1))
+          done
+
+          if [ "$count" -ne 8 ]; then
+            echo "expected 8 update binaries, found $count" >&2
+            exit 1
+          fi
+
+          jq -n \
+            --arg version "$version" \
+            --argjson assets "$assets" \
+            '{schema_version: 1, version: $version, assets: $assets}' \
+            > dist/npu-update.json
 
       # The notes come from CHANGELOG.md, written by the `release` skill and
       # reviewed in the commit that bumped the version: the published notes are

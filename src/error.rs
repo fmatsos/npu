@@ -1,7 +1,7 @@
 //! Unified crate error.
 //!
-//! A hand-written enum rather than `anyhow`/`thiserror`: four variants,
-//! one exit code each.
+//! A hand-written enum rather than `anyhow`/`thiserror`: one variant per
+//! failure family, mapped to the CLI's stable exit codes.
 //! stdout stays reserved for the command's result; these messages are meant
 //! for stderr.
 
@@ -10,6 +10,8 @@ use std::fmt;
 /// Unified crate error, one variant per exit-code family.
 #[derive(Debug)]
 pub enum Error {
+    /// Failure while checking, downloading, verifying, or installing an update.
+    Update(String),
     /// Invalid or missing configuration (backends/models/commands).
     Config(String),
     /// Failure on the AI backend side (request, network, unexpected response).
@@ -25,7 +27,7 @@ impl Error {
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         match self {
-            Error::Io(_) => 1,
+            Error::Update(_) | Error::Io(_) => 1,
             Error::Config(_) => 2,
             Error::Backend(_) => 3,
             Error::Output(_) => 4,
@@ -36,6 +38,7 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Error::Update(msg) => write!(f, "update error: {msg}"),
             Error::Config(msg) => write!(f, "configuration error: {msg}"),
             Error::Backend(msg) => write!(f, "backend error: {msg}"),
             Error::Output(msg) => write!(f, "output error: {msg}"),
@@ -48,7 +51,7 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::Io(err) => Some(err),
-            Error::Config(_) | Error::Backend(_) | Error::Output(_) => None,
+            Error::Update(_) | Error::Config(_) | Error::Backend(_) | Error::Output(_) => None,
         }
     }
 }
@@ -84,6 +87,7 @@ mod tests {
 
     #[test]
     fn exit_codes_match_contract() {
+        assert_eq!(Error::Update("x".into()).exit_code(), 1);
         assert_eq!(Error::Io(std::io::Error::other("x")).exit_code(), 1);
         assert_eq!(Error::Config("x".into()).exit_code(), 2);
         assert_eq!(Error::Backend("x".into()).exit_code(), 3);

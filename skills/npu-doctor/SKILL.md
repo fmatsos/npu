@@ -90,7 +90,7 @@ stderr, then run `npu doctor`.
 | Symptom | Look at |
 | --- | --- |
 | `npu --help` lists no business command | configuration failed to load; stderr names the file |
-| a command you wrote is missing from `--help` | wrong directory, not `.md`, or its first path segment is a reserved name (`doctor`, `models`, `serve`, `stop`, `status`, `logs`, `describe`, `help`) |
+| a command you wrote is missing from `--help` | wrong directory, not `.md`, or its first path segment is a reserved name (`doctor`, `models`, `serve`, `stop`, `status`, `logs`, `describe`, `version`, `update`, `help`) |
 | `unknown command: "x" (available commands: …)` | the command was never discovered — check the path under `commands/` |
 | exit `2` naming a file in `/etc/npu` you cannot edit | override it in `./.npu` with the same `id` (backends/models) or the same command path |
 | a local override is ignored | replacement is keyed by `id` for backends and models, by full path for commands — a different `id` creates a second entry instead of replacing |

@@ -230,7 +230,7 @@ fn collect_command_files(
 
 /// Rejects a command path whose FIRST segment collides with a name
 /// reserved for the CLI's built-ins (`builtin::RESERVED`: `doctor`,
-/// `models`, `serve`, `describe`, as well as `help`, reserved by `clap`
+/// `models`, `serve`, `describe`, `version`, `update`, as well as `help`, reserved by `clap`
 /// itself —
 /// phase 5, point 2 of the shared contract).
 ///
@@ -1107,6 +1107,19 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("describe.md"), "got: {msg}");
         assert!(msg.contains("\"describe\""), "got: {msg}");
+    }
+
+    #[test]
+    fn discover_rejects_update_and_version_reserved_names() {
+        for name in ["update", "version"] {
+            let root = fixture_dir(&format!("reserved-{name}"));
+            write_command(&root, name, "qwen-fast", "prompt");
+
+            let err = discover(&root).expect_err("the built-in name should be reserved");
+            let msg = err.to_string();
+            assert!(msg.contains(&format!("{name}.md")), "got: {msg}");
+            assert!(msg.contains(&format!("\"{name}\"")), "got: {msg}");
+        }
     }
 
     #[test]

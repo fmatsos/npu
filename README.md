@@ -85,7 +85,8 @@ Each `vX.Y.Z` tag publishes a stripped binary per target — `x86_64-unknown-lin
 triple built on Fedora and on Arch (`x86_64-fedora`, `x86_64-arch`), on the
 [releases page](https://github.com/fmatsos/npu/releases), together with the changelog for that
 version. Unpack the archive and put `npu` anywhere on your `PATH`; there is nothing else to
-install.
+install. Future releases can then be installed in place with `npu update`, provided the directory
+containing the executable is writable by the current user.
 
 ### Linux and macOS
 
@@ -231,8 +232,18 @@ See [Writing commands](docs/commands.md) for arguments, templating and input mod
 
 ## Built-in commands
 
-Seven runtime commands ship with the binary. They are not AI commands, and their names are
+Nine commands ship with the binary. They are not AI commands, and their names are
 reserved — a command file called `doctor.md` is rejected at load time.
+
+```console
+$ npu version
+0.1.0
+```
+
+```console
+$ npu update
+updated npu from 0.1.0 to 0.2.0
+```
 
 ```console
 $ npu models
@@ -270,6 +281,11 @@ change, not a rebuild.
 when your configuration is invalid** — that is its whole point. See [Built-in
 commands](docs/cli.md).
 
+`npu version` prints the version embedded from `Cargo.toml`. `npu update` reads the latest
+release manifest from GitHub, selects the binary for the current platform, verifies its SHA-256,
+then replaces the running executable at the same path. Both commands remain usable when the AI
+configuration is invalid because neither depends on it.
+
 ---
 
 ## Exit codes
@@ -280,7 +296,7 @@ contract, not an afterthought.
 | Code | Meaning | Who should act |
 | ---: | --- | --- |
 | `0` | Success | — |
-| `1` | I/O error (unreadable file, broken pipe) | You |
+| `1` | I/O or update error (unreadable file, failed download/replacement) | You |
 | `2` | Configuration error — your files are wrong | You: fix the named file |
 | `3` | Backend error — unreachable, or an HTTP failure | Your runtime: start or fix it |
 | `4` | Output contract violation — the model answered badly | Your prompt or your schema |

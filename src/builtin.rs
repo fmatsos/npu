@@ -1,4 +1,4 @@
-//! CLI built-ins: `doctor`, `models`, `describe`, and the TCP
+//! CLI built-ins: `doctor`, `models`, `describe`, `version`, `update`, and the TCP
 //! reachability probe they share.
 //!
 //! This module NEVER writes to the console itself: [`doctor`] returns
@@ -72,7 +72,7 @@ pub struct Check {
 /// rejection, `commands/doctor.md` would be silently shadowed by (or
 /// would shadow) the `doctor` built-in built in `lib.rs`.
 pub const RESERVED: &[&str] = &[
-    "doctor", "models", "describe", "serve", "stop", "status", "logs", "help",
+    "doctor", "models", "describe", "serve", "stop", "status", "logs", "version", "update", "help",
 ];
 
 /// Maximum delay granted to [`tcp_probe`] before considering a backend

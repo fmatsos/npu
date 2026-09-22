@@ -28,7 +28,7 @@ Intermediate levels are created automatically and commands sharing a prefix
 merge under the same parent. Running an intermediate level alone (`npu git`)
 is a usage error: its help goes to **stderr**, exit `2`.
 
-`doctor`, `models`, `serve`, `stop`, `status`, `logs`, `describe` and `help`
+`doctor`, `models`, `serve`, `stop`, `status`, `logs`, `describe`, `version`, `update` and `help`
 are reserved and rejected at load
 time — but **on the first path segment only**, so `commands/git/describe.md`
 is fine.

@@ -1,6 +1,6 @@
 # Built-in commands
 
-`npu` ships seven runtime commands. They are not AI commands, and their names — along with
+`npu` ships nine built-in commands. They are not AI commands, and their names — along with
 `help` — are reserved: a command file whose first path segment is one of them is rejected at load
 time, naming the file.
 
@@ -11,6 +11,8 @@ time, naming the file.
 - [`npu status`](#npu-status)
 - [`npu logs`](#npu-logs)
 - [`npu describe`](#npu-describe)
+- [`npu version`](#npu-version)
+- [`npu update`](#npu-update)
 - [Verbosity](#verbosity)
 - [Degraded mode](#degraded-mode)
 
@@ -233,6 +235,49 @@ configuration error: unknown command: "nexistepas" (available commands: classify
 
 ---
 
+## `npu version`
+
+Prints only the release number embedded from `Cargo.toml`, which makes it safe to capture from a
+script:
+
+```console
+$ npu version
+0.1.0
+```
+
+It does not load or require a valid AI configuration.
+
+---
+
+## `npu update`
+
+Checks the latest GitHub Release and installs it over the currently running executable:
+
+```console
+$ npu update
+updated npu from 0.1.0 to 0.2.0
+```
+
+When no newer release exists, it reports that fact and leaves the executable untouched:
+
+```console
+$ npu update
+npu 0.2.0 is already up to date
+```
+
+The release publishes a `npu-update.json` manifest. It maps every supported platform to a raw
+binary and its SHA-256 checksum. The command downloads that manifest through GitHub's stable
+`releases/latest` URL, compares semantic versions, selects the current platform (including the
+Fedora and Arch Linux x86-64 builds), verifies the downloaded bytes, then replaces the executable
+at the same path. It exits `1` without replacing anything when the manifest, download, checksum,
+platform detection, or replacement fails. The executable's directory must therefore be writable
+by the current user.
+
+Like `version`, `update` does not depend on the AI configuration and remains available in degraded
+mode.
+
+---
+
 ## Verbosity
 
 `--verbose <LEVEL>` (`-v`) sets what reaches **stderr**. Three levels, accepted after any
@@ -280,6 +325,8 @@ Commands:
   status    Report the state of every containerized backend
   logs      Stream the logs of the container started for a model's backend
   describe  Describe a dynamically configured command, as JSON
+  version   Print the current npu release version
+  update    Download and install the latest npu release from GitHub
   help      Print this message or the help of the given subcommand(s)
 
 Options:
@@ -308,5 +355,6 @@ From there:
 | --- | --- |
 | `npu --help` | exit `0`, built-ins listed, warning on stderr |
 | `npu doctor` | exit `2`, report on stdout naming the offending file and line |
+| `npu version`, `update` | run normally; they do not depend on the configuration |
 | `npu serve`, `stop`, `status`, `logs` | exit `2`, stdout empty — they need the configuration that could not load |
 | anything else | exit `2`, stdout empty, error on stderr |

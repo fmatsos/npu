@@ -142,7 +142,7 @@ fn write_healthy_scope(xdg_root: &Path, base_url: &str) {
 // -- (a)/(b)/(c): broken configuration ---------------------------------------
 
 /// (a) A BROKEN configuration leaves `--help` usable (degraded mode, point 1
-/// of the shared contract): exit 0, stdout lists the four built-ins,
+/// of the shared contract): exit 0, stdout lists the built-ins,
 /// stderr signals the load failure.
 #[test]
 fn broken_config_help_still_works_and_lists_builtins_with_stderr_signal() {
@@ -176,10 +176,39 @@ fn broken_config_help_still_works_and_lists_builtins_with_stderr_signal() {
         stdout.contains("describe"),
         "stdout of --help must list \"describe\", got: {stdout}"
     );
+    assert!(
+        stdout.contains("version"),
+        "stdout of --help must list \"version\", got: {stdout}"
+    );
+    assert!(
+        stdout.contains("update"),
+        "stdout of --help must list \"update\", got: {stdout}"
+    );
     let stderr = stderr_of(&output);
     assert!(
         stderr.contains("doctor"),
         "PROOF (a): stderr must point to \"npu doctor\", got: {stderr}"
+    );
+}
+
+/// `version` describes the binary, not its configuration. It therefore stays
+/// usable in degraded mode and prints exactly the Cargo package version.
+#[test]
+fn broken_config_version_still_prints_the_release_version() {
+    let xdg = fixture_dir("broken-version-xdg");
+    let cwd = fixture_dir("broken-version-cwd");
+    write_broken_scope(&xdg);
+
+    let output = run_npu(&cwd, &xdg, &["version"]);
+
+    assert!(
+        output.status.success(),
+        "npu version must succeed despite a broken configuration; stderr: {}",
+        stderr_of(&output)
+    );
+    assert_eq!(
+        stdout_of(&output),
+        format!("{}\n", env!("CARGO_PKG_VERSION"))
     );
 }
 

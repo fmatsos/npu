@@ -14,6 +14,7 @@ pub mod log;
 pub mod output;
 pub mod prompt;
 pub mod scope;
+pub mod updater;
 
 pub use error::{Error, Result};
 
@@ -137,7 +138,7 @@ fn verbose_arg() -> clap::Arg {
 
 /// Builds the complete `clap` tree (builder API) from the discovered
 /// commands. Contains ONLY the business
-/// commands: the built-ins (`doctor`/`models`/`serve`/`stop`/`status`/`logs`/`describe`) are added
+/// commands: the built-ins (`doctor`/`models`/`serve`/`stop`/`status`/`logs`/`describe`/`version`/`update`) are added
 /// separately by [`add_builtins`], unconditionally — this function remains
 /// usable with an empty `specs` (degraded mode, cf. `run`).
 fn build_cli(specs: &[command::CommandSpec]) -> clap::Command {
@@ -152,7 +153,7 @@ fn build_cli(specs: &[command::CommandSpec]) -> clap::Command {
 }
 
 /// Adds the CLI's built-ins (`doctor`, `models`, `serve`, `stop`, `status`,
-/// `logs`, `describe`) to the
+/// `logs`, `describe`, `version`, `update`) to the
 /// tree already built from the discovered business commands.
 ///
 /// Called UNCONDITIONALLY by `run`, including when loading the
@@ -217,6 +218,11 @@ fn add_builtins(cli: clap::Command) -> clap::Command {
                     .required(true)
                     .help("Path of the command to describe (e.g. \"classify\" or \"git/review\")"),
             ),
+    )
+    .subcommand(clap::Command::new("version").about("Print the current npu release version"))
+    .subcommand(
+        clap::Command::new("update")
+            .about("Download and install the latest npu release from GitHub"),
     )
 }
 
@@ -413,6 +419,7 @@ fn execute_business_command(
 ///   the rest of this function (cf. `tests/clap_error_stdout_purity.rs`);
 /// - `npu doctor` ALWAYS runs (before any other branch) and reports the
 ///   kept load error as a failed check (a) (cf. `builtin::doctor`);
+/// - `version` and `update` run without the configuration, just like `doctor`;
 /// - any OTHER invocation (business command, `models`, `serve`, `stop`,
 ///   `status`, `logs`, `describe`)
 ///   propagates the kept load error via `loaded?`, exit code 2 — unchanged
@@ -485,6 +492,19 @@ pub fn run() -> Result<i32> {
         );
         println!("{}", builtin::format_doctor(&checks));
         return Ok(builtin::doctor_exit_code(&checks));
+    }
+
+    // These two built-ins depend only on the binary itself and GitHub
+    // Releases. Like `doctor`, they remain available in degraded mode: a
+    // malformed AI configuration is unrelated to reading or updating npu.
+    if builtin_name == Some("version") {
+        println!("{}", updater::VERSION);
+        return Ok(0);
+    }
+
+    if builtin_name == Some("update") {
+        println!("{}", updater::update()?);
+        return Ok(0);
     }
 
     // Any OTHER branch (business command, `models`, the lifecycle commands,
