@@ -49,8 +49,13 @@ missing_panics_doc = "allow"
 # (see IMPLEMENTATION.md §1.7) that an abort would replace with a SIGABRT.
 
 [profile.release]
-lto = true
-codegen-units = 1
+# `thin` rather than `true`: fat LTO re-codegens the whole 174-crate graph in
+# one unit at link time, which is the dominant cost of every release build.
+# Measured cold, 14 cores, x86_64-unknown-linux-gnu: fat + 1 unit is
+# 96 s / 6.79 MB, thin + 1 unit 66 s / 7.21 MB, thin + 16 units 37 s / 8.26 MB.
+# The 1.5 MB the updater downloads on top is the accepted price of the 61 %.
+lto = "thin"
+codegen-units = 16
 strip = true
 panic = "unwind"
 
