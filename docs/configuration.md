@@ -334,12 +334,13 @@ its `base_url` — so a `base_url` this family cannot parse into a host and a po
 load time naming the file: a probe that can never succeed would burn the whole budget and then
 terminate a perfectly working server, blaming a timeout key that was correct. The budget's failure
 message carries the last probe error for the same reason, so "connection refused" and "the port in
-`base_url` is not the one `arguments` gave the server" do not look alike. Unlike `docker run -d`, this family does **not** return before the server is ready:
-a `serve` that succeeded means something answered. `0` is rejected at load time naming the file,
+`base_url` is not the one `arguments` gave the server" do not look alike. Unlike `docker run -d`,
+this family does **not** return before the server is ready: a `serve` that succeeded means
+something answered. `0` is rejected at load time naming the file,
 on the `[timeouts].request_secs` precedent — honoured literally it would make every start fail,
 and clamped it would be a key read and then ignored.
 
-Two constraints this family adds, both rejected at load time naming the file:
+Three constraints this family adds, all rejected at load time naming the file:
 
 - `port = "auto"` is refused. Docker can be asked which port it allocated; a process cannot, so
   there would be nothing to read the answer back from. Declare a fixed `port`.
