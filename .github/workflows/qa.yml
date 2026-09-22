@@ -19,7 +19,14 @@ concurrency:
 
 jobs:
   qa:
-    runs-on: ubuntu-latest
+    # macOS (arm64) runs the same gate: it is the primary target of the
+    # process runtime, and the only place sysinfo's `start_time` is exercised
+    # on Darwin. No Metal inference here — the suite needs no accelerator.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
 
