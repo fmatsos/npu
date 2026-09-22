@@ -1,4 +1,4 @@
-# Point d'entrée unique du harness qualité. `make` seul lance tout.
+# The single entry point of the quality harness. Plain `make` runs everything.
 .PHONY: qa fmt lint test audit fix release modules
 
 qa: fmt lint test audit
@@ -22,5 +22,5 @@ fix:
 release:
 	cargo build --release
 
-modules: # diagnostic, jamais un gate : cargo-modules visualise, il n'enforce pas
+modules: # diagnostic, never a gate: cargo-modules visualizes, it enforces nothing
 	cargo modules structure --lib

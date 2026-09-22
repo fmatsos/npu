@@ -46,7 +46,7 @@ missing_panics_doc = "allow"
 
 # --- Profiles ---------------------------------------------------------------
 # panic = "abort" deliberately absent: the CLI exposes distinct exit codes
-# (see IMPLEMENTATION.md §1.7) that an abort would replace with a SIGABRT.
+# (`docs/output.md`, "Exit codes") that an abort would replace with a SIGABRT.
 
 [profile.release]
 # `thin` rather than `true`: fat LTO re-codegens the whole 174-crate graph in

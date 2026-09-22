@@ -1,6 +1,6 @@
 # Demo fixture: reflects exactly what phase 1 supports (a single wired
 # operation, `chat`, via the `openai-compatible` adapter hard-coded in
-# backend.rs). The other operations from npu-cli-spec.md §7 (embeddings,
+# backend.rs). The other OpenAI operations (embeddings,
 # audio_transcriptions, rerank) will arrive with their support. `[timeouts]`
 # (request_secs) is implemented but omitted here: the 120s default suits this
 # fixture.
