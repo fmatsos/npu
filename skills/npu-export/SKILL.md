@@ -1,17 +1,18 @@
 ---
 name: npu-export
-description: Exports a Hugging Face model for the host's Intel NPU with `optimum-cli`/`optimum-intel`, verifies the export is coherent before reporting success, and writes the matching `npu` model file so it can be used immediately. Covers detecting whether the host actually has an Intel NPU, the quantization flags that compile correctly on it, the CPU sanity check that catches a broken export before it ever reaches a backend, and which configuration scope the generated model file belongs in. Use it whenever a model needs to run on the host's NPU and has no local OpenVINO export yet.
+description: Exports a Hugging Face model for the host's Intel NPU with `optimum-cli`/`optimum-intel`, verifies the export is coherent, builds the GPU twin the `fallback` key needs, and writes both `npu` model files so the pair can be used immediately. Covers detecting whether the host actually has an Intel NPU, the quantization flags that compile correctly on it, the CPU sanity check that catches a broken export before it ever reaches a backend, why the target device is baked into each export directory rather than chosen per request, and which configuration scope the generated model files belong in. Use it whenever a model needs to run on the host's NPU and has no local OpenVINO export yet.
 when_to_use: >
   Trigger on "export this model for the NPU", "get <model> running on my
   NPU", "quantize <model> for OpenVINO", "npu-export", or any request to
-  prepare a Hugging Face model to be served on an Intel NPU through OVMS.
+  prepare a Hugging Face model to be served on an Intel NPU through OVMS —
+  including "set up the GPU fallback for <model>".
 argument-hint: "[huggingface model id]"
 model: sonnet
 effort: medium
 allowed-tools: Read Write Edit Glob Grep Bash(npu:*) Bash(python3:*) Bash(pip:*) Bash(optimum-cli:*) Bash(curl:*) Bash(lspci:*) Bash(lsmod:*) Bash(chmod:*) Bash(docker:*)
 ---
 
-# Exporting a Hugging Face model for the host NPU
+# Exporting a Hugging Face model for the host NPU, with its GPU twin
 
 ## Usage
 
@@ -41,8 +42,9 @@ lsmod 2>/dev/null | grep -i intel_vpu
 No device node: say so plainly and stop rather than exporting blindly — see
 [Detecting an Intel NPU on the host](https://github.com/fmatsos/npu/blob/main/docs/intel-npu.md#0-detecting-an-intel-npu-on-the-host)
 for the driver-vs-hardware distinction before concluding "no NPU". If the user explicitly wants a
-GPU/CPU export instead, the export procedure below is identical — only the OVMS `--target_device`
-in the generated backend changes, and that is **npu-backend**'s job, not this skill's.
+GPU/CPU export instead, `optimum-cli` in step 2 is identical — only the `--target_device` passed
+to `--configure` (step 3.5) changes, since that is what bakes the device into the export. Step 3.6,
+which builds the GPU twin, is then pointless and must be skipped.
 
 ## 1. Confirm the model can actually be exported
 
@@ -119,13 +121,16 @@ passes:
 ```sh
 docker run --rm -v ~/models:/models:rw openvino/model_server:2026.4.0 \
     --configure --model_path /models/<basename>-int4-ov \
-    --task text_generation --target_device <NPU|GPU|CPU>
+    --task text_generation --target_device NPU
 ```
 
-Match the OVMS image tag and `--target_device` to what the backend's `[docker]` table actually
-uses (step 4 below) — a mismatched device here is harmless (the graph is just a text file, OVMS
-re-reads `--target_device` from the backend's own `args` at serve time), but a mismatched image tag
-can pull a second multi-GB image for nothing.
+**`--target_device` here is not a hint, it is the device.** `--configure` writes it into
+`graph.pbtxt` as `device: "NPU"`, and that is what OVMS reads at serve time — a backend serving
+this directory with `--model_name`/`--model_path` passes no device flag at all. One export
+directory therefore serves exactly one device, which is why step 3.6 exists.
+
+Match the OVMS image tag to the one the backend's `[docker]` table uses: a mismatch pulls a second
+multi-GB image for nothing.
 
 **If this prints `Unable to open file: .../graph.pbtxt` again instead of `Graph: graph.pbtxt
 created in: ...`, it is a permissions problem, not a missing-file problem** — `--configure` is
@@ -143,57 +148,122 @@ as the documented `Cache directory /cache is not writable` warning in
 [docs/intel-npu.md's troubleshooting table](https://github.com/fmatsos/npu/blob/main/docs/intel-npu.md#troubleshooting)
 — add a row for it there if it is still missing.
 
-## 4. Generate the `npu` model file
+## 3.6. Build the GPU twin
 
-Only after step 3.5 passes. The exported directory name is the `model` field:
+**Always, not on request.** An NPU-compiled graph has a static maximum prompt length: a prompt
+past it is refused with `400 ... Input length exceeds the maximum allowed length`. `npu`'s
+`fallback` key recovers from exactly that by retrying on a GPU-served model — but only if one
+exists. Exporting for the NPU alone leaves the fallback permanently unavailable, and the failure
+then surfaces to the user instead of being absorbed.
+
+The twin is **not a second export**. It is a directory of symlinks plus its own `graph.pbtxt`, the
+one file that differs — a few kilobytes against several gigabytes. OVMS resolves the graph's
+`models_path: "."` relative to the graph itself, and the whole `~/models` tree is bind-mounted, so
+the symlinks resolve inside the container:
+
+```sh
+mkdir -p ~/models/<basename>-int4-ov-gpu
+cd ~/models/<basename>-int4-ov-gpu
+for f in ../<basename>-int4-ov/*; do
+    [ "$(basename "$f")" = graph.pbtxt ] || ln -sf "$f" .
+done
+chmod o+w .    # same uid-5000 constraint as step 3.5
+
+docker run --rm -v ~/models:/models:rw openvino/model_server:2026.4.0 \
+    --configure --model_path /models/<basename>-int4-ov-gpu \
+    --task text_generation --target_device GPU
+```
+
+Confirm `device: "GPU"` in the generated `~/models/<basename>-int4-ov-gpu/graph.pbtxt` before
+moving on — a twin that silently says `NPU` is a fallback that cannot help.
+
+Skip this step **only** when step 0 found no NPU and the export was already targeting the GPU:
+there is nothing to fall back from. Say so rather than building a twin of a GPU export.
+
+## 4. Generate the `npu` model files
+
+Two files, not one — a primary on the NPU declaring the fallback, and the GPU twin it points at.
+Only after step 3.6 passes:
 
 ```toml
 # ~/.config/npu/models/<id>.toml
 id = "<id>"
-backend = "<existing-ovms-style-backend-id>"
+backend = "<npu-backend-id>"
 operation = "chat"
 model = "<basename>-int4-ov"
+fallback = "<id>-gpu"
 
 [generation]
 temperature = 0.0
 ```
 
-**Write it to the user scope (`$XDG_CONFIG_HOME/npu`, usually `~/.config/npu`), not the project's
-`./.npu`, unless the user explicitly asks otherwise.** The export is tied to this machine's NPU and
-its local `~/models` path — committing that into a project's `.npu/` would break the next person
-who runs it without this hardware. See **npu-config** for the scope reasoning in full.
+```toml
+# ~/.config/npu/models/<id>-gpu.toml
+id = "<id>-gpu"
+backend = "<gpu-backend-id>"
+operation = "chat"
+model = "<basename>-int4-ov-gpu"
 
-This requires a backend already declaring `[docker]` with `--target_device NPU` (or GPU/CPU, per
-step 0). If none exists, say so and point at **npu-backend** instead of fabricating one — the
-`[docker]` table needs host-specific values (render group id, uid/gid, the NPU device path) this
-skill has no way to guess correctly.
+[generation]
+temperature = 0.0
+```
 
-Re-exporting an existing model **in place** (same directory) invalidates its OVMS compilation
-cache silently — clear the stale blob per
-[docs/intel-npu.md §4](https://github.com/fmatsos/npu/blob/main/docs/intel-npu.md#4-persisting-the-compilation-cache)
-before the next `npu serve`.
+No `fallback` on the twin: the retry is single hop, so a chain would not be followed anyway.
+
+**Write both to the user scope (`$XDG_CONFIG_HOME/npu`, usually `~/.config/npu`), not the
+project's `./.npu`, unless the user explicitly asks otherwise.** The export is tied to this
+machine's NPU and its local `~/models` path — committing that into a project's `.npu/` would break
+the next person who runs it without this hardware. See **npu-config** for the scope reasoning in
+full.
+
+This needs **two** backends, each with its own `[docker]` table, its own port and its own
+container: the device is baked into the served export, and `npu` names a container
+`npu-<backend-id>`, so one backend can hold exactly one running model. If either is missing, say
+so and point at **npu-backend** instead of fabricating one — a `[docker]` table needs
+host-specific values (render group id, uid/gid, device paths) this skill has no way to guess
+correctly.
+
+Two coupling facts worth stating when reporting:
+
+- Re-exporting **in place** (same directory) invalidates the OVMS compilation cache silently —
+  clear the stale blob per
+  [docs/intel-npu.md §4](https://github.com/fmatsos/npu/blob/main/docs/intel-npu.md#4-persisting-the-compilation-cache)
+  before the next `npu serve` — **and** it changes the twin too, whose `graph.pbtxt` then describes
+  weights that no longer exist. Re-run step 3.6's `--configure` after any re-export.
+- The twin shares the primary's `config.json`, hence its context length. It lifts the NPU's
+  compiled prompt shape, never the model's own context ceiling: a prompt past that fails on both,
+  with a different message (`Number of prompt tokens: N exceeds model max length: M`).
 
 ## 5. Report
 
 State plainly:
 
-- the `model` value to use (`<basename>-int4-ov`) and its full path;
-- that `graph.pbtxt` was generated (step 3.5) and, if permissions had to be fixed, that they were;
-- whether a model file was written, and in which scope;
-- the next step: `npu serve <id>`, then `npu doctor` to confirm resolution, then a real request
-  through the command that will use it.
+- the two `model` values (`<basename>-int4-ov` and `<basename>-int4-ov-gpu`) and their full paths,
+  and that the twin is symlinks, not a second copy of the weights;
+- that both `graph.pbtxt` files were generated with the right `device:` (steps 3.5 and 3.6) and,
+  if permissions had to be fixed, that they were;
+- whether the two model files were written, in which scope, and that `<id>` declares
+  `fallback = "<id>-gpu"`;
+- the next step: `npu serve <id>` **and** `npu serve <id>-gpu` (two containers, two ports), then
+  `npu doctor` to confirm both backends resolve, `npu models` to see the `FALLBACK` column, then a
+  real request through the command that will use it.
 
 ## What this skill deliberately does not do
 
-- **It does not start or test the actual serving container.** `npu serve` needs a backend whose
-  `[docker]` table already targets the right device — that is configuration, not export. Step 3.5's
-  one-off `--configure` run is preparation (it writes `graph.pbtxt` and exits), not a served
-  container, the same distinction OVMS itself draws between `--configure`/`--pull` and plain serve.
+- **It does not start or test the actual serving containers.** `npu serve` needs backends whose
+  `[docker]` tables already exist — that is configuration, not export. The `--configure` runs in
+  steps 3.5 and 3.6 are preparation (they write `graph.pbtxt` and exit), not served containers, the
+  same distinction OVMS itself draws between `--configure`/`--pull` and plain serve.
+- **It does not write the backends.** It produces two model files pointing at an NPU backend and a
+  GPU backend that must already exist; **npu-backend** owns those.
 - **It does not touch `npu`'s Rust source.** The export, the quantization choice and the generated
   TOML are all external to the binary — consistent with `npu` knowing nothing about specific
   models or hardware.
 - **It does not overwrite an export at an existing path silently.** Ask first; re-exporting in
-  place is a deliberate replacement, not a default.
+  place is a deliberate replacement, not a default — and it invalidates both the compilation cache
+  and the GPU twin.
+- **It does not export twice.** The GPU twin shares the NPU export's weights through symlinks; a
+  second `optimum-cli` run would spend gigabytes producing an identical IR.
 
 ## Reference
 
@@ -204,8 +274,8 @@ not match what actually happens, the repository documentation is authoritative:
   full procedure this skill executes, including the quantization pitfall and troubleshooting table
 - [Configuration scopes](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#scopes-and-precedence)
 
-Related skills: **npu-discover** to pick a model before exporting one, **npu-backend** for the
-`[docker]` table this skill's model depends on, **npu-model** for the file format it generates,
-**npu-doctor** to diagnose the result.
+Related skills: **npu-discover** to pick a model before exporting one, **npu-backend** for the two
+`[docker]` tables this skill's models depend on, **npu-model** for the file format it generates and
+the `fallback` semantics, **npu-doctor** to diagnose the result.
 
 <!-- model/effort: a fixed procedure with one judgement call (reading the sanity-check output) and external, sometimes slow, commands — sonnet/medium, not the high bar of a diagnosis or a release. -->

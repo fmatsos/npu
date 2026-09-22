@@ -7,7 +7,8 @@
 
 id = "ovms"
 type = "openai-compatible"
-base_url = "http://127.0.0.1:8000"
+port = 8000
+base_url = "http://127.0.0.1:{{ backend.port }}"
 
 [operations.chat]
 method = "POST"
@@ -35,7 +36,7 @@ path = "/v3/chat/completions"
 [docker]
 image = "openvino/model_server:2026.4.0-gpu"
 options = [
-    "-p", "8000:8000",
+    "-p", "{{ backend.port }}:8000",
     "-v", "{{ env.HOME }}/models:/models:rw",
     "-v", "{{ env.HOME }}/models/.ov_cache:/cache:rw",
     "--device", "/dev/accel", "--device", "/dev/dri",

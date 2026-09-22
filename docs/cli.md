@@ -79,11 +79,15 @@ unacceptable side effect for a diagnostic command. The label therefore says *rea
 ## `npu models`
 
 Lists configured models, sorted by name, with column widths computed from the content.
+`FALLBACK` is the model retried once when this one fails with a backend error, or `-` when none is
+declared — see [`fallback`](configuration.md#fallback-optional).
 
 ```console
 $ npu models
-NAME       BACKEND  OPERATION
-qwen-fast  ovms     chat
+NAME                       BACKEND   OPERATION  FALLBACK
+qwen2.5-coder-3b-instruct  ovms      chat       -
+qwen3-8b                   ovms      chat       qwen3-8b-gpu
+qwen3-8b-gpu               ovms-gpu  chat       -
 ```
 
 ---
@@ -166,9 +170,16 @@ each. Its report *is* its result.
 
 ```console
 $ npu status
-BACKEND  CONTAINER  STATE
-ovms     npu-ovms   not started
+BACKEND   CONTAINER     URL                     STATE
+ovms      npu-ovms      http://127.0.0.1:8000   Up 31 seconds
+ovms-gpu  npu-ovms-gpu  http://127.0.0.1:32768  Up 47 seconds
 ```
+
+`URL` is the backend's resolved `base_url` — the only place a
+[`port = "auto"`](configuration.md#port-optional) shows up, since Docker allocates that number and
+nothing else in the CLI would reveal it. A backend whose port cannot be read back (not started,
+Docker unusable) shows `-` there: a report that died on its first unreadable line would not be a
+report.
 
 `STATE` is whatever the runtime says (`Up 3 minutes`, `Exited (0) 2 minutes ago`), or
 `not started` when no such container exists. A backend the runtime cannot even be asked about

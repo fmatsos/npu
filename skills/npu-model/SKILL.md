@@ -1,6 +1,6 @@
 ---
 name: npu-model
-description: Writes and fixes `npu` model files (`.npu/models/*.toml`) — the `id`, `backend`, `operation`, `model` and optional `[generation]` fields that bridge a command to a backend capability. Covers resolution errors (unknown backend, operation the backend does not expose), the fact that omitted generation fields are not sent at all, and replacement-by-id across configuration scopes. Use it whenever a model alias is created, renamed, retuned or rejected.
+description: Writes and fixes `npu` model files (`.npu/models/*.toml`) — the `id`, `backend`, `operation`, `model`, optional `fallback` and optional `[generation]` fields that bridge a command to a backend capability. Covers resolution errors (unknown backend, operation the backend does not expose), the single-hop `fallback` retry that moves an over-long prompt from an NPU-served model to a GPU-served one, the fact that omitted generation fields are not sent at all, and replacement-by-id across configuration scopes. Use it whenever a model alias is created, renamed, retuned or rejected.
 when_to_use: >
   Trigger on "add an npu model", "point this command at another model",
   "change temperature / max_tokens", "npu models", or on any npu error
@@ -37,6 +37,7 @@ max_tokens = 512
 | `backend` | yes | must match a backend `id` |
 | `operation` | yes | must be an operation that backend exposes |
 | `model` | yes | the concrete model identifier sent to the backend, and what `{{ args.model }}` substitutes in a `[docker]` table |
+| `fallback` | no | another model `id`, retried once on a backend failure |
 | `[generation]` | no | `temperature`, `max_tokens` |
 
 `id` and `model` are different things on purpose: `id` is the stable alias
@@ -51,12 +52,46 @@ ever sent, and the backend's own default applies. Set `temperature = 0.0`
 explicitly when determinism matters — for a command whose output is parsed by
 another program, that is usually what you want.
 
+## `fallback` — one retry, one hop
+
+```toml
+fallback = "qwen3-8b-gpu"
+```
+
+An `Error::Backend` (exit `3`) on this model sends the same rendered prompt
+once to the named model, on its own backend. Exit `2` and exit `4` are never
+retried.
+
+Written for the NPU case: an NPU-compiled graph has a static maximum prompt
+length, and OVMS refuses an over-long prompt with a clean `400 ... Input
+length exceeds the maximum allowed length` in milliseconds — an exact signal,
+so `npu` needs no tokenizer and no guessed character threshold.
+
+- **Single hop**: the fallback's own `fallback` is not followed, so no chain
+  and no cycle.
+- **Blind to the reason**: an unreachable container and an over-long prompt
+  are the same variant, so the primary's failure is always logged at `warn` on
+  stderr. A backend down all day must not pass for a healthy fallback.
+- **Two devices means two backends**: the target device is baked into the
+  served export (OVMS reads it from `graph.pbtxt`), never chosen per request,
+  and `npu` names its container `npu-<backend-id>`. So the fallback points at
+  a second model on a second backend on a second port. Same reasoning for
+  running several small models at once.
+- **It does not lift the context length**: a GPU twin built by symlinking the
+  primary's export shares its `config.json`, hence its context window. Two
+  distinct 400s therefore exist — `Input length exceeds the maximum allowed
+  length` (the NPU's compiled shape, recoverable) and `Number of prompt
+  tokens: N exceeds model max length: M` (the model's context, recoverable by
+  nothing here).
+
 ## What is rejected at load time
 
 Configuration errors (exit `2`), each naming what *is* available:
 
 - `backend` naming a backend that does not exist;
 - `operation` the named backend does not expose;
+- `fallback` naming a model that does not exist, or naming this model itself
+  — checked at load, not the day the recovery fires;
 - any unknown key, at the top level or under `[generation]`;
 - two files in the same scope sharing an `id`.
 

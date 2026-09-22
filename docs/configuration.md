@@ -104,11 +104,80 @@ path = "/v3/chat/completions"
 | `id` | yes | the merge key, and how models refer to this backend |
 | `type` | yes | `"openai-compatible"` is the only value supported in 0.1.0 |
 | `base_url` | yes | joined with an operation's `path`; a trailing `/` is handled either way |
+| `port` | no | the listening port, declared once and read as `{{ backend.port }}` — see below |
 | `[operations.<name>]` | at least one | `method` and `path` |
 | `[docker]` | no | how `npu serve` starts this backend — see below |
 
 Unknown keys are rejected, with the file and line. A `type` other than `"openai-compatible"` and
 a `method` other than `POST` are both rejected at load time rather than silently ignored.
+
+### `port` (optional)
+
+A containerized backend writes its port twice — in `-p` and in `base_url` — and the two silently
+diverging is the worst failure this file has: `npu doctor` stays green (its probe reaches whatever
+answers on the `base_url` port, quite possibly another backend) and only the real request fails,
+with exit `3`. `port` removes the second spelling:
+
+```toml
+port = 8001
+base_url = "http://127.0.0.1:{{ backend.port }}"
+
+[docker]
+options = ["-p", "{{ backend.port }}:8000", "..."]
+```
+
+`{{ backend.port }}` is substituted at load time in `base_url` and in every `[docker]` entry. It is
+the only `backend.*` placeholder that exists, and the two halves are enforced together: the
+placeholder without a `port` key is rejected, and a `port` key nothing references is rejected too —
+a value read and then ignored is exactly what this configuration does not do.
+
+```toml
+port = "auto"
+```
+
+`"auto"` hands the allocation to Docker: `{{ backend.port }}` becomes `0` in the `[docker]` lists
+(`-p 0:8000`), the kernel picks a free port, and `npu` reads it back with `docker port` whenever it
+needs the URL. **Collision is impossible by construction** — nothing is derived or guessed, so
+there is no second candidate to try.
+
+Deriving a port instead (a hash of the id) would be stateless but can collide with an unrelated
+service; probing for a free one at each invocation does not even agree with itself, since by the
+time a command runs the port is occupied — by us. Asking Docker what it allocated is the only
+variant that is both collision-free and reproducible across processes, `npu` having no state to
+write the answer down in.
+
+> [!IMPORTANT]
+> `port = "auto"` makes Docker a prerequisite for **executing commands** on that backend, not just
+> for its lifecycle. A fixed port never consults Docker at all, so this is strictly opt-in per
+> backend. Two further constraints, both rejected at load time naming the file: `"auto"` requires a
+> `[docker]` table (there is nothing to read a port back from otherwise), and it requires
+> `base_url` to read `{{ backend.port }}` (the allocated port would be unreachable otherwise).
+
+The port changes on each `npu serve`. `npu status` prints the resolved URL, and a backend that is
+not started reports `-` there rather than failing the report.
+
+### When a fixed port is already taken
+
+`npu serve` checks before starting anything and stops with exit `3`, naming the backend and the
+port:
+
+```console
+$ npu serve m
+backend error: backend "probe": port 8001 is already in use by something else — change its "port" key, stop what is listening on it, or use port = "auto" to let Docker allocate one
+```
+
+Deliberately not silent, and deliberately not automatic: a fixed number is a decision — something
+outside `npu` connects to it, or a firewall rule names it — so moving it behind your back would
+break whatever depended on it. `"auto"` is how you say the number does not matter.
+
+The backend already being served is checked **first**, because from the outside the two look
+identical and only one of them is about the port — a container holds its own port, and sending its
+user to edit a `port` key that is perfectly correct is the wrong repair:
+
+```console
+$ npu serve qwen3-8b
+backend error: backend "ovms" is already served by container "npu-ovms" — `npu status` to see it, `npu stop qwen3-8b` to remove it
+```
 
 ### `[timeouts]` (optional)
 
@@ -168,9 +237,15 @@ rejected — with its file named — rather than mangled into something Docker a
 > `base_url` for `ovms` replaces the user scope's `ovms` entirely, `[docker]` included. Repeat the
 > table in the local file, or `npu serve` will report that the backend declares none.
 
-For OpenVINO Model Server specifically: `openvino/model_server:latest-gpu` is the image to use for
-accelerators, with `--device /dev/dri` and `--group-add <render gid>` in `options` for the GPU, or
-`--device /dev/accel` plus `--target_device NPU` in `args` for the NPU.
+For OpenVINO Model Server specifically: the `-gpu` image tag is the one to use for accelerators
+(there is no NPU-only image; that tag carries both plugins), with `--device /dev/dri` and
+`--group-add <render gid>` in `options` for the GPU, plus `--device /dev/accel` for the NPU.
+
+When the served directory is a local export addressed with `--model_name`/`--model_path`, no
+device flag belongs in `args`: the device is baked into that export's `graph.pbtxt` by
+`ovms --configure`, and OVMS reads it from there. One export therefore serves one device, so
+running the same weights on the NPU and the GPU means two backends on two ports — which is also
+what lets several small models run at once.
 
 ---
 
@@ -196,6 +271,7 @@ max_tokens = 512
 | `backend` | yes | must match a backend `id` |
 | `operation` | yes | must be an operation that backend exposes |
 | `model` | yes | the concrete model identifier sent to the backend |
+| `fallback` | no | another model `id` to retry against when this one fails — see below |
 | `[generation]` | no | `temperature`, `max_tokens`; omitted fields are not sent at all |
 
 `generation` values are only included in the request when present — no `null` is ever serialised
@@ -203,6 +279,53 @@ for an absent field.
 
 A model naming an unknown backend, or an operation its backend does not expose, produces a
 configuration error listing what *is* available.
+
+### `fallback` (optional)
+
+```toml
+id = "qwen3-8b"
+backend = "ovms"        # OVMS on the NPU
+model = "qwen3-8b-int4-ov"
+fallback = "qwen3-8b-gpu"
+```
+
+When the request fails with exit code `3` (a backend failure: unreachable, or a non-2xx answer),
+the same rendered prompt is sent once to the fallback model, on its own backend. Nothing else is
+retried — a `2` (bad configuration) and a `4` (the answer violated the output contract) are
+returned as-is, because retrying elsewhere would only hide them.
+
+This exists for a concrete case: a model compiled for an Intel NPU has a static maximum prompt
+length, and OVMS refuses an over-long prompt with a clean `400 ... Input length exceeds the
+maximum allowed length` in milliseconds. That is an exact, cheap signal that the prompt belongs on
+a GPU-served model instead — no token counting on `npu`'s side, no guessed character threshold.
+
+Three properties worth knowing:
+
+- **The retry is single hop.** The fallback's own `fallback` is not followed, so a chain cannot
+  form and no cycle is possible.
+- **It is blind to the reason.** `npu` cannot tell an over-long prompt from a stopped container,
+  so the primary failure is always written to stderr at `warn` level. Without it, a backend that
+  has been down all day would look like a healthy fallback.
+- **It is checked at load time.** A `fallback` naming an unknown model, or naming its own model,
+  is a configuration error (exit `2`) naming the file — not a surprise on the day the recovery is
+  actually needed.
+
+When both fail, the error names both models and both backends. `npu models` shows the `FALLBACK`
+column so the routing is never invisible.
+
+> [!IMPORTANT]
+> **The fallback does not lift the model's context length.** A GPU twin built by symlinking the
+> primary's export shares its `config.json`, hence its context length (40960 tokens for
+> `qwen3-8b`). The fallback recovers prompts sitting between the NPU's compiled shape and that
+> ceiling; past it both fail, with two distinct messages — `Input length exceeds the maximum
+> allowed length` is the NPU's static shape, `Number of prompt tokens: N exceeds model max length:
+> M` is the model's context, and only the first one is recoverable.
+
+> [!NOTE]
+> The NPU and the GPU need two separate backends, hence two containers and two ports: the target
+> device is baked into the served export (OVMS reads it from `graph.pbtxt`), not chosen per
+> request. The same is true of running several small models at once — one backend each. See
+> [Starting a backend with Docker](#starting-a-backend-with-docker).
 
 ---
 

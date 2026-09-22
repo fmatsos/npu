@@ -50,6 +50,192 @@ pub struct Timeouts {
     pub request_secs: u64,
 }
 
+/// The value of a backend's optional `port` key: an explicit number, or the
+/// keyword `"auto"`.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum Port {
+    Fixed(u16),
+    /// Any string; only `"auto"` is accepted, checked by [`resolve_port`]
+    /// so that a typo names its file instead of being treated as an unknown
+    /// type by serde.
+    Keyword(String),
+}
+
+/// The keyword accepted by `port`.
+const PORT_AUTO: &str = "auto";
+
+/// The value substituted for `{{ backend.port }}` in the `[docker]` lists of
+/// a `port = "auto"` backend: Docker's own "pick a free one".
+///
+/// Allocation is delegated to the kernel rather than derived or probed
+/// because `npu` keeps no state between processes: `npu serve` and the
+/// `npu <command>` that follows minutes later, in another process, must
+/// agree on a port. Deriving one (a hash of the id) agrees but can collide
+/// with an unrelated service; probing for a free one does not agree at all,
+/// since by request time the port is occupied — by us. Letting Docker
+/// allocate and then ASKING it what it allocated is the only variant that is
+/// both collision-free and reproducible, at the cost of making Docker a
+/// prerequisite for executing commands on such a backend, not just for its
+/// lifecycle.
+pub(crate) const DOCKER_EPHEMERAL_PORT: u16 = 0;
+
+/// The only `{{ backend.<name> }}` placeholder that exists.
+const BACKEND_PLACEHOLDER: &str = "backend.port";
+
+/// Replaces every `{{ backend.port }}` in `template` with `port`, and reports
+/// whether it replaced anything.
+///
+/// Handled HERE rather than through `prompt.rs`: this placeholder has no
+/// meaning in a command file, so the prompt engine stays unaware of it and
+/// `validate_docker_template` stays as it is. A fixed `port` is substituted
+/// at load time; a `port = "auto"` base URL keeps its placeholder until
+/// `builtin::resolve_base_url` reads the real value back from Docker.
+pub(crate) fn substitute_port(template: &str, port: u16) -> (String, bool) {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    let mut substituted = false;
+
+    while let Some(open) = rest.find("{{") {
+        let after_open = &rest[open + 2..];
+        let Some(close) = after_open.find("}}") else {
+            break;
+        };
+        if after_open[..close].trim() != BACKEND_PLACEHOLDER {
+            out.push_str(&rest[..open + 2]);
+            rest = after_open;
+            continue;
+        }
+        out.push_str(&rest[..open]);
+        out.push_str(&port.to_string());
+        rest = &after_open[close + 2..];
+        substituted = true;
+    }
+
+    out.push_str(rest);
+    (out, substituted)
+}
+
+/// Substitutes `{{ backend.port }}` throughout a backend, and enforces that
+/// `port` and the placeholder are declared together.
+///
+/// Both directions are configuration errors naming the file: a placeholder
+/// without a `port` cannot be resolved, and a `port` no placeholder reads is
+/// a key that would be silently ignored.
+fn resolve_port(backend: &mut Backend, source: &Path) -> crate::Result<()> {
+    let references_port = |backend: &Backend| {
+        substitute_port(&backend.base_url, 0).1
+            || backend.docker.as_ref().is_some_and(|docker| {
+                std::iter::once(&docker.image)
+                    .chain(&docker.options)
+                    .chain(&docker.args)
+                    .any(|template| substitute_port(template, 0).1)
+            })
+    };
+
+    let port = match &backend.port {
+        None => {
+            if references_port(backend) {
+                return Err(crate::Error::Config(format!(
+                    "{}: backend \"{}\": references {{{{ {BACKEND_PLACEHOLDER} }}}} but \
+                     declares no \"port\" key",
+                    source.display(),
+                    backend.id
+                )));
+            }
+            return Ok(());
+        }
+        Some(Port::Fixed(0)) => {
+            return Err(crate::Error::Config(format!(
+                "{}: backend \"{}\": port 0 is not a port (\"{PORT_AUTO}\" lets Docker \
+                 allocate one instead)",
+                source.display(),
+                backend.id
+            )));
+        }
+        Some(Port::Fixed(number)) => *number,
+        Some(Port::Keyword(keyword)) if keyword == PORT_AUTO => {
+            // `auto` means "Docker allocates, npu asks it back", so both
+            // halves must exist: something to start, and a base URL whose
+            // port can be filled in afterwards.
+            if backend.docker.is_none() {
+                return Err(crate::Error::Config(format!(
+                    "{}: backend \"{}\": port = \"{PORT_AUTO}\" requires a [docker] table — \
+                     npu can only read back a port it asked Docker to allocate",
+                    source.display(),
+                    backend.id
+                )));
+            }
+            // BOTH sides must read the placeholder, for the same reason:
+            // without it in [docker] nothing is published, and without it in
+            // base_url nothing reaches what was published. Either way the
+            // allocated port is unreachable — a failure that would only
+            // surface at the first command, as advice ("start it with npu
+            // serve") that could never work.
+            let in_docker = backend.docker.as_ref().is_some_and(|docker| {
+                std::iter::once(&docker.image)
+                    .chain(&docker.options)
+                    .chain(&docker.args)
+                    .any(|template| substitute_port(template, 0).1)
+            });
+            if !substitute_port(&backend.base_url, 0).1 || !in_docker {
+                return Err(crate::Error::Config(format!(
+                    "{}: backend \"{}\": port = \"{PORT_AUTO}\" requires \
+                     {{{{ {BACKEND_PLACEHOLDER} }}}} in BOTH base_url and [docker], otherwise \
+                     the allocated port is never published or never reached",
+                    source.display(),
+                    backend.id
+                )));
+            }
+            DOCKER_EPHEMERAL_PORT
+        }
+        Some(Port::Keyword(keyword)) => {
+            return Err(crate::Error::Config(format!(
+                "{}: backend \"{}\": port \"{keyword}\" is neither a number nor \
+                 \"{PORT_AUTO}\"",
+                source.display(),
+                backend.id
+            )));
+        }
+    };
+
+    let mut used = false;
+
+    // A `port = "auto"` base URL keeps its placeholder: the value is only
+    // known once Docker has allocated it, so substituting 0 here would send
+    // every request to port 0. Its `used` bookkeeping is already settled by
+    // the stricter both-sides check above.
+    if backend.uses_auto_port() {
+        used = true;
+    } else {
+        let (base_url, hit) = substitute_port(&backend.base_url, port);
+        backend.base_url = base_url;
+        used |= hit;
+    }
+
+    if let Some(docker) = &mut backend.docker {
+        for template in std::iter::once(&mut docker.image)
+            .chain(&mut docker.options)
+            .chain(&mut docker.args)
+        {
+            let (resolved, hit) = substitute_port(template, port);
+            *template = resolved;
+            used |= hit;
+        }
+    }
+
+    if !used {
+        return Err(crate::Error::Config(format!(
+            "{}: backend \"{}\": declares \"port\" but never references \
+             {{{{ {BACKEND_PLACEHOLDER} }}}}, so the value would be ignored",
+            source.display(),
+            backend.id
+        )));
+    }
+
+    Ok(())
+}
+
 /// An AI backend configured in `backends/*.toml`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -60,12 +246,32 @@ pub struct Backend {
     #[serde(rename = "type")]
     pub kind: String,
     pub operations: HashMap<String, Operation>,
+    /// Optional: the TCP port this backend listens on, substituted for
+    /// `{{ backend.port }}` in `base_url` and in the `[docker]` lists.
+    ///
+    /// Exists so the port is declared ONCE. Written twice — in `-p` and in
+    /// `base_url` — a divergence is invisible to `npu doctor` (its probe
+    /// reaches whatever answers on the `base_url` port, possibly another
+    /// backend) and only surfaces as exit `3` at execution.
+    #[serde(default)]
+    pub port: Option<Port>,
     /// Optional: how `npu serve` starts this backend's runtime.
     #[serde(default)]
     pub docker: Option<Docker>,
     /// Optional: overrides `backend::REQUEST_TIMEOUT` for this backend.
     #[serde(default)]
     pub timeouts: Option<Timeouts>,
+}
+
+impl Backend {
+    /// Does this backend let Docker allocate its port?
+    ///
+    /// Its `base_url` then still carries `{{ backend.port }}` after loading,
+    /// and only `builtin::resolve_base_url` can complete it.
+    #[must_use]
+    pub fn uses_auto_port(&self) -> bool {
+        matches!(&self.port, Some(Port::Keyword(keyword)) if keyword == PORT_AUTO)
+    }
 }
 
 /// Optional generation parameters for a model.
@@ -84,6 +290,15 @@ pub struct Model {
     pub backend: String,
     pub operation: String,
     pub model: String,
+    /// Model to retry against when this one fails with `Error::Backend`.
+    ///
+    /// Exists because an NPU-compiled graph has a static maximum prompt
+    /// length: OVMS answers `400 ... Input length exceeds the maximum
+    /// allowed length` in milliseconds, which is an exact, cheap signal that
+    /// the same prompt belongs on a GPU-served model instead. The retry is
+    /// SINGLE HOP: the fallback's own `fallback` is not followed, which is
+    /// what makes cycle detection unnecessary.
+    pub fallback: Option<String>,
     #[serde(default)]
     pub generation: Generation,
 }
@@ -227,6 +442,41 @@ fn validate_backend(backend: &Backend, source: &Path) -> crate::Result<()> {
     Ok(())
 }
 
+/// Validates a model's `fallback`: it must name another loaded model.
+///
+/// Pointing at itself is rejected too — the retry is single hop, so a
+/// self-fallback is an infinite intent expressed as a no-op, never what the
+/// author meant.
+fn validate_fallback(
+    model: &Model,
+    models: &HashMap<String, (Model, PathBuf)>,
+    source: &Path,
+) -> crate::Result<()> {
+    let Some(fallback) = &model.fallback else {
+        return Ok(());
+    };
+
+    if fallback == &model.id {
+        return Err(crate::Error::Config(format!(
+            "{}: model \"{}\" declares itself as its own fallback",
+            source.display(),
+            model.id
+        )));
+    }
+
+    if !models.contains_key(fallback) {
+        return Err(crate::Error::Config(format!(
+            "{}: model \"{}\" declares fallback \"{fallback}\", which is not a known model \
+             (available models: {})",
+            source.display(),
+            model.id,
+            crate::error::format_available(models.keys())
+        )));
+    }
+
+    Ok(())
+}
+
 /// Resolved configuration: backends and models indexed by their `id`.
 #[derive(Debug, Default)]
 pub struct Config {
@@ -360,8 +610,23 @@ pub fn load_scopes(roots: &[PathBuf]) -> crate::Result<Config> {
         models.extend(scope_models);
     }
 
+    // Before `validate_backend`: substituting `{{ backend.port }}` here means
+    // everything downstream — the docker template whitelist included — only
+    // ever sees a resolved value.
+    for (backend, source) in backends.values_mut() {
+        resolve_port(backend, source)?;
+    }
+
     for (backend, source) in backends.values() {
         validate_backend(backend, source)?;
+    }
+
+    // A `fallback` is a COLD path: left unchecked it would only fail the day
+    // the primary model fails, i.e. exactly when the recovery is needed.
+    // Checked here, after the merge, so that a fallback declared in a general
+    // scope and satisfied by a model from a more local scope stays valid.
+    for (model, source) in models.values() {
+        validate_fallback(model, &models, source)?;
     }
 
     let backends = backends.into_iter().map(|(id, (b, _))| (id, b)).collect();
@@ -420,6 +685,336 @@ mod tests {
             std::fs::create_dir_all(parent).expect("parent directory creation");
         }
         std::fs::write(path, contents).expect("fixture write");
+    }
+
+    /// Writes a backend declaring `port = <port_value>` (raw TOML), whose
+    /// `base_url` and `[docker]` both read `{{ backend.port }}`.
+    fn write_port_backend(root: &Path, port_value: &str) {
+        write(
+            root,
+            "backends/b.toml",
+            &format!(
+                r#"
+                id = "b"
+                base_url = "http://127.0.0.1:{{{{ backend.port }}}}"
+                type = "openai-compatible"
+                port = {port_value}
+
+                [operations.chat]
+                method = "POST"
+                path = "/v1/chat/completions"
+
+                [docker]
+                image = "img"
+                options = ["-p", "{{{{ backend.port }}}}:8000"]
+                "#
+            ),
+        );
+    }
+
+    #[test]
+    fn port_number_is_substituted_in_base_url_and_docker() {
+        let root = fixture_dir("port-fixed");
+        write_port_backend(&root, "8001");
+
+        let config = load(&root).expect("a declared port must load");
+        let backend = config.backends.get("b").expect("backend b");
+
+        assert_eq!(backend.base_url, "http://127.0.0.1:8001");
+        assert_eq!(
+            backend.docker.as_ref().expect("docker table").options,
+            vec!["-p".to_string(), "8001:8000".to_string()]
+        );
+    }
+
+    #[test]
+    fn port_auto_leaves_base_url_templated_and_asks_docker_for_an_ephemeral_port() {
+        let root = fixture_dir("port-auto");
+        write_port_backend(&root, "\"auto\"");
+
+        let config = load(&root).expect("port = \"auto\" must load");
+        let backend = config.backends.get("b").expect("backend b");
+
+        assert!(backend.uses_auto_port());
+        // Still templated: the value does not exist until Docker allocates
+        // it, and `builtin::resolve_base_url` reads it back.
+        assert_eq!(backend.base_url, "http://127.0.0.1:{{ backend.port }}");
+        // `-p 0:8000` is how Docker is asked to allocate a free one.
+        assert_eq!(
+            backend.docker.as_ref().expect("docker table").options[1],
+            format!("{DOCKER_EPHEMERAL_PORT}:8000")
+        );
+    }
+
+    #[test]
+    fn port_auto_without_a_docker_table_is_rejected() {
+        let root = fixture_dir("port-auto-no-docker");
+        write(
+            &root,
+            "backends/b.toml",
+            r#"
+            id = "b"
+            base_url = "http://127.0.0.1:{{ backend.port }}"
+            type = "openai-compatible"
+            port = "auto"
+
+            [operations.chat]
+            method = "POST"
+            path = "/v1/chat/completions"
+            "#,
+        );
+
+        let err = load(&root).expect_err("auto without [docker] must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("b.toml"), "got: {err}");
+    }
+
+    #[test]
+    fn port_auto_whose_base_url_ignores_the_placeholder_is_rejected() {
+        let root = fixture_dir("port-auto-fixed-url");
+        write(
+            &root,
+            "backends/b.toml",
+            r#"
+            id = "b"
+            base_url = "http://127.0.0.1:8001"
+            type = "openai-compatible"
+            port = "auto"
+
+            [operations.chat]
+            method = "POST"
+            path = "/v1/chat/completions"
+
+            [docker]
+            image = "img"
+            options = ["-p", "{{ backend.port }}:8000"]
+            "#,
+        );
+
+        let err = load(&root).expect_err("an auto port no base_url reads must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("b.toml"), "got: {err}");
+    }
+
+    /// Symmetric to the `base_url` case: with no `-p {{ backend.port }}`
+    /// the container publishes nothing, so `docker port` has nothing to
+    /// report and every command fails on advice that could never work.
+    #[test]
+    fn port_auto_whose_docker_table_ignores_the_placeholder_is_rejected() {
+        let root = fixture_dir("port-auto-unpublished");
+        write(
+            &root,
+            "backends/b.toml",
+            r#"
+            id = "b"
+            base_url = "http://127.0.0.1:{{ backend.port }}"
+            type = "openai-compatible"
+            port = "auto"
+
+            [operations.chat]
+            method = "POST"
+            path = "/v1/chat/completions"
+
+            [docker]
+            image = "img"
+            options = ["--rm"]
+            "#,
+        );
+
+        let err = load(&root).expect_err("an auto port nothing publishes must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("b.toml"), "got: {err}");
+    }
+
+    #[test]
+    fn port_placeholder_without_the_key_is_rejected() {
+        let root = fixture_dir("port-missing-key");
+        write(
+            &root,
+            "backends/b.toml",
+            r#"
+            id = "b"
+            base_url = "http://127.0.0.1:{{ backend.port }}"
+            type = "openai-compatible"
+
+            [operations.chat]
+            method = "POST"
+            path = "/v1/chat/completions"
+            "#,
+        );
+
+        let err = load(&root).expect_err("an unresolvable placeholder must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("b.toml"), "got: {err}");
+    }
+
+    #[test]
+    fn port_key_never_referenced_is_rejected() {
+        let root = fixture_dir("port-unused");
+        write(
+            &root,
+            "backends/b.toml",
+            r#"
+            id = "b"
+            base_url = "http://127.0.0.1:8001"
+            type = "openai-compatible"
+            port = 8001
+
+            [operations.chat]
+            method = "POST"
+            path = "/v1/chat/completions"
+            "#,
+        );
+
+        let err = load(&root).expect_err("a port nothing reads must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("b.toml"), "got: {err}");
+    }
+
+    #[test]
+    fn port_keyword_other_than_auto_is_rejected() {
+        let root = fixture_dir("port-bad-keyword");
+        write_port_backend(&root, "\"random\"");
+
+        let err = load(&root).expect_err("an unknown port keyword must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        let message = err.to_string();
+        assert!(message.contains("b.toml"), "got: {message}");
+        assert!(message.contains("random"), "got: {message}");
+    }
+
+    #[test]
+    fn port_zero_is_rejected() {
+        let root = fixture_dir("port-zero");
+        write_port_backend(&root, "0");
+
+        let err = load(&root).expect_err("port 0 must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("b.toml"), "got: {err}");
+    }
+
+    #[test]
+    fn substitute_port_leaves_other_placeholders_alone() {
+        let (out, hit) = substitute_port("{{ args.model }}:{{backend.port}}", 8001);
+        assert_eq!(out, "{{ args.model }}:8001");
+        assert!(hit);
+
+        let (out, hit) = substitute_port("{{ args.model }}", 8001);
+        assert_eq!(out, "{{ args.model }}");
+        assert!(!hit);
+    }
+
+    /// The scan skips a non-matching placeholder by advancing past its `{{`
+    /// only, so its body is re-scanned. This is the case that would expose a
+    /// mis-paired `}}`: a `{{ env.NAME }}` BEFORE the port, in the same
+    /// string — the exact shape of a volume option in a real `[docker]`
+    /// table.
+    #[test]
+    fn substitute_port_after_another_placeholder_in_the_same_string() {
+        let (out, hit) = substitute_port("{{ env.HOME }}/m:{{ backend.port }}:8000", 8001);
+        assert_eq!(out, "{{ env.HOME }}/m:8001:8000");
+        assert!(hit);
+
+        // And the detection used by `resolve_port` to reject a placeholder
+        // with no `port` key must see it in that same position.
+        assert!(substitute_port("{{ env.HOME }}:{{ backend.port }}", 0).1);
+    }
+
+    /// An unclosed `{{` must not swallow the rest, matching `prompt.rs`'s own
+    /// rule that an unclosed placeholder is left alone.
+    #[test]
+    fn substitute_port_leaves_an_unclosed_brace_alone() {
+        let (out, hit) = substitute_port("{{ backend.port", 8001);
+        assert_eq!(out, "{{ backend.port");
+        assert!(!hit);
+    }
+
+    /// The three `fallback` tests share this backend: only the models vary.
+    const FALLBACK_BACKEND: &str = r#"
+        id = "b"
+        base_url = "http://127.0.0.1:8000"
+        type = "openai-compatible"
+
+        [operations.chat]
+        method = "POST"
+        path = "/v1/chat/completions"
+    "#;
+
+    #[test]
+    fn fallback_pointing_at_a_known_model_loads() {
+        let root = fixture_dir("fallback-ok");
+        write(&root, "backends/b.toml", FALLBACK_BACKEND);
+        write(
+            &root,
+            "models/npu.toml",
+            r#"
+            id = "npu"
+            backend = "b"
+            operation = "chat"
+            model = "m-npu"
+            fallback = "gpu"
+            "#,
+        );
+        write(
+            &root,
+            "models/gpu.toml",
+            r#"
+            id = "gpu"
+            backend = "b"
+            operation = "chat"
+            model = "m-gpu"
+            "#,
+        );
+
+        let config = load(&root).expect("a fallback naming a loaded model must load");
+        assert_eq!(
+            config.models.get("npu").and_then(|m| m.fallback.as_deref()),
+            Some("gpu")
+        );
+    }
+
+    #[test]
+    fn fallback_pointing_at_an_unknown_model_is_rejected_naming_both() {
+        let root = fixture_dir("fallback-unknown");
+        write(&root, "backends/b.toml", FALLBACK_BACKEND);
+        write(
+            &root,
+            "models/npu.toml",
+            r#"
+            id = "npu"
+            backend = "b"
+            operation = "chat"
+            model = "m-npu"
+            fallback = "nope"
+            "#,
+        );
+
+        let err = load(&root).expect_err("an unknown fallback must be rejected at load time");
+        assert!(matches!(err, crate::Error::Config(_)));
+        let message = err.to_string();
+        assert!(message.contains("npu.toml"), "got: {message}");
+        assert!(message.contains("nope"), "got: {message}");
+    }
+
+    #[test]
+    fn fallback_pointing_at_itself_is_rejected() {
+        let root = fixture_dir("fallback-self");
+        write(&root, "backends/b.toml", FALLBACK_BACKEND);
+        write(
+            &root,
+            "models/npu.toml",
+            r#"
+            id = "npu"
+            backend = "b"
+            operation = "chat"
+            model = "m-npu"
+            fallback = "npu"
+            "#,
+        );
+
+        let err = load(&root).expect_err("a self-fallback must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("npu.toml"), "got: {err}");
     }
 
     #[test]
@@ -877,12 +1472,10 @@ mod tests {
         assert_eq!(backend.kind, "openai-compatible");
         assert!(backend.operations.contains_key("chat"));
 
-        let model = config
-            .models
-            .get("qwen-fast")
-            .expect("the qwen-fast model must be present");
-        assert_eq!(model.generation.temperature, Some(0.0));
-        assert_eq!(model.generation.max_tokens, Some(512));
+        // No model assertion: the project scope declares backends and
+        // commands only. Its models live in the user scope since feb76a7 —
+        // they are tied to this machine's local `optimum-cli` exports, which
+        // nothing in the repository can provide.
     }
 
     #[test]

@@ -118,6 +118,7 @@ fn check_config_loaded(load_error: Option<&crate::Error>) -> Check {
 fn check_backends_reachable(
     config: &crate::config::Config,
     probe: &dyn Fn(&str) -> Result<(), String>,
+    runner: &dyn Fn(&[String]) -> crate::Result<String>,
 ) -> Vec<Check> {
     let mut ids: Vec<&String> = config.backends.keys().collect();
     ids.sort_unstable();
@@ -126,7 +127,14 @@ fn check_backends_reachable(
         .map(|id| {
             // `id` comes from `config.backends`'s keys: the entry necessarily exists.
             let backend = &config.backends[id];
-            let status = match probe(&backend.base_url) {
+            // A `port = "auto"` URL is only complete once its container
+            // runs, so failing to resolve it is a REACHABILITY failure like
+            // the probe's own — exit 3, never 2: nothing in the files is
+            // wrong, the runtime is simply not up.
+            let status = match resolve_base_url(backend, runner)
+                .map_err(|err| err.to_string())
+                .and_then(|base_url| probe(&base_url))
+            {
                 Ok(()) => Status::Ok,
                 Err(message) => Status::Failed(message),
             };
@@ -316,11 +324,12 @@ pub fn doctor(
     load_error: Option<&crate::Error>,
     probe: &dyn Fn(&str) -> Result<(), String>,
     container_probe: &dyn Fn() -> Result<(), String>,
+    runner: &dyn Fn(&[String]) -> crate::Result<String>,
 ) -> Vec<Check> {
     let mut checks = vec![check_config_loaded(load_error)];
 
     if let Some(config) = config {
-        checks.extend(check_backends_reachable(config, probe));
+        checks.extend(check_backends_reachable(config, probe, runner));
         checks.extend(check_container_runtime(config, container_probe));
         checks.extend(check_models(config));
     }
@@ -398,8 +407,11 @@ pub fn format_models(config: &crate::config::Config) -> String {
     const NAME_HEADER: &str = "NAME";
     const BACKEND_HEADER: &str = "BACKEND";
     const OPERATION_HEADER: &str = "OPERATION";
+    // A routing key invisible here would be as good as silently ignored:
+    // `npu models` is how one sees where a command actually goes.
+    const FALLBACK_HEADER: &str = "FALLBACK";
 
-    let mut rows: Vec<(&str, &str, &str)> = config
+    let mut rows: Vec<(&str, &str, &str, &str)> = config
         .models
         .values()
         .map(|model| {
@@ -407,31 +419,40 @@ pub fn format_models(config: &crate::config::Config) -> String {
                 model.id.as_str(),
                 model.backend.as_str(),
                 model.operation.as_str(),
+                model.fallback.as_deref().unwrap_or("-"),
             )
         })
         .collect();
-    rows.sort_unstable_by_key(|&(name, _backend, _operation)| name);
+    rows.sort_unstable_by_key(|&(name, ..)| name);
 
     let name_width = rows
         .iter()
-        .map(|&(name, _backend, _operation)| name.len())
+        .map(|&(name, ..)| name.len())
         .max()
         .unwrap_or(0)
         .max(NAME_HEADER.len());
     let backend_width = rows
         .iter()
-        .map(|&(_name, backend, _operation)| backend.len())
+        .map(|&(_name, backend, ..)| backend.len())
         .max()
         .unwrap_or(0)
         .max(BACKEND_HEADER.len());
+    let operation_width = rows
+        .iter()
+        .map(|&(_name, _backend, operation, _fallback)| operation.len())
+        .max()
+        .unwrap_or(0)
+        .max(OPERATION_HEADER.len());
 
     let mut lines = Vec::with_capacity(rows.len() + 1);
     lines.push(format!(
-        "{NAME_HEADER:<name_width$}  {BACKEND_HEADER:<backend_width$}  {OPERATION_HEADER}"
+        "{NAME_HEADER:<name_width$}  {BACKEND_HEADER:<backend_width$}  \
+         {OPERATION_HEADER:<operation_width$}  {FALLBACK_HEADER}"
     ));
-    for (name, backend, operation) in rows {
+    for (name, backend, operation, fallback) in rows {
         lines.push(format!(
-            "{name:<name_width$}  {backend:<backend_width$}  {operation}"
+            "{name:<name_width$}  {backend:<backend_width$}  \
+             {operation:<operation_width$}  {fallback}"
         ));
     }
 
@@ -677,6 +698,98 @@ const CONTAINER_RUNTIME: &str = "docker";
 /// port.
 const CONTAINER_NAME_PREFIX: &str = "npu-";
 
+/// Completes `backend`'s `base_url` when its port was allocated by Docker.
+///
+/// A `port = "auto"` backend leaves `{{ backend.port }}` in its `base_url`
+/// at load time — the value does not exist until a container is running.
+/// This asks Docker what it published, which is the only source that can
+/// answer the same thing in `npu serve`'s process and in the unrelated
+/// process that runs a command minutes later.
+///
+/// A fixed port needs none of this and never runs `runner`: Docker stays an
+/// optional prerequisite for every backend that does not opt into `"auto"`.
+///
+/// # Errors
+///
+/// `Error::Backend` when the port cannot be read — the container is not
+/// started, publishes nothing, or Docker itself is unusable. All three mean
+/// "the runtime is not up", which is exit code `3`, never `2`: the
+/// configuration is fine.
+pub fn resolve_base_url(
+    backend: &crate::config::Backend,
+    runner: &dyn Fn(&[String]) -> crate::Result<String>,
+) -> crate::Result<String> {
+    if !backend.uses_auto_port() {
+        return Ok(backend.base_url.clone());
+    }
+
+    let container = format!("{CONTAINER_NAME_PREFIX}{}", backend.id);
+    let output = runner(&["port".to_string(), container.clone()]).unwrap_or_default();
+
+    let port = published_port(&output).ok_or_else(|| {
+        crate::Error::Backend(format!(
+            "backend \"{}\" (port = \"auto\"): no published port readable for container \
+             \"{container}\" — it is not running, publishes nothing, or the container runtime \
+             is unavailable",
+            backend.id
+        ))
+    })?;
+
+    Ok(crate::config::substitute_port(&backend.base_url, port).0)
+}
+
+/// Parses `docker port <container>`, whose lines read
+/// `8000/tcp -> 0.0.0.0:23451` — one per address family, so the same host
+/// port appears twice.
+///
+/// `None` when nothing is published, when a line cannot be read, or when
+/// SEVERAL distinct host ports are: `npu` would have to guess which one
+/// serves the API, and guessing wrong means talking to the wrong port with
+/// no error.
+fn published_port(output: &str) -> Option<u16> {
+    let mut found: Option<u16> = None;
+
+    for line in output.lines().filter(|line| !line.trim().is_empty()) {
+        let host_side = line.split_once("->")?.1;
+        let port: u16 = host_side.rsplit_once(':')?.1.trim().parse().ok()?;
+        match found {
+            Some(existing) if existing != port => return None,
+            _ => found = Some(port),
+        }
+    }
+
+    found
+}
+
+/// Does a container named `container` already exist, running or not?
+///
+/// A runtime that cannot be asked answers `false`: this only exists to give
+/// a better message than the one `docker run` would produce on its own, and
+/// a probe that turned an unavailable Docker into a refusal to serve would
+/// be worse than the message it replaces.
+fn container_exists(container: &str, runner: &dyn Fn(&[String]) -> crate::Result<String>) -> bool {
+    runner(&[
+        "ps".to_string(),
+        "--all".to_string(),
+        "--filter".to_string(),
+        // Same escaping as `status`: Docker matches this filter as a REGEX
+        // and `.` is legal in a backend identifier.
+        format!("name=^{}$", container.replace('.', "\\.")),
+        "--format".to_string(),
+        "{{.Names}}".to_string(),
+    ])
+    .is_ok_and(|output| !output.trim().is_empty())
+}
+
+/// Is `port` free to bind on the loopback interface?
+///
+/// ponytail: binds and drops rather than consulting the OS's socket table —
+/// binding IS the question being asked, and it needs no dependency and no
+/// injection, so `serve`'s tests exercise it without Docker.
+fn port_is_free(port: u16) -> bool {
+    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
 /// Builds the full `docker run` argument list for `model` on `backend`.
 ///
 /// `-d` (detached) is imposed by this CLI rather than left to the
@@ -751,6 +864,35 @@ pub fn serve(
             backend.id
         )));
     };
+
+    // Asked BEFORE the port, because the two failures look identical from
+    // the outside and only one of them is about the port: a backend already
+    // served holds its own port, and telling its user to edit a `port` key
+    // that is perfectly correct sends them to fix a file that is not broken.
+    let container = format!("{CONTAINER_NAME_PREFIX}{}", backend.id);
+    if container_exists(&container, runner) {
+        return Err(crate::Error::Backend(format!(
+            "backend \"{}\" is already served by container \"{container}\" — `npu status` to \
+             see it, `npu stop {model_id}` to remove it",
+            backend.id
+        )));
+    }
+
+    // A fixed port already taken is reported HERE rather than left to
+    // `docker run`: Docker's own message names the port but neither the
+    // backend asking for it nor the key to change. `port = "auto"` skips the
+    // check by construction — Docker allocates a free port, so there is
+    // nothing to collide with.
+    if let Some(crate::config::Port::Fixed(port)) = &backend.port
+        && !port_is_free(*port)
+    {
+        return Err(crate::Error::Backend(format!(
+            "backend \"{}\": port {port} is already in use by something else — change its \
+             \"port\" key, stop what is listening on it, or use port = \"auto\" to let Docker \
+             allocate one",
+            backend.id
+        )));
+    }
 
     let args = docker_run_args(backend, docker, model, env)?;
     runner(&args)
@@ -846,6 +988,10 @@ pub fn logs(
 struct RuntimeStatus {
     backend: String,
     container: String,
+    /// The backend's resolved `base_url`. Reported because `port = "auto"`
+    /// derives a number nothing else in the CLI shows: a value the user
+    /// cannot read is only half a feature.
+    url: String,
     state: String,
 }
 
@@ -853,6 +999,10 @@ struct RuntimeStatus {
 /// Not an error: "not started" is a legitimate state of a lifecycle, and a
 /// report that failed on it could never describe a stopped runtime.
 const NOT_STARTED: &str = "not started";
+
+/// What [`status`] shows in the URL column when a `port = "auto"` backend's
+/// port cannot be read back — the container is not running yet.
+const UNKNOWN_URL: &str = "-";
 
 /// `npu status`: for every backend declaring `[docker]`, is its container
 /// running?
@@ -906,9 +1056,16 @@ pub fn status(
                 Ok(output) => output.trim().to_string(),
                 Err(err) => err.to_string(),
             };
+            // A report that dies on its first unreadable line is not a
+            // report: an unresolvable URL (container down, Docker absent)
+            // becomes a dash, exactly like an absent FALLBACK in `models`.
+            let url = resolve_base_url(&config.backends[id], runner)
+                .unwrap_or_else(|_| UNKNOWN_URL.to_string());
+
             RuntimeStatus {
                 backend: id.clone(),
                 container,
+                url,
                 state,
             }
         })
@@ -924,6 +1081,7 @@ pub fn status(
 fn format_status(rows: &[RuntimeStatus]) -> String {
     const BACKEND_HEADER: &str = "BACKEND";
     const CONTAINER_HEADER: &str = "CONTAINER";
+    const URL_HEADER: &str = "URL";
     const STATE_HEADER: &str = "STATE";
 
     let backend_width = rows
@@ -938,15 +1096,22 @@ fn format_status(rows: &[RuntimeStatus]) -> String {
         .max()
         .unwrap_or(0)
         .max(CONTAINER_HEADER.len());
+    let url_width = rows
+        .iter()
+        .map(|row| row.url.len())
+        .max()
+        .unwrap_or(0)
+        .max(URL_HEADER.len());
 
     let mut lines = Vec::with_capacity(rows.len() + 1);
     lines.push(format!(
-        "{BACKEND_HEADER:<backend_width$}  {CONTAINER_HEADER:<container_width$}  {STATE_HEADER}"
+        "{BACKEND_HEADER:<backend_width$}  {CONTAINER_HEADER:<container_width$}  \
+         {URL_HEADER:<url_width$}  {STATE_HEADER}"
     ));
     for row in rows {
         lines.push(format!(
-            "{:<backend_width$}  {:<container_width$}  {}",
-            row.backend, row.container, row.state
+            "{:<backend_width$}  {:<container_width$}  {:<url_width$}  {}",
+            row.backend, row.container, row.url, row.state
         ));
     }
 
@@ -1070,6 +1235,7 @@ pub fn docker_probe() -> Result<(), String> {
 
 #[cfg(test)]
 #[allow(clippy::expect_used)] // allowed in tests (cf. Cargo.toml [lints.clippy]).
+#[allow(clippy::panic)] // a stub that must never be called says so by panicking.
 mod tests {
     use super::*;
 
@@ -1090,6 +1256,7 @@ mod tests {
                     )
                 })
                 .collect(),
+            port: None,
             docker: None,
             timeouts: None,
         }
@@ -1113,12 +1280,150 @@ mod tests {
         backend
     }
 
+    /// A backend declaring `port = "auto"`: its `base_url` keeps the
+    /// placeholder until Docker is asked what it published.
+    fn auto_port_backend(id: &str) -> crate::config::Backend {
+        let mut backend = backend(id, "http://127.0.0.1:{{ backend.port }}", &["chat"]);
+        backend.port = Some(crate::config::Port::Keyword("auto".to_string()));
+        backend.docker = Some(crate::config::Docker {
+            image: "img".to_string(),
+            options: vec!["-p".to_string(), "0:8000".to_string()],
+            args: vec![],
+        });
+        backend
+    }
+
+    #[test]
+    fn published_port_reads_both_address_families_as_one_port() {
+        assert_eq!(
+            published_port("8000/tcp -> 0.0.0.0:23451\n8000/tcp -> [::]:23451\n"),
+            Some(23451)
+        );
+    }
+
+    /// Two distinct published ports would force `npu` to guess which one
+    /// serves the API, and guessing wrong talks to the wrong port silently.
+    #[test]
+    fn published_port_refuses_an_ambiguous_mapping() {
+        assert_eq!(
+            published_port("8000/tcp -> 0.0.0.0:23451\n9000/tcp -> 0.0.0.0:23452\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn published_port_on_nothing_published_or_unreadable_output() {
+        assert_eq!(published_port(""), None);
+        assert_eq!(
+            published_port("no public port '8000' published for npu-x"),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_base_url_completes_an_auto_port_from_docker() {
+        let backend = auto_port_backend("gpu");
+        let runner = |args: &[String]| {
+            assert_eq!(args, ["port".to_string(), "npu-gpu".to_string()]);
+            Ok("8000/tcp -> 0.0.0.0:23451\n8000/tcp -> [::]:23451\n".to_string())
+        };
+
+        let url = resolve_base_url(&backend, &runner).expect("the published port must resolve");
+
+        assert_eq!(url, "http://127.0.0.1:23451");
+    }
+
+    /// Exit code `3`, never `2`: a container that is not started is
+    /// something to START, not a file to fix.
+    #[test]
+    fn resolve_base_url_on_a_stopped_container_is_a_backend_error_naming_it() {
+        let backend = auto_port_backend("gpu");
+        let runner = |_args: &[String]| Err(crate::Error::Backend("no such container".to_string()));
+
+        let err = resolve_base_url(&backend, &runner).expect_err("a stopped container must fail");
+
+        assert_eq!(err.exit_code(), 3);
+        assert!(err.to_string().contains("gpu"), "got: {err}");
+    }
+
+    /// The invariant that keeps Docker OPTIONAL: a backend with a fixed port
+    /// must never consult it.
+    #[test]
+    fn resolve_base_url_never_runs_docker_for_a_fixed_port() {
+        let backend = backend("ovms", "http://127.0.0.1:8000", &["chat"]);
+
+        let url = resolve_base_url(&backend, &unused_runner).expect("a fixed port resolves");
+
+        assert_eq!(url, "http://127.0.0.1:8000");
+    }
+
+    /// The most common way anyone hits `serve` twice. Diagnosing it as a
+    /// port conflict would send the user to edit a `port` key that is
+    /// perfectly correct, so the container is checked FIRST.
+    #[test]
+    fn serve_on_an_already_served_backend_points_at_the_container_not_the_port() {
+        let config = containerized_config();
+
+        let err = serve(&config, "qwen", &test_env, &|args: &[String]| {
+            assert_eq!(args.first().map(String::as_str), Some("ps"));
+            Ok("npu-ovms\n".to_string())
+        })
+        .expect_err("an already-served backend must fail");
+
+        assert_eq!(err.exit_code(), 3);
+        let message = err.to_string();
+        assert!(message.contains("npu-ovms"), "got: {message}");
+        assert!(message.contains("qwen"), "got: {message}");
+    }
+
+    #[test]
+    fn serve_reports_a_fixed_port_already_in_use_naming_the_backend() {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("binding the occupying listener");
+        let port = listener.local_addr().expect("local address").port();
+
+        let mut config = crate::config::Config::default();
+        let mut backend = backend("ovms", &format!("http://127.0.0.1:{port}"), &["chat"]);
+        backend.port = Some(crate::config::Port::Fixed(port));
+        backend.docker = Some(crate::config::Docker {
+            image: "img".to_string(),
+            options: vec![],
+            args: vec![],
+        });
+        config.backends.insert("ovms".to_string(), backend);
+        config
+            .models
+            .insert("m".to_string(), model("m", "ovms", "chat"));
+
+        let err = serve(&config, "m", &|_| None, &|args: &[String]| {
+            assert_eq!(
+                args.first().map(String::as_str),
+                Some("ps"),
+                "only the container probe may run when the port is already taken"
+            );
+            Ok(String::new())
+        })
+        .expect_err("an occupied fixed port must fail");
+
+        assert_eq!(err.exit_code(), 3);
+        let message = err.to_string();
+        assert!(message.contains("ovms"), "got: {message}");
+        assert!(message.contains(&port.to_string()), "got: {message}");
+    }
+
+    /// A runner no `doctor` test needs: every fixture uses a fixed port, so
+    /// `resolve_base_url` returns before touching it. Calling it is the bug.
+    fn unused_runner(_args: &[String]) -> crate::Result<String> {
+        panic!("a fixed-port backend must never ask Docker for its port")
+    }
+
     fn model(id: &str, backend: &str, operation: &str) -> crate::config::Model {
         crate::config::Model {
             id: id.to_string(),
             backend: backend.to_string(),
             operation: operation.to_string(),
             model: format!("{id}-underlying"),
+            fallback: None,
             generation: crate::config::Generation::default(),
         }
     }
@@ -1181,6 +1486,7 @@ mod tests {
             None,
             &always_ok,
             &container_ok,
+            &unused_runner,
         );
 
         assert!(
@@ -1196,7 +1502,14 @@ mod tests {
     fn doctor_load_error_fails_configuration_check_only_and_exit_code_is_two() {
         let err = crate::Error::Config("broken command file".to_string());
 
-        let checks = doctor(None, None, Some(&err), &always_ok, &container_ok);
+        let checks = doctor(
+            None,
+            None,
+            Some(&err),
+            &always_ok,
+            &container_ok,
+            &unused_runner,
+        );
 
         assert_eq!(
             checks.len(),
@@ -1216,7 +1529,14 @@ mod tests {
             .models
             .insert("gpt".to_string(), model("gpt", "does-not-exist", "chat"));
 
-        let checks = doctor(Some(&config), Some(&[]), None, &always_ok, &container_ok);
+        let checks = doctor(
+            Some(&config),
+            Some(&[]),
+            None,
+            &always_ok,
+            &container_ok,
+            &unused_runner,
+        );
 
         let model_check = checks
             .iter()
@@ -1238,7 +1558,14 @@ mod tests {
             model("whisper", "ovms", "audio_transcriptions"),
         );
 
-        let checks = doctor(Some(&config), Some(&[]), None, &always_ok, &container_ok);
+        let checks = doctor(
+            Some(&config),
+            Some(&[]),
+            None,
+            &always_ok,
+            &container_ok,
+            &unused_runner,
+        );
 
         let model_check = checks
             .iter()
@@ -1264,6 +1591,7 @@ mod tests {
             None,
             &always_ok,
             &container_ok,
+            &unused_runner,
         );
 
         let command_check = checks
@@ -1294,6 +1622,7 @@ mod tests {
             None,
             &always_ok,
             &container_ok,
+            &unused_runner,
         );
 
         let schema_check = checks
@@ -1314,6 +1643,7 @@ mod tests {
             None,
             &always_ok,
             &container_ok,
+            &unused_runner,
         );
 
         assert!(
@@ -1332,7 +1662,14 @@ mod tests {
             backend("ovms", "http://127.0.0.1:8000", &["chat"]),
         );
 
-        let checks = doctor(Some(&config), Some(&[]), None, &always_fails, &container_ok);
+        let checks = doctor(
+            Some(&config),
+            Some(&[]),
+            None,
+            &always_fails,
+            &container_ok,
+            &unused_runner,
+        );
 
         assert_eq!(doctor_exit_code(&checks), 3);
     }
@@ -1367,7 +1704,14 @@ mod tests {
         );
 
         // (b) also fails: the probe fails for every backend queried.
-        let checks = doctor(Some(&config), Some(&[]), None, &always_fails, &container_ok);
+        let checks = doctor(
+            Some(&config),
+            Some(&[]),
+            None,
+            &always_fails,
+            &container_ok,
+            &unused_runner,
+        );
 
         let reachability_failed = checks
             .iter()
@@ -1466,7 +1810,7 @@ mod tests {
 
         let out = format_models(&config);
 
-        assert_eq!(out, "NAME  BACKEND  OPERATION");
+        assert_eq!(out, "NAME  BACKEND  OPERATION  FALLBACK");
     }
 
     // -- describe --------------------------------------------------------------
@@ -1677,6 +2021,13 @@ mod tests {
         captured: &std::cell::RefCell<Vec<String>>,
     ) -> impl Fn(&[String]) -> crate::Result<String> + '_ {
         move |args: &[String]| {
+            // `serve` asks "does this container already exist?" before
+            // starting anything; answering with a container name would make
+            // every fixture look already-served. Empty means absent, and the
+            // probe is not what these tests capture.
+            if args.first().is_some_and(|verb| verb == "ps") {
+                return Ok(String::new());
+            }
             captured.replace(args.to_vec());
             Ok("3f2a9c1b8e40".to_string())
         }
@@ -1808,7 +2159,14 @@ mod tests {
             backend("plain", "http://127.0.0.1:8000", &["chat"]),
         );
 
-        let checks = doctor(Some(&config), Some(&[]), None, &always_ok, &container_fails);
+        let checks = doctor(
+            Some(&config),
+            Some(&[]),
+            None,
+            &always_ok,
+            &container_fails,
+            &unused_runner,
+        );
 
         assert!(
             checks
@@ -1823,7 +2181,14 @@ mod tests {
     fn doctor_container_runtime_failure_is_reachability_and_yields_exit_code_three() {
         let config = containerized_config();
 
-        let checks = doctor(Some(&config), Some(&[]), None, &always_ok, &container_fails);
+        let checks = doctor(
+            Some(&config),
+            Some(&[]),
+            None,
+            &always_ok,
+            &container_fails,
+            &unused_runner,
+        );
 
         let failed: Vec<&Check> = checks
             .iter()
@@ -1838,7 +2203,14 @@ mod tests {
     fn doctor_container_runtime_available_passes_when_a_backend_declares_docker() {
         let config = containerized_config();
 
-        let checks = doctor(Some(&config), Some(&[]), None, &always_ok, &container_ok);
+        let checks = doctor(
+            Some(&config),
+            Some(&[]),
+            None,
+            &always_ok,
+            &container_ok,
+            &unused_runner,
+        );
 
         assert!(
             checks

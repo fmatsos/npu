@@ -27,7 +27,7 @@ back to generated notes when the section is missing). Nothing is released by
 hand: a local `gh release create` would skip the gate and publish binaries
 built on someone's machine.
 
-The `release` skill (`skills/release/SKILL.md`) owns the part that needs
+The `release` skill (`.claude/skills/release/SKILL.md`) owns the part that needs
 judgement — version from the Conventional Commits since the last tag
 (pre-1.0: a breaking change bumps the MINOR), the `CHANGELOG.md` section in
 Keep a Changelog form, one bullet per change linking to its commit by full

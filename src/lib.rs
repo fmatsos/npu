@@ -283,6 +283,69 @@ fn collect_arg_values(
         .collect()
 }
 
+/// Calls `model`, and on an `Error::Backend` retries ONCE against its
+/// declared `fallback`.
+///
+/// Only `Error::Backend` triggers the retry: an `Error::Config` means the
+/// configuration is wrong and retrying elsewhere would hide it, and no other
+/// variant can come out of `backend::chat`. The retry is deliberately blind
+/// to the REASON of the backend failure — a `400 Input length exceeds the
+/// maximum allowed length` from an NPU graph and an unreachable container are
+/// indistinguishable in `Error::Backend`, so the primary's failure is logged
+/// at `warn` rather than swallowed: a container that has been down all day
+/// must not look like a healthy fallback.
+///
+/// Single hop by construction: the fallback is called through
+/// `backend::chat` directly, never through this function, so no chain and no
+/// cycle is possible.
+fn chat_with_fallback(
+    config: &config::Config,
+    model: &config::Model,
+    backend: &config::Backend,
+    prompt: &str,
+    logger: log::Logger,
+) -> Result<String> {
+    // Resolving the URL is part of reaching the backend, not a step before
+    // it: a `port = "auto"` backend whose container is down fails here, and
+    // that is exactly a case the fallback exists to absorb. Resolving
+    // outside this `and_then` would make a stopped NPU container bypass the
+    // GPU it was supposed to fall back to.
+    let call = |backend: &config::Backend, model: &config::Model| {
+        builtin::resolve_base_url(backend, &builtin::docker_runner)
+            .and_then(|base_url| backend::chat(backend, model, &base_url, prompt, logger))
+    };
+
+    let primary = match call(backend, model) {
+        Ok(output) => return Ok(output),
+        Err(Error::Backend(message)) => message,
+        Err(other) => return Err(other),
+    };
+
+    let Some(fallback_id) = model.fallback.as_deref() else {
+        return Err(Error::Backend(primary));
+    };
+
+    logger.warn(&format!(
+        "model \"{}\" failed ({primary}); falling back to model \"{fallback_id}\"",
+        model.id
+    ));
+
+    // `load_scopes` has already checked that this identifier names a loaded
+    // model; `resolve` can still fail on ITS backend, and that is a
+    // configuration error which must keep its own exit code rather than be
+    // reported as a backend failure.
+    let (fallback_model, fallback_backend) = config.resolve(fallback_id)?;
+
+    call(fallback_backend, fallback_model).map_err(|err| match err {
+        Error::Backend(second) => Error::Backend(format!(
+            "model \"{}\" failed ({primary}), and its fallback \"{fallback_id}\" failed too: \
+             {second}",
+            model.id
+        )),
+        other => other,
+    })
+}
+
 /// Executes the pipeline of an already-resolved BUSINESS command (`spec`),
 /// with the loaded configuration (`config`, necessarily `Ok` at this point:
 /// `run` has propagated any load error before reaching this function) and
@@ -376,7 +439,7 @@ fn execute_business_command(
     // doc). No reformulation or retry here: an invalid output is an
     // execution failure, not something to recover from (§15, out of scope
     // for this phase).
-    let raw_output = backend::chat(backend, model, &prompt, logger)?;
+    let raw_output = chat_with_fallback(config, model, backend, &prompt, logger)?;
     let output = output::finalize(&spec.output, &raw_output, &spec.file)?;
     logger.info(&format!(
         "output contract honoured ({}): {} characters written to stdout",
@@ -489,6 +552,7 @@ pub fn run() -> Result<i32> {
             load_error_ref,
             &builtin::tcp_probe,
             &builtin::docker_probe,
+            &builtin::docker_runner,
         );
         println!("{}", builtin::format_doctor(&checks));
         return Ok(builtin::doctor_exit_code(&checks));
@@ -596,6 +660,189 @@ pub fn run() -> Result<i32> {
 mod tests {
     use super::*;
     use command::{CommandSpec, InputMode};
+
+    /// Serves ONE chat completion with the given status and body, then
+    /// closes. Same technique as `backend.rs`'s end-to-end test: no HTTP
+    /// dependency, just `std::net`.
+    fn stub_backend(
+        status_line: &str,
+        body: &'static str,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind of the stub");
+        let addr = listener.local_addr().expect("local address of the stub");
+        let status_line = status_line.to_string();
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accepting the connection");
+            let mut reader = BufReader::new(stream.try_clone().expect("cloning the TCP stream"));
+            let mut content_length = 0usize;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("reading a header line");
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    content_length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut drained = vec![0u8; content_length];
+            reader.read_exact(&mut drained).expect("reading the body");
+
+            let response = format!(
+                "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: \
+                 {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("writing the stub response");
+        });
+
+        (format!("http://{addr}"), handle)
+    }
+
+    fn backend_at(id: &str, base_url: String) -> config::Backend {
+        config::Backend {
+            id: id.to_string(),
+            base_url,
+            kind: "openai-compatible".to_string(),
+            operations: [(
+                "chat".to_string(),
+                config::Operation {
+                    method: "POST".to_string(),
+                    path: "/v1/chat/completions".to_string(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            port: None,
+            docker: None,
+            timeouts: None,
+        }
+    }
+
+    fn model_on(id: &str, backend: &str, fallback: Option<&str>) -> config::Model {
+        config::Model {
+            id: id.to_string(),
+            backend: backend.to_string(),
+            operation: "chat".to_string(),
+            model: format!("{id}-underlying"),
+            fallback: fallback.map(ToString::to_string),
+            generation: config::Generation::default(),
+        }
+    }
+
+    /// The reason this feature exists: an NPU graph rejecting an over-long
+    /// prompt with a clean 400 must be recovered from on the fallback model,
+    /// not surfaced as a failure.
+    #[test]
+    fn chat_with_fallback_retries_on_a_backend_failure_and_returns_the_fallback_answer() {
+        let (primary_url, primary_server) = stub_backend(
+            "400 Bad Request",
+            r#"{"error":"Input length exceeds the maximum allowed length"}"#,
+        );
+        let (fallback_url, fallback_server) = stub_backend(
+            "200 OK",
+            r#"{"choices":[{"message":{"role":"assistant","content":"from the fallback"}}]}"#,
+        );
+
+        let mut config = config::Config::default();
+        config
+            .backends
+            .insert("npu".to_string(), backend_at("npu", primary_url));
+        config
+            .backends
+            .insert("gpu".to_string(), backend_at("gpu", fallback_url));
+        config
+            .models
+            .insert("small".to_string(), model_on("small", "npu", Some("big")));
+        config
+            .models
+            .insert("big".to_string(), model_on("big", "gpu", None));
+
+        let (model, backend) = config.resolve("small").expect("the fixture must resolve");
+        let output = chat_with_fallback(
+            &config,
+            model,
+            backend,
+            "hello",
+            log::Logger::new(log::Level::Error),
+        )
+        .expect("the fallback must answer");
+
+        assert_eq!(output, "from the fallback");
+        primary_server.join().expect("primary stub thread");
+        fallback_server.join().expect("fallback stub thread");
+    }
+
+    #[test]
+    fn chat_with_fallback_failing_on_both_names_both_models() {
+        let (primary_url, primary_server) =
+            stub_backend("400 Bad Request", r#"{"error":"too long"}"#);
+        let (fallback_url, fallback_server) =
+            stub_backend("500 Server Error", r#"{"error":"boom"}"#);
+
+        let mut config = config::Config::default();
+        config
+            .backends
+            .insert("npu".to_string(), backend_at("npu", primary_url));
+        config
+            .backends
+            .insert("gpu".to_string(), backend_at("gpu", fallback_url));
+        config
+            .models
+            .insert("small".to_string(), model_on("small", "npu", Some("big")));
+        config
+            .models
+            .insert("big".to_string(), model_on("big", "gpu", None));
+
+        let (model, backend) = config.resolve("small").expect("the fixture must resolve");
+        let err = chat_with_fallback(
+            &config,
+            model,
+            backend,
+            "hello",
+            log::Logger::new(log::Level::Error),
+        )
+        .expect_err("both backends failing must fail");
+
+        assert!(matches!(err, Error::Backend(_)));
+        let message = err.to_string();
+        assert!(message.contains("small"), "got: {message}");
+        assert!(message.contains("big"), "got: {message}");
+        primary_server.join().expect("primary stub thread");
+        fallback_server.join().expect("fallback stub thread");
+    }
+
+    #[test]
+    fn chat_without_fallback_surfaces_the_primary_failure_unchanged() {
+        let (primary_url, primary_server) =
+            stub_backend("400 Bad Request", r#"{"error":"too long"}"#);
+
+        let mut config = config::Config::default();
+        config
+            .backends
+            .insert("npu".to_string(), backend_at("npu", primary_url));
+        config
+            .models
+            .insert("small".to_string(), model_on("small", "npu", None));
+
+        let (model, backend) = config.resolve("small").expect("the fixture must resolve");
+        let err = chat_with_fallback(
+            &config,
+            model,
+            backend,
+            "hello",
+            log::Logger::new(log::Level::Error),
+        )
+        .expect_err("a backend failure without fallback must stay a failure");
+
+        assert_eq!(err.exit_code(), 3);
+        primary_server.join().expect("primary stub thread");
+    }
 
     fn spec(path: &[&str], input: InputMode) -> CommandSpec {
         spec_with_args(path, input, std::collections::BTreeMap::new())

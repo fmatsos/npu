@@ -1,0 +1,49 @@
+# Second OVMS instance, on the integrated GPU, running ALONGSIDE `ovms`.
+#
+# Two backends rather than one with a device switch: `npu` names its
+# container `npu-<backend-id>`, so one backend can hold exactly one running
+# container — and OVMS itself reads the target device from the served
+# export's `graph.pbtxt`, which is baked in at `--configure` time, not per
+# request. Two devices therefore means two containers, two ports and two
+# backend files, which is also what makes several small models run in
+# parallel: one backend each.
+#
+# `port = "auto"` because nothing outside npu addresses this instance:
+# Docker allocates a free port (`-p 0:8000`) and npu reads it back, so no
+# collision is possible. `npu status` prints the resolved URL; the number
+# changes on each serve. Pin one instead when something else must connect to
+# it — npu then refuses to start if it is already taken, rather than moving
+# it behind your back. Either way the value is declared
+# ONCE and read through `{{ backend.port }}` — written twice, a divergence
+# between `-p` and `base_url` shows green in `npu doctor` (its probe reaches
+# the OTHER instance) and only fails at execution with exit 3.
+id = "ovms-gpu"
+type = "openai-compatible"
+port = "auto"
+base_url = "http://127.0.0.1:{{ backend.port }}"
+
+[operations.chat]
+method = "POST"
+path = "/v3/chat/completions"
+
+# No `--device /dev/accel` here, unlike `ovms`: the GPU only needs
+# `/dev/dri` plus the render group. Same image — the `-gpu` tag carries both
+# the GPU and the NPU plugins.
+[docker]
+image = "openvino/model_server:2026.4.0-gpu"
+options = [
+    "-p", "{{ backend.port }}:8000",
+    "-v", "{{ env.HOME }}/models:/models:rw",
+    "-v", "{{ env.HOME }}/models/.ov_cache:/cache:rw",
+    "--device", "/dev/dri",
+    "--group-add", "990", "--user", "1000:1000",
+]
+args = [
+    "--model_name", "{{ args.model }}",
+    "--model_path", "/models/{{ args.model }}",
+    "--rest_port", "8000",
+    "--cache_dir", "/cache",
+]
+
+[timeouts]
+request_secs = 300

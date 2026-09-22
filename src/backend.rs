@@ -35,9 +35,16 @@ fn effective_timeout(backend: &crate::config::Backend) -> Duration {
 const ERROR_BODY_TRUNCATE_AT: usize = 500;
 
 /// Executes the `chat` operation of the given `model` against `backend`, with `prompt`.
+///
+/// `base_url` is passed in rather than read from `backend`: a
+/// `port = "auto"` backend's own `base_url` still carries
+/// `{{ backend.port }}` after loading, and only `builtin::resolve_base_url`
+/// can complete it. Taking it as a parameter makes it impossible to reach
+/// the network with an unresolved one by accident.
 pub fn chat(
     backend: &crate::config::Backend,
     model: &crate::config::Model,
+    base_url: &str,
     prompt: &str,
     logger: crate::log::Logger,
 ) -> crate::Result<String> {
@@ -50,7 +57,7 @@ pub fn chat(
         ))
     })?;
 
-    let url = join_url(&backend.base_url, &operation.path);
+    let url = join_url(base_url, &operation.path);
     let body = build_chat_request(&model.model, prompt, &model.generation);
 
     let timeout = effective_timeout(backend);
@@ -207,6 +214,7 @@ mod tests {
             base_url: "http://127.0.0.1:0".to_string(),
             kind: "openai-compatible".to_string(),
             operations: HashMap::new(),
+            port: None,
             docker: None,
             timeouts,
         }
@@ -391,6 +399,7 @@ mod tests {
             )]
             .into_iter()
             .collect(),
+            port: None,
             docker: None,
             timeouts: None,
         };
@@ -399,12 +408,14 @@ mod tests {
             backend: "stub".to_string(),
             operation: "chat".to_string(),
             model: "test-model".to_string(),
+            fallback: None,
             generation: Generation::default(),
         };
 
         let result = chat(
             &backend,
             &model,
+            &backend.base_url.clone(),
             "hello",
             crate::log::Logger::new(crate::log::Level::Error),
         )

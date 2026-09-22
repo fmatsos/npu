@@ -39,6 +39,7 @@ next reader.
 | `id` | yes | merge key across scopes, and how models refer to this backend |
 | `type` | yes | **`"openai-compatible"` is the only accepted value** |
 | `base_url` | yes | joined with an operation's `path`; a trailing `/` is handled either way |
+| `port` | no | declared once, read as `{{ backend.port }}` in `base_url` and `[docker]` |
 | `[operations.<name>]` | at least one | each needs `method` and `path` |
 | `[docker]` | no | `image`, `options`, `args` — how `npu serve` starts this backend |
 | `[timeouts]` | no | `request_secs` — overrides the default request timeout (120s) |
@@ -52,6 +53,10 @@ silently ignored:
 - `type` other than `"openai-compatible"`;
 - `method` other than `"POST"`;
 - `[timeouts].request_secs = 0`, or any key inside `[timeouts]` other than `request_secs`;
+- `port = 0`, a `port` string other than `"auto"`, a `{{ backend.port }}` with no `port` key, or a
+  `port` key no placeholder reads;
+- `port = "auto"` without a `[docker]` table, or whose `base_url` does not read
+  `{{ backend.port }}`;
 - two files in the same scope sharing an `id`;
 - inside `[docker]`: a placeholder other than `{{ args.model }}` / `{{ env.NAME }}`, and an `id`
   unusable as a container name (ASCII letters, digits, `_`, `.`, `-`, starting alphanumeric).
@@ -109,10 +114,54 @@ Templating is the prompt engine's: `{{ args.model }}` (the served model's
 `model` field, the only argument available here) and `{{ env.NAME }}`.
 `{{ input }}` is rejected — `npu serve` reads no input.
 
-For OVMS on an accelerator: image `openvino/model_server:latest-gpu`, plus
-`--device /dev/dri` and `--group-add <render gid>` in `options` for the GPU,
-or `--device /dev/accel` in `options` and `--target_device NPU` in `args` for
-the NPU.
+For OVMS on an accelerator: image `openvino/model_server:<version>-gpu` —
+there is no NPU-only image, the GPU tag carries both plugins. In `options`,
+`--device /dev/dri` and `--group-add <render gid>` for the GPU, plus
+`--device /dev/accel` for the NPU.
+
+**No `--target_device` in `args`** when serving a locally exported directory
+with `--model_name`/`--model_path`: the device is baked into that export's
+`graph.pbtxt` at `ovms --configure` time, and OVMS reads it from there. One
+export serves one device — running the same model on both means two exports
+(see **npu-export**, which builds the GPU twin as symlinks), two backends, two
+ports and two containers, since `npu` names a container `npu-<backend-id>`.
+That is also how several small models run in parallel: one backend each.
+
+## Declaring the port once: the `port` key
+
+A containerized backend spells its port twice — `-p` and `base_url` — and the two diverging is
+this file's nastiest failure: `npu doctor` stays green (its probe reaches whatever answers on the
+`base_url` port, possibly another backend) and only the real request fails, with exit `3`.
+
+```toml
+port = 8001
+base_url = "http://127.0.0.1:{{ backend.port }}"
+
+[docker]
+options = ["-p", "{{ backend.port }}:8000", "..."]
+```
+
+`{{ backend.port }}` is substituted at load time in `base_url` and every `[docker]` entry — the
+only `backend.*` placeholder there is. Both halves are enforced: the placeholder without a `port`
+is rejected, and a `port` nothing reads is rejected too.
+
+`port = "auto"` hands the allocation to Docker: `{{ backend.port }}` becomes `0` in the `[docker]`
+lists (`-p 0:8000`), the kernel picks a free port, and `npu` reads it back with `docker port`.
+Collision is impossible by construction — nothing is derived or guessed. The cost is that Docker
+becomes a prerequisite for **executing commands** on that backend, not just for its lifecycle; a
+fixed port never consults it. Two further rules, enforced at load: `"auto"` needs a `[docker]`
+table, and it needs `base_url` to read `{{ backend.port }}`.
+
+The port changes on each `npu serve`; `npu status` prints the resolved URL, and shows `-` for a
+backend that is not started.
+
+**A fixed port already in use is reported by `npu serve` itself** — exit `3`, naming the backend
+and the port, before `docker run` is reached. Never moved automatically: a fixed number is a
+decision something outside `npu` may depend on. `"auto"` is how you say it does not matter.
+
+`serve` checks whether the backend is **already served** before it looks at the port: a running
+container holds its own port, and diagnosing that as a port conflict would send the user to edit a
+correct `port` key.
 
 ## Overriding the request timeout: the `[timeouts]` table
 

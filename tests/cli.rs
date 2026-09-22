@@ -30,7 +30,7 @@ fn discovers_commit_message_fixture() {
         .find(|spec| spec.path == vec!["commit-message".to_string()])
         .expect("commit-message must be discovered");
 
-    assert_eq!(commit_message.model, "qwen-fast");
+    assert_eq!(commit_message.model, "qwen3-8b");
     assert!(matches!(commit_message.input, InputMode::Stdin));
 }
 
