@@ -26,6 +26,11 @@ const BINARY_LIMIT: u64 = 100 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
 const MANIFEST_SCHEMA_VERSION: u64 = 1;
 
+// No `deny_unknown_fields` here, unlike every configuration struct in this
+// crate: the manifest is not the user's file but our own release output, and
+// the binary reading it is the one already installed. Rejecting an unknown key
+// would mean a future release could never add one without breaking every older
+// client — `schema_version` is what guards the incompatible change.
 #[derive(Debug, Deserialize)]
 struct Manifest {
     schema_version: u64,
@@ -373,6 +378,23 @@ mod tests {
 
         assert_eq!(outcome.to_string(), "npu 0.1.0 is already up to date");
         assert_eq!(calls.into_inner(), 1);
+    }
+
+    // The forward-compatibility half of the contract the comment on `Manifest`
+    // states: a field this client has never heard of must not stop the update.
+    #[test]
+    fn a_manifest_field_the_client_does_not_know_is_ignored_not_rejected() {
+        let manifest = br#"{"schema_version":1,"version":"0.1.0","assets":{},"signature":"from a later release"}"#;
+
+        let outcome = update_with(
+            "0.1.0",
+            "irrelevant",
+            |_, _| Ok(manifest.to_vec()),
+            |_| Err(crate::Error::Update("must not replace".to_string())),
+        )
+        .expect("an unknown manifest field should not fail the update");
+
+        assert_eq!(outcome.to_string(), "npu 0.1.0 is already up to date");
     }
 
     #[test]
