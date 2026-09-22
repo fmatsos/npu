@@ -1,8 +1,0 @@
-id = "qwen-fast"
-backend = "ovms"
-operation = "chat"
-model = "OpenVINO/Qwen3-8B-int4-ov"
-
-[generation]
-temperature = 0.0
-max_tokens = 512

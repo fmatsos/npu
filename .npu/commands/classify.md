@@ -1,6 +1,6 @@
 ---
 description = "Classify an input document"
-model = "qwen-fast"
+model = "qwen3-8b"
 
 [input]
 mode = "stdin_or_file"

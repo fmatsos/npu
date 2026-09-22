@@ -1,6 +1,6 @@
 ---
 description = "Translate input text"
-model = "qwen-fast"
+model = "qwen3-8b"
 
 [args.language]
 short = "l"

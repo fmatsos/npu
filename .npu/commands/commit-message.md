@@ -1,6 +1,6 @@
 ---
 description = "Generate a conventional commit message"
-model = "qwen-fast"
+model = "qwen3-8b"
 
 [input]
 mode = "stdin"

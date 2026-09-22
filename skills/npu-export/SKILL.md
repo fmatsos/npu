@@ -8,7 +8,7 @@ when_to_use: >
 argument-hint: "[huggingface model id]"
 model: sonnet
 effort: medium
-allowed-tools: Read Write Edit Glob Grep Bash(npu:*) Bash(python3:*) Bash(pip:*) Bash(optimum-cli:*) Bash(curl:*) Bash(lspci:*) Bash(lsmod:*)
+allowed-tools: Read Write Edit Glob Grep Bash(npu:*) Bash(python3:*) Bash(pip:*) Bash(optimum-cli:*) Bash(curl:*) Bash(lspci:*) Bash(lsmod:*) Bash(chmod:*) Bash(docker:*)
 ---
 
 # Exporting a Hugging Face model for the host NPU
@@ -107,9 +107,45 @@ Coherent prose: proceed. A single token or short pattern repeating past a handfu
 `--ratio 0.8`; if that still fails, the architecture is a poor fit for this quantization regardless
 of what step 1 said, and that is worth reporting as-is rather than guessing further.
 
+## 3.5. Generate the OVMS `graph.pbtxt`
+
+A directory produced by `optimum-cli export openvino` is a bare OpenVINO IR — it has no
+`graph.pbtxt`. OVMS's `--source_model` serve path only *reads* an existing `graph.pbtxt`; unlike a
+pull from the Hub, it never generates one for a local export, and serving fails immediately with
+`Unable to open file: <path>/graph.pbtxt` (`npu serve` then reports a non-zero backend exit and
+`npu doctor` shows the backend unreachable). Generate it explicitly, once, right after step 3
+passes:
+
+```sh
+docker run --rm -v ~/models:/models:rw openvino/model_server:2026.4.0 \
+    --configure --model_path /models/<basename>-int4-ov \
+    --task text_generation --target_device <NPU|GPU|CPU>
+```
+
+Match the OVMS image tag and `--target_device` to what the backend's `[docker]` table actually
+uses (step 4 below) — a mismatched device here is harmless (the graph is just a text file, OVMS
+re-reads `--target_device` from the backend's own `args` at serve time), but a mismatched image tag
+can pull a second multi-GB image for nothing.
+
+**If this prints `Unable to open file: .../graph.pbtxt` again instead of `Graph: graph.pbtxt
+created in: ...`, it is a permissions problem, not a missing-file problem** — `--configure` is
+trying to *create* the file and can't. The image runs as a fixed non-root user (`ovms`, uid 5000)
+inside the container; the export directory is owned by the host user who ran `optimum-cli` and is
+usually not writable by anyone else:
+
+```sh
+ls -ld ~/models/<basename>-int4-ov      # confirm: no write bit for "other"
+chmod o+w ~/models/<basename>-int4-ov ~/models/.ov_cache
+```
+
+Re-run the `--configure` command above after fixing permissions. This is the same class of problem
+as the documented `Cache directory /cache is not writable` warning in
+[docs/intel-npu.md's troubleshooting table](https://github.com/fmatsos/npu/blob/main/docs/intel-npu.md#troubleshooting)
+— add a row for it there if it is still missing.
+
 ## 4. Generate the `npu` model file
 
-Only after step 3 passes. The exported directory name is the `model` field:
+Only after step 3.5 passes. The exported directory name is the `model` field:
 
 ```toml
 # ~/.config/npu/models/<id>.toml
@@ -142,14 +178,17 @@ before the next `npu serve`.
 State plainly:
 
 - the `model` value to use (`<basename>-int4-ov`) and its full path;
+- that `graph.pbtxt` was generated (step 3.5) and, if permissions had to be fixed, that they were;
 - whether a model file was written, and in which scope;
 - the next step: `npu serve <id>`, then `npu doctor` to confirm resolution, then a real request
   through the command that will use it.
 
 ## What this skill deliberately does not do
 
-- **It does not start or test the container.** `npu serve` needs a backend whose `[docker]` table
-  already targets the right device — that is configuration, not export.
+- **It does not start or test the actual serving container.** `npu serve` needs a backend whose
+  `[docker]` table already targets the right device — that is configuration, not export. Step 3.5's
+  one-off `--configure` run is preparation (it writes `graph.pbtxt` and exits), not a served
+  container, the same distinction OVMS itself draws between `--configure`/`--pull` and plain serve.
 - **It does not touch `npu`'s Rust source.** The export, the quantization choice and the generated
   TOML are all external to the binary — consistent with `npu` knowing nothing about specific
   models or hardware.

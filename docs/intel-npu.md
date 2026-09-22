@@ -217,6 +217,7 @@ default request timeout; see `[timeouts]` in
 | `curl` straight to OVMS reproduces the same garbage as through `npu` | not `npu` | the client did its job faithfully; look at the export and the OVMS logs, not `backend.rs` |
 | OVMS logs show `Available devices: CPU` | deployment | `--device`/`--group-add`/`--user` are missing or wrong; the NPU was never reached |
 | `Cache directory /cache is not writable` | deployment | the container's `--user` cannot write the bind-mounted cache directory |
+| `Unable to open file: .../graph.pbtxt` right after `npu serve` starts | deployment | a locally `optimum-cli`-exported directory has no `graph.pbtxt` — unlike a Hub pull, OVMS never generates one for a local export on its own; run `ovms --configure --model_path <dir> --task text_generation --target_device <device>` once. The same message when running `--configure` itself means it cannot *create* the file: the container runs as a fixed non-root user (`ovms`, uid 5000) and the export directory is usually only writable by the host user who ran `optimum-cli` — `chmod o+w` the export directory (and `.ov_cache`) and retry |
 | Compilation takes minutes instead of seconds | export | the export is asymmetric (`--sym` missing) or the OVMS/image version changed and invalidated the cache |
 | Fast on one machine, minutes on another for the "same" model | deployment | a floating image tag (`:latest-gpu`) resolved to a different OpenVINO version; pin the tag |
 
