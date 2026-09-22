@@ -69,9 +69,11 @@ exposing `POST /v1/chat/completions` (or an equivalent path you configure) will 
 Without a backend listening, every business command fails with exit code `3`. The built-ins
 (`doctor`, `models`, `serve`, `describe`) still work.
 
-**Docker — optional.** Only the lifecycle commands (`serve`, `stop`, `status`, `logs`) need it: a backend can declare a `[docker]` table saying
-how to start its own runtime, and those commands drive it. Nothing else in the CLI touches
-Docker, and a configuration without that table never asks for it.
+**Docker — optional.** Only the lifecycle commands (`serve`, `stop`, `status`, `logs`) need it: a
+backend can declare a `[runtime]` table with `type = "docker"` saying how to start its own
+runtime, and those commands drive it. Nothing else in the CLI touches Docker, and a configuration
+without that table never asks for it. The other family, `type = "process"`, needs no daemon at
+all — it spawns the server the backend names directly on this machine.
 
 ---
 
@@ -123,8 +125,11 @@ cargo install --path .
 > Unix conventions: the system scope is the hard-coded path `/etc/npu`, and the user scope is read
 > from `$HOME`, never from `%USERPROFILE%`. In practice this means only the project-local `.\.npu`
 > scope works out of the box. To get a user-level scope, set `HOME` (or `XDG_CONFIG_HOME`)
-> explicitly in your environment. Everything else — command discovery, arguments, templating,
-> structured output, the built-ins — is platform-independent.
+> explicitly in your environment. The runtime lifecycle is split: `type = "docker"` works (Docker
+> Desktop is its prerequisite, not `npu`'s code), while a backend declaring `type = "process"` is
+> rejected at load time naming the file — that family needs a `$XDG_STATE_HOME`/`$HOME` state
+> directory and a `SIGTERM`, neither of which Windows has. Everything else — command discovery,
+> arguments, templating, structured output, the other built-ins — is platform-independent.
 
 ### Verify the installation
 
@@ -273,9 +278,10 @@ $ npu describe translate
 ```
 
 `npu serve`, `npu stop`, `npu status` and `npu logs` are the runtime lifecycle: start a model's
-backend, remove its container, see what is up, read what it printed. What gets started comes from
-the backend's `[runtime]` table, so switching image, ports or accelerator is a configuration
-change, not a rebuild.
+backend, end it, see what is up, read what it printed. What gets started comes from the backend's
+`[runtime]` table — a container (`type = "docker"`) or a plain local process
+(`type = "process"`) — so switching family, image, command, ports or accelerator is a
+configuration change, not a rebuild.
 
 `npu doctor` reports on configuration, backend reachability and output schemas. It runs **even
 when your configuration is invalid** — that is its whole point. See [Built-in

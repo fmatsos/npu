@@ -41,11 +41,16 @@ What it checks, in order:
 3. **The container runtime answers** — `docker info` succeeds. This check appears **only** if at
    least one backend declares a Docker runtime; Docker is an optional prerequisite, and a
    machine that never asked for a container is never penalized for not having one.
-4. **Each model** names a backend that exists and an operation that backend exposes.
-5. **Each command** names a model that exists.
-6. **Each declared output schema** exists, is readable, is valid JSON and compiles as a schema.
+4. **Each runtime command is runnable** — one check per distinct `command` declared by a
+   [process runtime](configuration.md#starting-a-backend-as-a-process), named, and again **only**
+   if at least one backend declares one. Named rather than folded into a single line for the
+   family, because unlike Docker's fixed binary this one is whatever the backend's author wrote,
+   and a report that did not name it would send its reader through every backend file.
+5. **Each model** names a backend that exists and an operation that backend exposes.
+6. **Each command** names a model that exists.
+7. **Each declared output schema** exists, is readable, is valid JSON and compiles as a schema.
 
-Step 6 is the exhaustive pass that normal execution deliberately skips: at runtime only the
+Step 7 is the exhaustive pass that normal execution deliberately skips: at runtime only the
 invoked command's schema is compiled, so that a broken schema elsewhere cannot disable the CLI.
 `doctor` is where every schema in every scope gets checked.
 
@@ -54,8 +59,8 @@ invoked command's schema is compiled, so that a broken schema elsewhere cannot d
 | Code | Meaning |
 | ---: | --- |
 | `0` | every check passed |
-| `2` | at least one **configuration** check failed (1, 4, 5, 6) |
-| `3` | **only** reachability failed (2, 3) |
+| `2` | at least one **configuration** check failed (1, 5, 6, 7) |
+| `3` | **only** reachability failed (2, 3, 4) |
 
 Configuration takes priority: an unreachable backend *and* a broken configuration gives `2`.
 The rationale is that a calling program can distinguish *fix your files* from *start your
@@ -94,19 +99,28 @@ qwen3-8b-gpu               ovms-gpu  chat       -
 
 ## `npu serve`
 
-Starts the container runtime of the backend a model points at, and prints the started container's
-identifier — its result, and the only thing it writes to stdout.
+Starts the runtime of the backend a model points at, and prints what that runtime family calls
+what it started — its result, and the only thing it writes to stdout. For a
+[Docker](configuration.md#starting-a-backend-with-docker) backend that is the container
+identifier; for a [process](configuration.md#starting-a-backend-as-a-process) one, the pid.
 
 ```console
 $ npu serve qwen-fast
 2ac5416d2aae6769b9c2674ee2e284eaab4be049fa7d02d38146852989c35e35
 ```
 
+```console
+$ npu serve qwen-fast
+1002664
+```
+
 The argument is a **model**, not a backend: a model already names exactly one backend
-(`backend = "ovms"`), so there is nothing to disambiguate, and several containerized backends
-coexist without ceremony. What gets run comes entirely from that backend's
-[`[runtime]` table](configuration.md#starting-a-backend-with-docker) — `npu` knows the shape of a
-`docker run` invocation, never which server you run.
+(`backend = "ovms"`), so there is nothing to disambiguate, and several served backends coexist
+without ceremony. What gets run comes entirely from that backend's `[runtime]` table — `npu` knows
+the shape of a `docker run` invocation, or how to spawn a child process, never which server you
+run.
+
+### The Docker family
 
 The command built is:
 
@@ -121,23 +135,54 @@ conflict instead of silently running a second container fighting for port 8000. 
 attempt exits `3`, with Docker's own `Conflict. The container name "/npu-ovms" is already in use`
 on stderr and nothing on stdout.
 
+### The process family
+
+The declared `command` is spawned directly, with the declared `arguments`, its two streams
+redirected into a log file beside the state record `npu` writes, and `[runtime.env]` layered over
+the environment `npu` itself runs in. Serving the same backend twice is refused before anything is
+spawned, naming the backend and the pid already holding it — the state record is what makes that
+possible, Docker's name registry having no equivalent here.
+
+Then, unlike the Docker family, `npu serve` **waits**: it polls the backend's `base_url` until
+something answers, the server exits, or `startup_timeout_secs` runs out. The poll is a TCP
+connection and nothing more — no byte is sent, no protocol is spoken — so a `serve` that printed a
+pid means *something accepted a connection on that address*, which a server still loading its
+model already does. Use `npu doctor` or the runtime's own readiness endpoint for anything
+stronger; teaching this engine an HTTP readiness path would bake a protocol assumption into it.
+
+Every failure after the spawn terminates the child and deletes the record, but **keeps the log** —
+the only place the server explained itself. The
+message that reaches stderr names the backend, the executable that was run, what happened — it
+exited during startup with its status, or it did not answer within its budget — and the path of
+that log. stdout stays empty, as it does on every failure path of every command here.
+
 ### Exit codes
 
 | Code | Meaning |
 | ---: | --- |
-| `0` | the container started; its identifier is on stdout |
+| `0` | the runtime started; its container identifier or pid is on stdout |
 | `2` | unknown model, or its backend declares no `[runtime]` table |
-| `3` | `docker` is missing, its daemon is down, or `docker run` failed |
+| `3` | the runtime could not be brought up |
 
-Code `3` for a failed start is the same `3` as everywhere else in this CLI — a backend problem. To
-a calling program, *the runtime could not be brought up* and *the backend is unreachable* call for
+Code `3` covers every way a start fails, whichever family: `docker` missing, its daemon down or
+`docker run` failing; and for a process, a `command` this machine does not have, a port already
+taken, a spawn the OS refused, a server that exited during startup or one that never answered
+within its budget. The port pre-check only exists for a backend that declares a `port` key: one
+spelling its number directly in `base_url` and in `arguments` has nothing for `npu` to check, and
+a port already held then surfaces as the server exiting during startup, with the reason in its
+log. It is the same `3` as everywhere else in this CLI — a backend problem. To a
+calling program, *the runtime could not be brought up* and *the backend is unreachable* call for
 the same reaction.
 
 ### What `npu serve` deliberately does not do
 
-It does not wait for the server to be ready. `docker run -d` returns as soon as the container is
-created, long before a model is loaded. Use `npu doctor`, `npu status`, or the runtime's own
-readiness endpoint, to know when it can answer.
+For a Docker backend it does not wait for the server to be ready: `docker run -d` returns as soon
+as the container is created, long before a model is loaded. Use `npu doctor`, `npu status`, or the
+runtime's own readiness endpoint, to know when it can answer. (A process backend does wait — see
+above.)
+
+It does not detach a spawned process into its own session either, so a terminal hang-up takes it
+down along with everything else in that session.
 
 The rest of the lifecycle lives in its own commands: [`npu stop`](#npu-stop),
 [`npu status`](#npu-status) and [`npu logs`](#npu-logs).
@@ -146,20 +191,37 @@ The rest of the lifecycle lives in its own commands: [`npu stop`](#npu-stop),
 
 ## `npu stop`
 
-Removes the container `npu serve` started for that model's backend, and prints its name.
+Ends what `npu serve` started for that model's backend.
 
 ```console
 $ npu stop qwen-fast
 npu-ovms
 ```
 
-It removes rather than merely stops: a stopped container still owns its name, so `npu serve`
-would then fail on a conflict and the lifecycle would be a one-way trip. Stopping a backend that
-was never started is not an error — the command prints the same name and exits `0`, so a script
-can call it without checking first.
+```console
+$ npu stop qwen-fast
+llamacpp
+```
+
+For a Docker backend it **removes** the container rather than merely stopping it, and prints its
+name: a stopped container still owns that name, so `npu serve` would then fail on a conflict and
+the lifecycle would be a one-way trip.
+
+For a process backend it prints the **backend identifier**, not the pid `serve` returned. By the
+time `stop` answers, that pid names nothing, and a command printing a pid when it killed one and
+something else when there was nothing to kill would force its caller to branch on which. The pid,
+while it exists, is [`npu status`](#npu-status)'s `INSTANCE` column. Termination escalates:
+`SIGTERM`, a bounded wait, then `SIGKILL`.
+
+Stopping a backend that was never started is not an error in either family — the command prints
+the same name and exits `0`, so a script can call it without checking first. Neither is a record
+whose process is already gone, or whose pid has since been recycled: that record is forgotten,
+never signalled, because the pid it holds may belong to anybody by now.
 
 Exit codes are `npu serve`'s: `2` for an unknown model or a backend without a `[runtime]` table,
-`3` when the runtime itself refuses.
+`3` when the runtime itself refuses — including a process that survived both signals, in which
+case the record is deliberately **kept**, since forgetting a running server would leave it
+unreachable to `npu`.
 
 ---
 
@@ -175,26 +237,47 @@ ovms      docker   npu-ovms      http://127.0.0.1:8000   Up 3 hours
 ovms-gpu  docker   npu-ovms-gpu  http://127.0.0.1:32768  Up 3 hours
 ```
 
-`RUNTIME` is the family that manages the backend — `docker` today. `INSTANCE` is what that
-family calls the thing it started: the container name for Docker.
+```console
+$ npu status
+BACKEND   RUNTIME  INSTANCE  URL                     STATE
+llamacpp  process  1002664   http://127.0.0.1:18432  running
+```
+
+`RUNTIME` is the family that manages the backend — `docker` or `process`. `INSTANCE` is what that
+family calls the thing it started: the container name for Docker, the pid for a process, `-` when
+there is nothing running.
 
 `URL` is the backend's resolved `base_url` — the only place a
 [`port = "auto"`](configuration.md#port-optional) shows up, since Docker allocates that number and
 nothing else in the CLI would reveal it. A backend whose port cannot be read back (not started,
 Docker unusable) shows `-` there: a report that died on its first unreadable line would not be a
-report.
+report. A **served process** backend shows the URL its own record holds — the address it was
+actually started on, and the one its state was decided against, so that editing `port` without
+restarting can never print a new URL beside a verdict reached on the old one.
 
-`STATE` is whatever the runtime says (`Up 3 minutes`, `Exited (0) 2 minutes ago`), or
-`not started` when no such container exists. A backend the runtime cannot even be asked about
-gets that failure as its state instead: `status` is a report, and a report that dies on its first
-unknown line is not a report. It therefore exits `0` as long as the configuration loads, and
-prints its header even when no backend is containerized.
+`STATE` is whatever the runtime says. For Docker that is Docker's own wording (`Up 3 minutes`,
+`Exited (0) 2 minutes ago`); for a process it is one of `running` (the pid is ours and something
+answers on that URL), `unreachable` (ours, but nothing answers — starting up, wedged, or listening
+elsewhere), `exited` (the pid is gone), `stale state` (the pid was recycled and now belongs to
+somebody else) or `foreign state` (a live runtime recorded by another backend file — two projects
+sharing an identifier in a machine-global state directory). Every family prints `not started` when
+nothing was started.
+
+`status` reports without repairing: a stale record is named as such and left alone, because a
+report that silently deleted what it describes could not be run twice. `serve` and `stop` are what
+clear it.
+
+A backend the runtime cannot even be asked about — a Docker daemon that will not answer, one
+unreadable state file — gets that failure as its own state and costs nothing but its own row:
+`status` is a report, and a report that dies on its first unknown line is not a report. It
+therefore exits `0` as long as the configuration loads, and prints its header even when no backend
+declares a runtime at all.
 
 ---
 
 ## `npu logs`
 
-Streams the container's logs.
+Streams what the served runtime wrote.
 
 ```console
 $ npu logs qwen-fast
@@ -204,11 +287,19 @@ $ npu logs qwen-fast
 
 `--follow` (`-f`) keeps streaming as new lines arrive, until you interrupt it.
 
-The container's two streams are passed through untouched — its stdout on `npu`'s stdout, its
-stderr on `npu`'s stderr, in the order the runtime wrote them. Capturing and reprinting them would
-reorder the interleaving, and most servers log to stderr. The logs *are* this command's result.
+For a Docker backend the container's two streams are passed through untouched — its stdout on
+`npu`'s stdout, its stderr on `npu`'s stderr, in the order the runtime wrote them. Capturing and
+reprinting them would reorder the interleaving, and most servers log to stderr.
 
-Exit codes are `npu serve`'s.
+For a process backend both streams were already redirected, at `serve` time, into a single log
+file beside the state record — interleaved there in the order the server wrote them, for the same
+reason — and this command hands that file back byte for byte. It therefore still works after the
+server has exited, which is exactly when its last lines matter; `--follow` is a read to end of
+file and then a poll, so it also works on a server that has not written anything yet. A backend
+`npu` never served has no such file: that is exit `3`, naming the backend and the path that was
+looked for, with nothing on stdout.
+
+The logs *are* this command's result. Exit codes are `npu serve`'s.
 
 ---
 
@@ -329,15 +420,15 @@ present, and adds your commands only if loading succeeded.
 
 ```console
 $ npu --help
-Usage: npu [COMMAND]
+Usage: npu [OPTIONS] [COMMAND]
 
 Commands:
   doctor    Check the runtime environment: configuration, backend reachability, declared output schemas
   models    List configured models
-  serve     Start the container runtime of the backend a model points at
-  stop      Stop and remove the container started for a model's backend
-  status    Report the state of every containerized backend
-  logs      Stream the logs of the container started for a model's backend
+  serve     Start the runtime of the backend a model points at
+  stop      Stop the runtime started for a model's backend
+  status    Report the state of every backend declaring a runtime
+  logs      Stream the logs of the runtime started for a model's backend
   describe  Describe a dynamically configured command, as JSON
   version   Print the current npu release version
   update    Download and install the latest npu release from GitHub

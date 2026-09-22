@@ -97,9 +97,9 @@ key, check the matching skill rather than guessing.
 npu doctor          # configuration, backend reachability, every declared schema
 npu models          # the models actually resolved
 npu describe <cmd>  # one command's effective definition, as JSON
-npu serve <model>   # start the backend's runtime, if it declares [docker]
-npu status          # which containerized backends are up
-npu stop <model>    # remove that runtime's container
+npu serve <model>   # start the backend's runtime, if it declares [runtime]
+npu status          # which backends declaring a runtime are up
+npu stop <model>    # end that runtime (remove the container, or signal the process)
 npu logs <model>    # what the runtime printed
 npu --help          # the command tree built from the configuration
 ```

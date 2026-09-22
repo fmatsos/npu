@@ -176,7 +176,7 @@ fn add_builtins(cli: clap::Command) -> clap::Command {
     .subcommand(clap::Command::new("models").about("List configured models"))
     .subcommand(
         clap::Command::new("serve")
-            .about("Start the container runtime of the backend a model points at")
+            .about("Start the runtime of the backend a model points at")
             .arg(
                 clap::Arg::new("MODEL")
                     .required(true)
@@ -185,7 +185,7 @@ fn add_builtins(cli: clap::Command) -> clap::Command {
     )
     .subcommand(
         clap::Command::new("stop")
-            .about("Stop and remove the container started for a model's backend")
+            .about("Stop the runtime started for a model's backend")
             .arg(
                 clap::Arg::new("MODEL")
                     .required(true)
@@ -193,11 +193,11 @@ fn add_builtins(cli: clap::Command) -> clap::Command {
             ),
     )
     .subcommand(
-        clap::Command::new("status").about("Report the state of every containerized backend"),
+        clap::Command::new("status").about("Report the state of every backend declaring a runtime"),
     )
     .subcommand(
         clap::Command::new("logs")
-            .about("Stream the logs of the container started for a model's backend")
+            .about("Stream the logs of the runtime started for a model's backend")
             .arg(
                 clap::Arg::new("MODEL")
                     .required(true)
@@ -551,9 +551,12 @@ pub fn run() -> Result<i32> {
             config_ref,
             specs_ref,
             load_error_ref,
-            &builtin::tcp_probe,
-            &runtime::docker::probe,
-            &runtime::docker::runner,
+            &builtin::Probes {
+                backend: &builtin::tcp_probe,
+                container: &runtime::docker::probe,
+                command: &runtime::process::command_probe,
+                runner: &runtime::docker::runner,
+            },
         );
         println!("{}", builtin::format_doctor(&checks));
         return Ok(builtin::doctor_exit_code(&checks));
@@ -584,6 +587,21 @@ pub fn run() -> Result<i32> {
         return Ok(0);
     }
 
+    // The outside world the lifecycle commands act through, injected in one
+    // place exactly like `probe` and `runner`: the real environment, the
+    // real state directory, the real process table, the real signals and
+    // the real TCP probe. `builtin.rs` and `runtime::process`'s tests build
+    // their own, which is why no test in this suite needs a server
+    // installed.
+    let env = |name: &str| std::env::var(name).ok();
+    let host = runtime::process::Host {
+        env: &env,
+        state: runtime::state::StateEnv::from_env(),
+        inspect: &runtime::process::inspect,
+        signal: &runtime::process::signal,
+        probe: &builtin::tcp_probe,
+    };
+
     if builtin_name == Some("serve") {
         // `MODEL` is declared `.required(true)` by `add_builtins`: clap has
         // already rejected the invocation if it is absent.
@@ -591,13 +609,14 @@ pub fn run() -> Result<i32> {
             .get_one::<String>("MODEL")
             .map(String::as_str)
             .unwrap_or_default();
-        let env = |name: &str| std::env::var(name).ok();
-        // The container identifier IS this command's result: stdout, like
-        // every other built-in's report. Docker's own output goes to stderr
-        // (cf. `runtime::docker::runner`).
+        // The started instance's identifier IS this command's result:
+        // stdout, like every other built-in's report — the container name
+        // for Docker, the pid for a process. The runtime's own output goes
+        // to stderr or to its log file (cf. `runtime::docker::runner` and
+        // `runtime::process::serve`).
         println!(
             "{}",
-            builtin::serve(&config, model_id, &env, &runtime::docker::runner)?
+            builtin::serve(&config, model_id, &env, &runtime::docker::runner, &host)?
         );
         return Ok(0);
     }
@@ -610,14 +629,17 @@ pub fn run() -> Result<i32> {
         logger.info(&format!("stopping the runtime of model \"{model_id}\""));
         println!(
             "{}",
-            builtin::stop(&config, model_id, &runtime::docker::runner)?
+            builtin::stop(&config, model_id, &runtime::docker::runner, &host)?
         );
         return Ok(0);
     }
 
     if builtin_name == Some("status") {
         // The report IS the result: stdout, like `doctor` and `models`.
-        println!("{}", builtin::status(&config, &runtime::docker::runner)?);
+        println!(
+            "{}",
+            builtin::status(&config, &runtime::docker::runner, &host)?
+        );
         return Ok(0);
     }
 
@@ -627,10 +649,18 @@ pub fn run() -> Result<i32> {
             .map(String::as_str)
             .unwrap_or_default();
         let follow = leaf_matches.get_flag("follow");
-        // Nothing is printed here: the container's own streams are the
-        // result, and `runtime::docker::streamer` lets them through
-        // untouched (cf. its doc).
-        builtin::logs(&config, model_id, follow, &runtime::docker::streamer)?;
+        // Nothing is printed here: the runtime's own output is the result.
+        // `runtime::docker::streamer` lets a container's two streams through
+        // untouched, and `runtime::process::stdout_sink` writes a spawned
+        // server's log file byte for byte (cf. their docs).
+        builtin::logs(
+            &config,
+            model_id,
+            follow,
+            &runtime::docker::streamer,
+            &host,
+            &runtime::process::stdout_sink,
+        )?;
         return Ok(0);
     }
 
@@ -723,6 +753,7 @@ mod tests {
             runtime: None,
             docker: None,
             timeouts: None,
+            source: std::path::PathBuf::new(),
         }
     }
 

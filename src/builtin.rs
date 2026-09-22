@@ -64,6 +64,39 @@ pub struct Check {
     pub status: Status,
 }
 
+/// Everything [`doctor`] consults outside this process, injected in one
+/// place.
+///
+/// Bundled rather than passed one by one for the reason the report itself
+/// exists: each family of checks reaches a different part of the outside
+/// world, and a fifth one must not reopen every signature between here and
+/// `lib.rs`. Nothing here is ever called directly by `doctor`'s tests — they
+/// hand it their own closures, which is why no test in the suite needs a
+/// network, Docker or an inference server.
+pub struct Probes<'a> {
+    /// Is a backend's `base_url` accepting connections? The real one is
+    /// [`tcp_probe`].
+    pub backend: &'a dyn Fn(&str) -> Result<(), String>,
+    /// Is the container runtime usable? The real one is
+    /// [`crate::runtime::docker::probe`].
+    pub container: &'a dyn Fn() -> Result<(), String>,
+    /// Is a process runtime's command runnable? The real one is
+    /// [`crate::runtime::process::command_probe`].
+    pub command: &'a dyn Fn(&str) -> Result<(), String>,
+    /// Runs the container runtime, for the `port = "auto"` backends whose
+    /// `base_url` can only be completed by asking it.
+    pub runner: &'a dyn Fn(&[String]) -> crate::Result<String>,
+}
+
+// `missing_debug_implementations` is a warning, and warnings are errors: a
+// struct of `&dyn Fn` cannot derive `Debug`, and the closures have nothing
+// to print.
+impl std::fmt::Debug for Probes<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Probes").finish_non_exhaustive()
+    }
+}
+
 /// The built-in names exposed by this CLI, plus `help`, reserved by
 /// `clap` itself (every `clap::Command` gets an automatic `-h`/`--help`
 /// flag). `command.rs` (`reject_reserved_path`) rejects at load time
@@ -173,6 +206,59 @@ fn check_container_runtime(
         label: "container runtime available".to_string(),
         status,
     }]
+}
+
+/// Check (g): is each command a process runtime declares actually runnable?
+///
+/// Modelled on [`check_container_runtime`], with the same two properties:
+/// no check AT ALL when no backend declares a process runtime (a machine
+/// that never asked for one must not be penalized), and
+/// `CheckKind::Reachability` so that a missing command gives exit `3` and
+/// never `2` — an absent executable is something to install, not a file to
+/// fix.
+///
+/// One check per DISTINCT command rather than one for the family: unlike
+/// Docker, whose binary is fixed, what a process runtime needs is whatever
+/// its author wrote, and a report that did not name it would send its reader
+/// looking through every backend file for the missing one. Commands are
+/// deduplicated and sorted, so the report stays deterministic and a command
+/// shared by three backends is probed once.
+fn check_runtime_commands(
+    config: &crate::config::Config,
+    command_probe: &dyn Fn(&str) -> Result<(), String>,
+) -> Vec<Check> {
+    // `config::process_of` and not a `matches!` of its own, for the same
+    // reason as above: the family test is exhaustive, so a new family makes
+    // this site fail to compile instead of silently skipping it.
+    let mut commands: Vec<&str> = config
+        .backends
+        .values()
+        .filter_map(|backend| {
+            crate::config::process_of(backend).map(|process| process.command.as_str())
+        })
+        // A `command` carrying a placeholder is only known once `npu serve`
+        // renders it against a model, and `doctor` has no model: reporting
+        // the template itself as a missing executable would turn a valid
+        // configuration red and tell its operator to install a binary named
+        // `{{ env.LLAMA_BIN }}`. A check that cannot be performed is not
+        // emitted; nothing is silently passed, since `serve` still resolves
+        // it and fails naming the rendered value.
+        .filter(|command| crate::prompt::placeholders(command).is_ok_and(|found| found.is_empty()))
+        .collect();
+    commands.sort_unstable();
+    commands.dedup();
+
+    commands
+        .into_iter()
+        .map(|command| Check {
+            kind: CheckKind::Reachability,
+            label: format!("runtime command \"{command}\" available"),
+            status: match command_probe(command) {
+                Ok(()) => Status::Ok,
+                Err(message) => Status::Failed(message),
+            },
+        })
+        .collect()
 }
 
 /// Check (c): for each configured model, does its backend exist,
@@ -314,15 +400,18 @@ pub fn doctor(
     config: Option<&crate::config::Config>,
     commands: Option<&[crate::command::CommandSpec]>,
     load_error: Option<&crate::Error>,
-    probe: &dyn Fn(&str) -> Result<(), String>,
-    container_probe: &dyn Fn() -> Result<(), String>,
-    runner: &dyn Fn(&[String]) -> crate::Result<String>,
+    probes: &Probes<'_>,
 ) -> Vec<Check> {
     let mut checks = vec![check_config_loaded(load_error)];
 
     if let Some(config) = config {
-        checks.extend(check_backends_reachable(config, probe, runner));
-        checks.extend(check_container_runtime(config, container_probe));
+        checks.extend(check_backends_reachable(
+            config,
+            probes.backend,
+            probes.runner,
+        ));
+        checks.extend(check_container_runtime(config, probes.container));
+        checks.extend(check_runtime_commands(config, probes.command));
         checks.extend(check_models(config));
     }
 
@@ -564,7 +653,7 @@ pub fn describe(spec: &crate::command::CommandSpec) -> crate::Result<String> {
 /// used by `ToSocketAddrs` in [`tcp_probe`], rejects the bracketed form
 /// — keeping it would make any IPv6 resolution fail with a spurious DNS
 /// error, never with the invalid-port message one would expect.
-fn parse_host_port(base_url: &str) -> Result<(String, u16), String> {
+pub(crate) fn parse_host_port(base_url: &str) -> Result<(String, u16), String> {
     let Some((scheme, rest)) = base_url.split_once("://") else {
         return Err(format!(
             "base_url \"{base_url}\": missing scheme (expected \"http://\" or \"https://\")"
@@ -758,12 +847,16 @@ pub fn serve(
     model_id: &str,
     env: &dyn Fn(&str) -> Option<String>,
     runner: &dyn Fn(&[String]) -> crate::Result<String>,
+    host: &crate::runtime::process::Host<'_>,
 ) -> crate::Result<String> {
     let (model, backend, runtime) = lifecycle_target(config, model_id)?;
 
     match runtime {
         crate::config::Runtime::Docker(docker) => {
             crate::runtime::docker::serve(backend, docker, model, env, runner)
+        }
+        crate::config::Runtime::Process(process) => {
+            crate::runtime::process::serve(backend, process, model, host)
         }
     }
 }
@@ -778,11 +871,13 @@ pub fn stop(
     config: &crate::config::Config,
     model_id: &str,
     runner: &dyn Fn(&[String]) -> crate::Result<String>,
+    host: &crate::runtime::process::Host<'_>,
 ) -> crate::Result<String> {
     let (_model, backend, runtime) = lifecycle_target(config, model_id)?;
 
     match runtime {
         crate::config::Runtime::Docker(_) => crate::runtime::docker::stop(backend, runner),
+        crate::config::Runtime::Process(_) => crate::runtime::process::stop(backend, host),
     }
 }
 
@@ -800,12 +895,21 @@ pub fn logs(
     model_id: &str,
     follow: bool,
     streamer: &dyn Fn(&[String]) -> crate::Result<()>,
+    host: &crate::runtime::process::Host<'_>,
+    sink: &dyn Fn(&[u8]) -> crate::Result<()>,
 ) -> crate::Result<()> {
     let (_model, backend, runtime) = lifecycle_target(config, model_id)?;
 
     match runtime {
         crate::config::Runtime::Docker(_) => {
             crate::runtime::docker::logs(backend, follow, streamer)
+        }
+        // `sink` where Docker has `streamer`, for the same reason and with
+        // the same contract: the logs ARE the result, and this family reads
+        // them from the file `serve` redirected both streams into rather
+        // than from a child process's own streams.
+        crate::config::Runtime::Process(_) => {
+            crate::runtime::process::logs(&backend.id, follow, host, sink)
         }
     }
 }
@@ -827,6 +931,7 @@ pub fn logs(
 pub fn status(
     config: &crate::config::Config,
     runner: &dyn Fn(&[String]) -> crate::Result<String>,
+    host: &crate::runtime::process::Host<'_>,
 ) -> crate::Result<String> {
     let mut ids: Vec<&String> = config.backends.keys().collect();
     ids.sort_unstable();
@@ -840,18 +945,28 @@ pub fn status(
             // was never told how to start it, so it has no state to show.
             let runtime = backend.runtime()?;
 
-            let (instance, state) = match runtime {
-                crate::config::Runtime::Docker(_) => (
-                    crate::runtime::docker::container_name(&backend.id),
-                    crate::runtime::docker::state(&backend.id, runner),
-                ),
-            };
-
             // A report that dies on its first unreadable line is not a
             // report: an unresolvable URL (runtime down, Docker absent)
             // becomes a dash, exactly like an absent FALLBACK in `models`.
-            let url = crate::runtime::resolve_base_url(backend, runner)
+            let configured = crate::runtime::resolve_base_url(backend, runner)
                 .unwrap_or_else(|_| UNKNOWN_URL.to_string());
+
+            let (instance, url, state) = match runtime {
+                crate::config::Runtime::Docker(_) => (
+                    crate::runtime::docker::container_name(&backend.id),
+                    configured,
+                    crate::runtime::docker::state(&backend.id, runner),
+                ),
+                // The INSTANCE of a process is its pid, and the URL is the
+                // one its record holds — the address it was actually served
+                // on, which is also the one its state was decided against.
+                // A record that cannot be read becomes the state of THIS row
+                // and nothing more: one corrupt state file must not suppress
+                // the other backends' lines.
+                crate::config::Runtime::Process(_) => {
+                    crate::runtime::process::report(backend, &configured, host)
+                }
+            };
 
             Some(RuntimeStatus {
                 backend: id.clone(),
@@ -927,6 +1042,7 @@ mod tests {
             runtime: None,
             docker: None,
             timeouts: None,
+            source: std::path::PathBuf::new(),
         }
     }
 
@@ -955,10 +1071,16 @@ mod tests {
     fn serve_on_an_already_served_backend_points_at_the_container_not_the_port() {
         let config = containerized_config();
 
-        let err = serve(&config, "qwen", &test_env, &|args: &[String]| {
-            assert_eq!(args.first().map(String::as_str), Some("ps"));
-            Ok("npu-ovms\n".to_string())
-        })
+        let err = serve(
+            &config,
+            "qwen",
+            &test_env,
+            &|args: &[String]| {
+                assert_eq!(args.first().map(String::as_str), Some("ps"));
+                Ok("npu-ovms\n".to_string())
+            },
+            &test_host(),
+        )
         .expect_err("an already-served backend must fail");
 
         assert_eq!(err.exit_code(), 3);
@@ -986,14 +1108,20 @@ mod tests {
             .models
             .insert("m".to_string(), model("m", "ovms", "chat"));
 
-        let err = serve(&config, "m", &|_| None, &|args: &[String]| {
-            assert_eq!(
-                args.first().map(String::as_str),
-                Some("ps"),
-                "only the container probe may run when the port is already taken"
-            );
-            Ok(String::new())
-        })
+        let err = serve(
+            &config,
+            "m",
+            &|_| None,
+            &|args: &[String]| {
+                assert_eq!(
+                    args.first().map(String::as_str),
+                    Some("ps"),
+                    "only the container probe may run when the port is already taken"
+                );
+                Ok(String::new())
+            },
+            &test_host(),
+        )
         .expect_err("an occupied fixed port must fail");
 
         assert_eq!(err.exit_code(), 3);
@@ -1057,6 +1185,71 @@ mod tests {
         Err("cannot run \"docker\"".to_string())
     }
 
+    // Same shape again for the runtime-command probe injected into
+    // `doctor` (signature `&dyn Fn(&str) -> Result<(), String>`): no test
+    // of this module ever needs an inference server installed.
+    #[allow(clippy::unnecessary_wraps)]
+    fn command_ok(_command: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn command_fails(_command: &str) -> Result<(), String> {
+        Err("not found on PATH".to_string())
+    }
+
+    /// The three stub probes as one bundle. The runner is always the one
+    /// that must never be called: every `doctor` fixture here uses a fixed
+    /// port, so `resolve_base_url` returns before touching it.
+    fn probes<'a>(
+        backend: &'a dyn Fn(&str) -> Result<(), String>,
+        container: &'a dyn Fn() -> Result<(), String>,
+        command: &'a dyn Fn(&str) -> Result<(), String>,
+    ) -> Probes<'a> {
+        Probes {
+            backend,
+            container,
+            command,
+            runner: &unused_runner,
+        }
+    }
+
+    // The process runtime's injected outside world, for the tests that do
+    // not exercise it: every closure panics, so a Docker test that somehow
+    // reached the process family would say so instead of passing quietly.
+    // The state environment names no home for the same reason.
+    fn unused_env(_name: &str) -> Option<String> {
+        panic!("the process runtime's environment must not be read here")
+    }
+
+    fn unused_inspect(_pid: u32) -> Option<crate::runtime::process::ProcessFacts> {
+        panic!("no process must be inspected here")
+    }
+
+    fn unused_signal(_pid: u32, _signal: crate::runtime::process::Signal) -> bool {
+        panic!("no process must be signalled here")
+    }
+
+    fn unused_probe(_base_url: &str) -> Result<(), String> {
+        panic!("the process runtime's probe must not run here")
+    }
+
+    fn unused_sink(_bytes: &[u8]) -> crate::Result<()> {
+        panic!("a container's logs go through the streamer, never through this sink")
+    }
+
+    fn test_host() -> crate::runtime::process::Host<'static> {
+        crate::runtime::process::Host {
+            env: &unused_env,
+            state: crate::runtime::state::StateEnv {
+                xdg_state_home: None,
+                home: None,
+            },
+            inspect: &unused_inspect,
+            signal: &unused_signal,
+            probe: &unused_probe,
+        }
+    }
+
     // -- doctor: nominal scenario -----------------------------------------
 
     #[test]
@@ -1075,9 +1268,7 @@ mod tests {
             Some(&config),
             Some(&commands),
             None,
-            &always_ok,
-            &container_ok,
-            &unused_runner,
+            &probes(&always_ok, &container_ok, &command_ok),
         );
 
         assert!(
@@ -1097,9 +1288,7 @@ mod tests {
             None,
             None,
             Some(&err),
-            &always_ok,
-            &container_ok,
-            &unused_runner,
+            &probes(&always_ok, &container_ok, &command_ok),
         );
 
         assert_eq!(
@@ -1124,9 +1313,7 @@ mod tests {
             Some(&config),
             Some(&[]),
             None,
-            &always_ok,
-            &container_ok,
-            &unused_runner,
+            &probes(&always_ok, &container_ok, &command_ok),
         );
 
         let model_check = checks
@@ -1153,9 +1340,7 @@ mod tests {
             Some(&config),
             Some(&[]),
             None,
-            &always_ok,
-            &container_ok,
-            &unused_runner,
+            &probes(&always_ok, &container_ok, &command_ok),
         );
 
         let model_check = checks
@@ -1180,9 +1365,7 @@ mod tests {
             Some(&config),
             Some(&commands),
             None,
-            &always_ok,
-            &container_ok,
-            &unused_runner,
+            &probes(&always_ok, &container_ok, &command_ok),
         );
 
         let command_check = checks
@@ -1211,9 +1394,7 @@ mod tests {
             Some(&config),
             Some(&[spec]),
             None,
-            &always_ok,
-            &container_ok,
-            &unused_runner,
+            &probes(&always_ok, &container_ok, &command_ok),
         );
 
         let schema_check = checks
@@ -1232,9 +1413,7 @@ mod tests {
             Some(&config),
             Some(&[spec]),
             None,
-            &always_ok,
-            &container_ok,
-            &unused_runner,
+            &probes(&always_ok, &container_ok, &command_ok),
         );
 
         assert!(
@@ -1257,9 +1436,7 @@ mod tests {
             Some(&config),
             Some(&[]),
             None,
-            &always_fails,
-            &container_ok,
-            &unused_runner,
+            &probes(&always_fails, &container_ok, &command_ok),
         );
 
         assert_eq!(doctor_exit_code(&checks), 3);
@@ -1299,9 +1476,7 @@ mod tests {
             Some(&config),
             Some(&[]),
             None,
-            &always_fails,
-            &container_ok,
-            &unused_runner,
+            &probes(&always_fails, &container_ok, &command_ok),
         );
 
         let reachability_failed = checks
@@ -1647,8 +1822,14 @@ mod tests {
         let config = containerized_config();
         let captured = std::cell::RefCell::new(Vec::new());
 
-        let id = serve(&config, "qwen", &test_env, &capturing_runner(&captured))
-            .expect("serving a containerized backend must succeed");
+        let id = serve(
+            &config,
+            "qwen",
+            &test_env,
+            &capturing_runner(&captured),
+            &test_host(),
+        )
+        .expect("serving a containerized backend must succeed");
 
         assert_eq!(id, "3f2a9c1b8e40");
         assert_eq!(
@@ -1674,8 +1855,14 @@ mod tests {
         let config = containerized_config();
         let captured = std::cell::RefCell::new(Vec::new());
 
-        let err = serve(&config, "absent", &test_env, &capturing_runner(&captured))
-            .expect_err("an unknown model must fail");
+        let err = serve(
+            &config,
+            "absent",
+            &test_env,
+            &capturing_runner(&captured),
+            &test_host(),
+        )
+        .expect_err("an unknown model must fail");
 
         assert!(matches!(err, crate::Error::Config(_)));
         assert!(
@@ -1700,8 +1887,14 @@ mod tests {
             .insert("qwen".to_string(), model("qwen", "plain", "chat"));
         let captured = std::cell::RefCell::new(Vec::new());
 
-        let err = serve(&config, "qwen", &test_env, &capturing_runner(&captured))
-            .expect_err("a backend without [docker] cannot be served");
+        let err = serve(
+            &config,
+            "qwen",
+            &test_env,
+            &capturing_runner(&captured),
+            &test_host(),
+        )
+        .expect_err("a backend without [docker] cannot be served");
 
         assert!(matches!(err, crate::Error::Config(_)));
         assert!(
@@ -1716,7 +1909,7 @@ mod tests {
         let config = containerized_config();
         let failing = |_args: &[String]| Err(crate::Error::Backend("docker absent".to_string()));
 
-        let err = serve(&config, "qwen", &test_env, &failing)
+        let err = serve(&config, "qwen", &test_env, &failing, &test_host())
             .expect_err("a failing runner must fail the command");
 
         assert!(matches!(err, crate::Error::Backend(_)));
@@ -1729,8 +1922,14 @@ mod tests {
         let empty_env = |_name: &str| None;
         let captured = std::cell::RefCell::new(Vec::new());
 
-        let err = serve(&config, "qwen", &empty_env, &capturing_runner(&captured))
-            .expect_err("an undefined variable referenced by [docker] must fail");
+        let err = serve(
+            &config,
+            "qwen",
+            &empty_env,
+            &capturing_runner(&captured),
+            &test_host(),
+        )
+        .expect_err("an undefined variable referenced by [docker] must fail");
 
         assert!(matches!(err, crate::Error::Config(_)));
         assert!(
@@ -1754,9 +1953,7 @@ mod tests {
             Some(&config),
             Some(&[]),
             None,
-            &always_ok,
-            &container_fails,
-            &unused_runner,
+            &probes(&always_ok, &container_fails, &command_ok),
         );
 
         assert!(
@@ -1776,9 +1973,7 @@ mod tests {
             Some(&config),
             Some(&[]),
             None,
-            &always_ok,
-            &container_fails,
-            &unused_runner,
+            &probes(&always_ok, &container_fails, &command_ok),
         );
 
         let failed: Vec<&Check> = checks
@@ -1798,9 +1993,7 @@ mod tests {
             Some(&config),
             Some(&[]),
             None,
-            &always_ok,
-            &container_ok,
-            &unused_runner,
+            &probes(&always_ok, &container_ok, &command_ok),
         );
 
         assert!(
@@ -1820,7 +2013,8 @@ mod tests {
         let config = containerized_config();
         let captured = std::cell::RefCell::new(Vec::new());
 
-        stop(&config, "qwen", &capturing_runner(&captured)).expect("stopping must succeed");
+        stop(&config, "qwen", &capturing_runner(&captured), &test_host())
+            .expect("stopping must succeed");
 
         assert_eq!(
             captured.into_inner(),
@@ -1836,7 +2030,8 @@ mod tests {
         // printing: stdout must still carry a result, never a blank line.
         let silent = |_args: &[String]| Ok(String::new());
 
-        let result = stop(&config, "qwen", &silent).expect("stopping must stay idempotent");
+        let result =
+            stop(&config, "qwen", &silent, &test_host()).expect("stopping must stay idempotent");
 
         assert_eq!(result, "npu-ovms");
     }
@@ -1853,7 +2048,7 @@ mod tests {
             .insert("qwen".to_string(), model("qwen", "plain", "chat"));
         let captured = std::cell::RefCell::new(Vec::new());
 
-        let err = stop(&config, "qwen", &capturing_runner(&captured))
+        let err = stop(&config, "qwen", &capturing_runner(&captured), &test_host())
             .expect_err("npu only manages the containers it starts");
 
         assert!(matches!(err, crate::Error::Config(_)));
@@ -1870,7 +2065,8 @@ mod tests {
             Ok(())
         };
 
-        logs(&config, "qwen", true, &streamer).expect("streaming must succeed");
+        logs(&config, "qwen", true, &streamer, &test_host(), &unused_sink)
+            .expect("streaming must succeed");
 
         assert_eq!(captured.into_inner(), vec!["logs", "--follow", "npu-ovms"]);
     }
@@ -1884,7 +2080,15 @@ mod tests {
             Ok(())
         };
 
-        logs(&config, "qwen", false, &streamer).expect("streaming must succeed");
+        logs(
+            &config,
+            "qwen",
+            false,
+            &streamer,
+            &test_host(),
+            &unused_sink,
+        )
+        .expect("streaming must succeed");
 
         assert_eq!(captured.into_inner(), vec!["logs", "npu-ovms"]);
     }
@@ -1894,7 +2098,7 @@ mod tests {
         let config = containerized_config();
         let runner = |_args: &[String]| Ok("Up 3 minutes".to_string());
 
-        let report = status(&config, &runner).expect("status never fails");
+        let report = status(&config, &runner, &test_host()).expect("status never fails");
 
         assert!(report.contains("ovms"), "got: {report}");
         assert!(report.contains("npu-ovms"), "got: {report}");
@@ -1909,7 +2113,7 @@ mod tests {
         let config = containerized_config();
         let runner = |_args: &[String]| Ok("Up 3 minutes".to_string());
 
-        let report = status(&config, &runner).expect("status never fails");
+        let report = status(&config, &runner, &test_host()).expect("status never fails");
 
         assert!(
             report.contains(crate::runtime::docker::NAME),
@@ -1922,8 +2126,8 @@ mod tests {
         let config = containerized_config();
         let runner = |_args: &[String]| Ok(String::new());
 
-        let report =
-            status(&config, &runner).expect("an absent container is a state, not an error");
+        let report = status(&config, &runner, &test_host())
+            .expect("an absent container is a state, not an error");
 
         assert!(report.contains(NOT_STARTED), "got: {report}");
     }
@@ -1933,7 +2137,8 @@ mod tests {
         let config = containerized_config();
         let runner = |_args: &[String]| Err(crate::Error::Backend("docker absent".to_string()));
 
-        let report = status(&config, &runner).expect("a report must not die on its first bad line");
+        let report = status(&config, &runner, &test_host())
+            .expect("a report must not die on its first bad line");
 
         assert!(report.contains("ovms"), "got: {report}");
     }
@@ -1947,12 +2152,315 @@ mod tests {
         );
         let runner = |_args: &[String]| Ok("Up".to_string());
 
-        let report = status(&config, &runner).expect("status never fails");
+        let report = status(&config, &runner, &test_host()).expect("status never fails");
 
         assert!(!report.contains("plain"), "got: {report}");
         assert!(
             report.contains("BACKEND"),
             "the header must survive an empty table"
         );
+    }
+
+    // -- the process runtime family -----------------------------------------
+
+    /// Unique fixture directory: tests run in parallel and a fixed path
+    /// collides (same idiom as every other module's).
+    fn fixture_state_env(name: &str) -> crate::runtime::state::StateEnv {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-fixtures")
+            .join(format!("builtin-{name}-{n}"));
+        std::fs::create_dir_all(&dir).expect("fixture directory creation");
+        crate::runtime::state::StateEnv {
+            xdg_state_home: Some(dir.clone()),
+            home: Some(dir),
+        }
+    }
+
+    /// A backend served by a process runtime, whose command deliberately
+    /// does not exist: every test below asserts on a REFUSAL, so nothing in
+    /// this module ever spawns anything.
+    fn process_backend(id: &str, command: &str) -> crate::config::Backend {
+        let mut backend = backend(id, "http://127.0.0.1:8000", &["chat"]);
+        backend.runtime = Some(crate::config::Runtime::Process(crate::config::Process {
+            command: command.to_string(),
+            arguments: vec!["{{ args.model }}".to_string()],
+            env: std::collections::BTreeMap::new(),
+            startup_timeout_secs: 30,
+        }));
+        backend
+    }
+
+    fn process_config(command: &str) -> crate::config::Config {
+        let mut config = crate::config::Config::default();
+        config
+            .backends
+            .insert("local".to_string(), process_backend("local", command));
+        config
+            .models
+            .insert("qwen".to_string(), model("qwen", "local", "chat"));
+        config
+    }
+
+    /// A machine that never asked for a process runtime must not be
+    /// penalized by a check about one — the same rule as the container
+    /// runtime's.
+    #[test]
+    fn doctor_produces_no_runtime_command_check_without_a_process_backend() {
+        let mut config = crate::config::Config::default();
+        config.backends.insert(
+            "ovms".to_string(),
+            backend("ovms", "http://127.0.0.1:8000", &["chat"]),
+        );
+
+        let checks = doctor(
+            Some(&config),
+            Some(&[]),
+            None,
+            &probes(&always_ok, &container_ok, &command_fails),
+        );
+
+        assert!(
+            checks.iter().all(|c| !c.label.contains("runtime command")),
+            "got: {checks:?}"
+        );
+        assert_eq!(doctor_exit_code(&checks), 0);
+    }
+
+    /// A declared command produces its own check, NAMING it: a report that
+    /// only said "a command is missing" would send its reader through every
+    /// backend file.
+    #[test]
+    fn doctor_checks_each_declared_runtime_command_by_name() {
+        let config = process_config("llama-server");
+
+        let checks = doctor(
+            Some(&config),
+            Some(&[]),
+            None,
+            &probes(&always_ok, &container_ok, &command_ok),
+        );
+
+        let check = checks
+            .iter()
+            .find(|c| c.label.contains("llama-server"))
+            .expect("the declared command must have its own check");
+        assert_eq!(check.kind, CheckKind::Reachability);
+        assert!(matches!(check.status, Status::Ok));
+    }
+
+    /// A `command` carrying a placeholder is only known once `npu serve`
+    /// renders it against a model, and `doctor` has no model. Emitting the
+    /// check anyway turned a valid configuration red and told its operator
+    /// to install a binary named `{{ env.LLAMA_BIN }}`.
+    #[test]
+    fn doctor_emits_no_check_for_a_command_it_cannot_resolve_yet() {
+        let config = process_config("{{ env.LLAMA_BIN }}");
+
+        let checks = doctor(
+            Some(&config),
+            Some(&[]),
+            None,
+            &probes(&always_ok, &container_ok, &command_fails),
+        );
+
+        assert!(
+            checks.iter().all(|c| !c.label.contains("runtime command")),
+            "got: {checks:?}"
+        );
+        assert_eq!(doctor_exit_code(&checks), 0);
+    }
+
+    /// An absent command is something to INSTALL, not a file to fix: exit
+    /// `3`, never `2`. Classified by `CheckKind`, never by the label.
+    #[test]
+    fn a_missing_runtime_command_is_a_reachability_failure_worth_exit_three() {
+        let config = process_config("llama-server");
+
+        let checks = doctor(
+            Some(&config),
+            Some(&[]),
+            None,
+            &probes(&always_ok, &container_ok, &command_fails),
+        );
+
+        let check = checks
+            .iter()
+            .find(|c| c.label.contains("llama-server"))
+            .expect("the declared command must have its own check");
+        assert_eq!(check.kind, CheckKind::Reachability);
+        assert!(matches!(check.status, Status::Failed(_)));
+        assert_eq!(doctor_exit_code(&checks), 3);
+    }
+
+    /// One command shared by several backends is probed once, and the
+    /// report stays deterministic.
+    #[test]
+    fn a_command_shared_by_two_backends_is_probed_once() {
+        let mut config = process_config("llama-server");
+        config.backends.insert(
+            "other".to_string(),
+            process_backend("other", "llama-server"),
+        );
+
+        let probed = std::sync::atomic::AtomicU64::new(0);
+        let probe = |_command: &str| {
+            probed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        };
+
+        let checks = doctor(
+            Some(&config),
+            Some(&[]),
+            None,
+            &probes(&always_ok, &container_ok, &probe),
+        );
+
+        assert_eq!(probed.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            checks
+                .iter()
+                .filter(|c| c.label.contains("llama-server"))
+                .count(),
+            1
+        );
+    }
+
+    /// Dispatch: a process backend must reach `runtime::process`, which is
+    /// what the message about the absent COMMAND (never an image, never a
+    /// container) proves.
+    #[test]
+    fn serve_dispatches_a_process_backend_to_the_process_runtime() {
+        let config = process_config("npu-does-not-exist-anywhere");
+        let host = crate::runtime::process::Host {
+            env: &|_| None,
+            state: fixture_state_env("serve-dispatch"),
+            inspect: &unused_inspect,
+            signal: &unused_signal,
+            probe: &unused_probe,
+        };
+
+        let err = serve(&config, "qwen", &unused_env, &unused_runner, &host)
+            .expect_err("the command does not exist");
+
+        assert_eq!(err.exit_code(), 3);
+        let message = err.to_string();
+        assert!(message.contains("npu-does-not-exist-anywhere"), "{message}");
+        assert!(message.contains("local"), "{message}");
+    }
+
+    /// `stop` is idempotent for this family too: nothing started is a
+    /// success, and the result on stdout is the backend identifier.
+    #[test]
+    fn stop_on_a_never_served_process_backend_succeeds() {
+        let config = process_config("llama-server");
+        let host = crate::runtime::process::Host {
+            env: &|_| None,
+            state: fixture_state_env("stop-dispatch"),
+            inspect: &unused_inspect,
+            signal: &unused_signal,
+            probe: &unused_probe,
+        };
+
+        assert_eq!(
+            stop(&config, "qwen", &unused_runner, &host).expect("stopping nothing is a success"),
+            "local"
+        );
+    }
+
+    /// Both families in one table, each line saying which one it belongs
+    /// to — the reason the RUNTIME column exists at all.
+    #[test]
+    fn status_reports_a_process_backend_beside_a_containerized_one() {
+        let mut config = crate::config::Config::default();
+        config
+            .backends
+            .insert("ovms".to_string(), containerized_backend("ovms"));
+        config.backends.insert(
+            "local".to_string(),
+            process_backend("local", "llama-server"),
+        );
+        let host = crate::runtime::process::Host {
+            env: &|_| None,
+            state: fixture_state_env("status-dispatch"),
+            inspect: &unused_inspect,
+            signal: &unused_signal,
+            probe: &unused_probe,
+        };
+
+        let report =
+            status(&config, &|_args| Ok(String::new()), &host).expect("status never fails");
+
+        let lines: Vec<&str> = report.lines().collect();
+        assert_eq!(lines.len(), 3, "{report}");
+        let local = lines
+            .iter()
+            .find(|line| line.starts_with("local"))
+            .expect("the process backend must have a line");
+        assert!(local.contains(crate::runtime::process::NAME), "{local}");
+        assert!(local.contains(NOT_STARTED), "{local}");
+    }
+
+    /// A report that dies on its first unreadable line is not a report: a
+    /// corrupt record must cost its own row and nothing else.
+    #[test]
+    fn a_corrupt_process_record_does_not_suppress_the_other_rows() {
+        let mut config = crate::config::Config::default();
+        config
+            .backends
+            .insert("ovms".to_string(), containerized_backend("ovms"));
+        config.backends.insert(
+            "local".to_string(),
+            process_backend("local", "llama-server"),
+        );
+        let state = fixture_state_env("status-corrupt");
+        let dir = crate::runtime::state::state_dir(&state).expect("a home is set");
+        std::fs::create_dir_all(&dir).expect("the state directory");
+        let path = crate::runtime::state::state_path(&state, "local").expect("a valid identifier");
+        std::fs::write(&path, "{ not json").expect("the planted record");
+
+        let host = crate::runtime::process::Host {
+            env: &|_| None,
+            state,
+            inspect: &unused_inspect,
+            signal: &unused_signal,
+            probe: &unused_probe,
+        };
+
+        let report = status(&config, &|_args| Ok(String::new()), &host)
+            .expect("a report must not die on its first bad line");
+
+        assert_eq!(report.lines().count(), 3, "{report}");
+        assert!(report.contains("npu-ovms"), "{report}");
+    }
+
+    /// Dispatch again: a process backend's logs come from the file `serve`
+    /// wrote, so the streamer must stay untouched and the message must name
+    /// the backend.
+    #[test]
+    fn logs_of_a_never_served_process_backend_name_the_backend() {
+        let config = process_config("llama-server");
+        let host = crate::runtime::process::Host {
+            env: &|_| None,
+            state: fixture_state_env("logs-dispatch"),
+            inspect: &unused_inspect,
+            signal: &unused_signal,
+            probe: &unused_probe,
+        };
+
+        let err = logs(
+            &config,
+            "qwen",
+            false,
+            &|_args| panic!("a process backend must not go through the container streamer"),
+            &host,
+            &|_bytes| Ok(()),
+        )
+        .expect_err("there is nothing to read");
+
+        assert_eq!(err.exit_code(), 3);
+        assert!(err.to_string().contains("local"), "{err}");
     }
 }

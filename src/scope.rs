@@ -30,7 +30,7 @@ pub(crate) struct ScopeEnv {
 /// to cover the "empty" case would require `std::env::set_var`,
 /// `unsafe` since edition 2024 and therefore forbidden here (`unsafe_code =
 /// "forbid"`, see Cargo.toml).
-fn non_empty(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+pub(crate) fn non_empty(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
     let value = value?;
     if value.is_empty() {
         return None;
@@ -40,7 +40,11 @@ fn non_empty(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
 
 /// Reads a system environment variable; returns `None` if it is
 /// absent or empty.
-fn non_empty_env_var(name: &str) -> Option<PathBuf> {
+///
+/// `pub(crate)`: `runtime::state` reads `$XDG_STATE_HOME` and `$HOME` under
+/// exactly this rule, and a second copy of it would be a second place for
+/// "set but empty" to be decided (same reason as `error::format_available`).
+pub(crate) fn non_empty_env_var(name: &str) -> Option<PathBuf> {
     non_empty(std::env::var_os(name))
 }
 

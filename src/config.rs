@@ -38,6 +38,53 @@ pub struct Docker {
     pub args: Vec<String>,
 }
 
+/// Default value of [`Process::startup_timeout_secs`]: how long `npu serve`
+/// waits for a spawned server to start answering before it gives up, kills
+/// it and reports the failure.
+///
+/// Thirty seconds because the process families this drives (a local
+/// inference server loading a model from disk) are slow to become ready and
+/// fast to fail: a server that crashed is detected by its exit, not by this
+/// deadline, so the number only has to be generous enough for an honest
+/// start.
+const DEFAULT_STARTUP_TIMEOUT_SECS: u64 = 30;
+
+/// `serde` default for [`Process::startup_timeout_secs`].
+const fn default_startup_timeout_secs() -> u64 {
+    DEFAULT_STARTUP_TIMEOUT_SECS
+}
+
+/// How to start the runtime of a backend as a plain child process, declared
+/// by `[runtime] type = "process"`.
+///
+/// Carries no knowledge of any particular server: `command` and `arguments`
+/// are what the author wrote, which is what makes llama.cpp, MLX or anything
+/// else a CONFIGURATION change rather than a rebuild.
+///
+/// `arguments` and the values of `env` go through `crate::prompt::render`
+/// (`{{ args.model }}`, `{{ env.NAME }}`) and through
+/// [`substitute_port`] (`{{ backend.port }}`), exactly like the `[docker]`
+/// lists — one template engine, not two.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Process {
+    /// The executable to run: an absolute or relative path used as-is, or a
+    /// bare name looked up on `PATH`.
+    pub command: String,
+    /// Arguments handed to `command`, in order.
+    #[serde(default)]
+    pub arguments: Vec<String>,
+    /// Variables layered OVER the parent environment of `npu serve` for the
+    /// child only — an overlay, never a replacement: a server that needs
+    /// `HOME` or `PATH` must not have to redeclare them.
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+    /// Seconds granted to the spawned server to start answering on its port
+    /// before `npu serve` declares the start a failure.
+    #[serde(default = "default_startup_timeout_secs")]
+    pub startup_timeout_secs: u64,
+}
+
 /// How `npu serve` starts this backend's runtime, declared by the optional
 /// tagged `[runtime]` table of `backends/*.toml`:
 ///
@@ -47,19 +94,22 @@ pub struct Docker {
 /// image = "openvino/model_server:latest"
 /// ```
 ///
+/// ```toml
+/// [runtime]
+/// type = "process"
+/// command = "llama-server"
+/// arguments = ["--port", "{{ backend.port }}"]
+/// ```
+///
 /// Tagged rather than one table per family (`[docker]`, `[process]`) because
 /// the tag is what makes an unsupported runtime a NAMED rejection
 /// (`unknown variant "podman"`) instead of a table serde would have to guess
 /// the meaning of.
-///
-/// Single variant on purpose: the `process` runtime lands in phase 2. The
-/// enum exists now so the whole call chain is already written against a
-/// runtime FAMILY rather than against Docker, which is the part that would
-/// otherwise have to be rewritten twice.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Runtime {
     Docker(Docker),
+    Process(Process),
 }
 
 /// The `type` value of the Docker runtime, quoted by the messages that tell
@@ -67,18 +117,18 @@ pub enum Runtime {
 const RUNTIME_DOCKER: &str = "docker";
 
 /// The `[docker]` table of a backend whose runtime is Docker, `None` for a
-/// backend with no runtime at all.
+/// backend with no runtime at all — or one managed by another family.
 ///
-/// Written as a `match` rather than a `matches!`/`map` pair so the phase 2
-/// `Process` variant makes this function fail to compile instead of
-/// silently answering `None` for a runtime it does not know. `pub(crate)`
-/// for that reason too: it is the ONE family test in the crate, so
-/// `doctor`'s container check joins the same `match` instead of keeping a
-/// `matches!` of its own that a new variant would leave silently answering
-/// `false`.
+/// Written as a `match` rather than a `matches!`/`map` pair so a new variant
+/// makes this function fail to compile instead of silently answering `None`
+/// for a runtime it does not know. `pub(crate)` for that reason too: it is
+/// the ONE family test in the crate, so `doctor`'s container check joins the
+/// same `match` instead of keeping a `matches!` of its own that a new
+/// variant would leave silently answering `false`.
 pub(crate) fn docker_of(backend: &Backend) -> Option<&Docker> {
     match backend.runtime.as_ref()? {
         Runtime::Docker(docker) => Some(docker),
+        Runtime::Process(_) => None,
     }
 }
 
@@ -87,6 +137,25 @@ pub(crate) fn docker_of(backend: &Backend) -> Option<&Docker> {
 fn docker_of_mut(backend: &mut Backend) -> Option<&mut Docker> {
     match backend.runtime.as_mut()? {
         Runtime::Docker(docker) => Some(docker),
+        Runtime::Process(_) => None,
+    }
+}
+
+/// The `[runtime]` table of a backend whose runtime is a process, `None`
+/// otherwise. The [`docker_of`] twin, exhaustive for the same reason.
+pub(crate) fn process_of(backend: &Backend) -> Option<&Process> {
+    match backend.runtime.as_ref()? {
+        Runtime::Process(process) => Some(process),
+        Runtime::Docker(_) => None,
+    }
+}
+
+/// Mutable twin of [`process_of`], for the load-time `{{ backend.port }}`
+/// substitution.
+fn process_of_mut(backend: &mut Backend) -> Option<&mut Process> {
+    match backend.runtime.as_mut()? {
+        Runtime::Process(process) => Some(process),
+        Runtime::Docker(_) => None,
     }
 }
 
@@ -95,6 +164,20 @@ fn docker_reads_port(docker: &Docker) -> bool {
     std::iter::once(&docker.image)
         .chain(&docker.options)
         .chain(&docker.args)
+        .any(|template| substitute_port(template, 0).1)
+}
+
+/// Does any of a process runtime's templates read `{{ backend.port }}`?
+///
+/// `command` is deliberately excluded, here and in the substitution below:
+/// an executable whose PATH depends on a port is not a case worth
+/// supporting, and a key that is never substituted must not be able to
+/// satisfy the "declares a port someone reads" rule.
+fn process_reads_port(process: &Process) -> bool {
+    process
+        .arguments
+        .iter()
+        .chain(process.env.values())
         .any(|template| substitute_port(template, 0).1)
 }
 
@@ -219,7 +302,9 @@ pub(crate) fn substitute_port(template: &str, port: u16) -> (String, bool) {
 /// a key that would be silently ignored.
 fn resolve_port(backend: &mut Backend, source: &Path) -> crate::Result<()> {
     let references_port = |backend: &Backend| {
-        substitute_port(&backend.base_url, 0).1 || docker_of(backend).is_some_and(docker_reads_port)
+        substitute_port(&backend.base_url, 0).1
+            || docker_of(backend).is_some_and(docker_reads_port)
+            || process_of(backend).is_some_and(process_reads_port)
     };
 
     let port = match &backend.port {
@@ -309,6 +394,14 @@ fn resolve_port(backend: &mut Backend, source: &Path) -> crate::Result<()> {
         }
     }
 
+    if let Some(process) = process_of_mut(backend) {
+        for template in process.arguments.iter_mut().chain(process.env.values_mut()) {
+            let (resolved, hit) = substitute_port(template, port);
+            *template = resolved;
+            used |= hit;
+        }
+    }
+
     if !used {
         return Err(crate::Error::Config(format!(
             "{}: backend \"{}\": declares \"port\" but never references \
@@ -366,6 +459,19 @@ pub struct Backend {
     /// Optional: overrides `backend::REQUEST_TIMEOUT` for this backend.
     #[serde(default)]
     pub timeouts: Option<Timeouts>,
+    /// The file this backend was loaded from, filled in by [`load_scopes`]
+    /// once the merge picked a winner.
+    ///
+    /// Not a configuration key: `#[serde(skip)]` and NOT `#[serde(default)]`,
+    /// so a file spelling `source = "..."` is rejected by
+    /// `deny_unknown_fields` instead of forging the value. It is the
+    /// discriminator [`crate::runtime::state`] records, because backend
+    /// identifiers are per-scope (`./.npu` is a documented scope) while the
+    /// state directory is machine-global: two projects naming a backend
+    /// `llamacpp` would otherwise share one record, and `npu stop` in one
+    /// would signal the other's server.
+    #[serde(skip)]
+    pub source: PathBuf,
 }
 
 impl Backend {
@@ -430,31 +536,66 @@ const SUPPORTED_BACKEND_KIND: &str = "openai-compatible";
 /// L3).
 const SUPPORTED_METHOD: &str = "POST";
 
-/// The only `{{ args.<name> }}` placeholder a `[docker]` list may reference:
-/// `npu serve` takes a model identifier and nothing else, so `model` is the
-/// only value it can substitute. Any other name is a configuration error
-/// rather than an empty string silently handed to `docker run`.
-const DOCKER_PLACEHOLDER_ARG: &str = "model";
+/// The only `{{ args.<name> }}` placeholder a `[runtime]` template may
+/// reference: `npu serve` takes a model identifier and nothing else, so
+/// `model` is the only value it can substitute. Any other name is a
+/// configuration error rather than an empty string silently handed to the
+/// runtime.
+const RUNTIME_PLACEHOLDER_ARG: &str = "model";
 
-/// Validates one `[docker]` list entry: `{{ input }}` has no meaning here
-/// (`npu serve` reads no input) and `{{ args.<name> }}` is restricted to
-/// [`DOCKER_PLACEHOLDER_ARG`]. `{{ env.NAME }}` passes: it is resolved at
-/// `serve` time, against the environment injected by the caller.
-fn validate_docker_template(template: &str, backend_id: &str, source: &Path) -> crate::Result<()> {
-    for placeholder in crate::prompt::placeholders(template)? {
+/// Largest `[runtime].startup_timeout_secs` a process backend may declare:
+/// one day. Not a taste question — `Instant + Duration` panics on a value
+/// near `u64::MAX`, and a panic replaces the exit-code contract with exit
+/// `101`. A bound rejected at load time naming the file is the same remedy
+/// the zero case gets.
+const MAX_STARTUP_TIMEOUT_SECS: u64 = 24 * 60 * 60;
+
+/// Validates one `[runtime]` template, whatever the family it belongs to:
+/// `{{ input }}` has no meaning here (`npu serve` reads no input) and
+/// `{{ args.<name> }}` is restricted to [`RUNTIME_PLACEHOLDER_ARG`].
+/// `{{ env.NAME }}` passes: it is resolved at `serve` time, against the
+/// environment injected by the caller.
+///
+/// One validator for every family rather than one per family: the rule is
+/// about what `npu serve` can resolve, which does not depend on whether the
+/// template ends up in a `docker run` line or in a child process's argument
+/// vector. The message names `[runtime]` for the same reason — a Docker
+/// backend spelling the legacy `[docker]` table has already been folded into
+/// `runtime` by the time this runs.
+fn validate_runtime_template(template: &str, backend_id: &str, source: &Path) -> crate::Result<()> {
+    // Wrapped, not propagated: `prompt::placeholders` diagnoses the FORM of
+    // a placeholder and knows nothing about files, so its own message names
+    // neither the offending file nor the backend — while the arms below,
+    // about the MEANING of a well-formed one, name both. A scope holding
+    // several backend files would otherwise tell its reader that a
+    // placeholder is wrong without saying which file to open.
+    let found = crate::prompt::placeholders(template).map_err(|err| {
+        // Its own message, not its `Display`: the latter re-prefixes
+        // "configuration error:", which the caller already prints.
+        let detail = match err {
+            crate::Error::Config(message) => message,
+            other => other.to_string(),
+        };
+        crate::Error::Config(format!(
+            "{}: backend \"{backend_id}\": [runtime]: {detail}",
+            source.display()
+        ))
+    })?;
+
+    for placeholder in found {
         match placeholder {
             crate::prompt::Placeholder::Env(_) => {}
-            crate::prompt::Placeholder::Arg(name) if name == DOCKER_PLACEHOLDER_ARG => {}
+            crate::prompt::Placeholder::Arg(name) if name == RUNTIME_PLACEHOLDER_ARG => {}
             crate::prompt::Placeholder::Arg(name) => {
                 return Err(crate::Error::Config(format!(
-                    "{}: backend \"{backend_id}\": [docker] references unknown argument \
-                     \"{name}\" (only \"{DOCKER_PLACEHOLDER_ARG}\" is available here)",
+                    "{}: backend \"{backend_id}\": [runtime] references unknown argument \
+                     \"{name}\" (only \"{RUNTIME_PLACEHOLDER_ARG}\" is available here)",
                     source.display()
                 )));
             }
             crate::prompt::Placeholder::Input => {
                 return Err(crate::Error::Config(format!(
-                    "{}: backend \"{backend_id}\": [docker] references {{{{ input }}}}, which \
+                    "{}: backend \"{backend_id}\": [runtime] references {{{{ input }}}}, which \
                      has no meaning for a runtime start",
                     source.display()
                 )));
@@ -469,7 +610,13 @@ fn validate_docker_template(template: &str, backend_id: &str, source: &Path) -> 
 /// is a free-form TOML string: an identifier outside this set is rejected at
 /// load time, naming its file, rather than transformed silently or handed to
 /// `docker run` to fail on its own terms.
-fn is_valid_container_name(id: &str) -> bool {
+///
+/// The crate's SINGLE identifier predicate, hence `pub(crate)`: the same set
+/// is what makes an identifier safe as a file name in `runtime::state` (it
+/// excludes the empty string, `/`, `.` and `..` by construction), and two
+/// predicates would be two chances to disagree about what a backend may be
+/// called.
+pub(crate) fn is_valid_runtime_id(id: &str) -> bool {
     let mut chars = id.chars();
     let Some(first) = chars.next() else {
         return false;
@@ -486,7 +633,7 @@ fn validate_docker(backend: &Backend, source: &Path) -> crate::Result<()> {
         return Ok(());
     };
 
-    if !is_valid_container_name(&backend.id) {
+    if !is_valid_runtime_id(&backend.id) {
         return Err(crate::Error::Config(format!(
             "{}: backend \"{}\": declaring [docker] requires an identifier usable as a \
              container name (ASCII letters, digits, \"_\", \".\" and \"-\", starting with a \
@@ -502,7 +649,105 @@ fn validate_docker(backend: &Backend, source: &Path) -> crate::Result<()> {
         .chain(docker.args.iter())
         .chain(std::iter::once(&docker.image))
     {
-        validate_docker_template(template, &backend.id, source)?;
+        validate_runtime_template(template, &backend.id, source)?;
+    }
+
+    Ok(())
+}
+
+/// Validates a `[runtime] type = "process"` table: the identifier must be
+/// usable as a state file name, the startup budget must be able to elapse,
+/// and every template must only reference placeholders `serve` can resolve.
+///
+/// The identifier check is [`is_valid_runtime_id`], the same predicate the
+/// Docker family uses for a container name: `runtime::state` derives this
+/// backend's state file name from the identifier, so the two families
+/// constrain it for different reasons but with one rule.
+fn validate_process(backend: &Backend, source: &Path) -> crate::Result<()> {
+    let Some(process) = process_of(backend) else {
+        return Ok(());
+    };
+
+    // Refused on Windows rather than half-honoured. The state directory this
+    // family needs is derived from `$XDG_STATE_HOME`/`$HOME`, two variables
+    // that platform does not define, and `stop`'s graceful step is a
+    // `SIGTERM` `sysinfo` reports as unsupported there — so the escalation
+    // collapses to an immediate hard kill with no chance to flush. Left
+    // alone, the first symptom is exit `1` ("neither $XDG_STATE_HOME nor
+    // $HOME is set"), the I/O code, which tells a calling program its disk
+    // is broken. Exit `2` naming the file says what is actually true.
+    if cfg!(target_os = "windows") {
+        return Err(crate::Error::Config(format!(
+            "{}: backend \"{}\": [runtime] type = \"{}\" is not supported on Windows (no state \
+             directory convention, and no SIGTERM to stop a server with) — use type = \"{}\", \
+             or start the server outside npu",
+            source.display(),
+            backend.id,
+            crate::runtime::process::NAME,
+            crate::runtime::docker::NAME
+        )));
+    }
+
+    // A `base_url` the readiness probe can never parse is a defect of this
+    // file, and it is only this family that turns it into a kill: `serve`
+    // spawns the server, probes an address that cannot resolve for the whole
+    // `startup_timeout_secs`, then SIGTERM/SIGKILLs a perfectly working
+    // process and blames the budget. Rejected here, it is exit `2` naming
+    // the file, before anything is started.
+    if let Err(detail) = crate::builtin::parse_host_port(&backend.base_url) {
+        return Err(crate::Error::Config(format!(
+            "{}: backend \"{}\": {detail} — a process runtime is started only once its \
+             base_url answers, so an address npu cannot parse can never be satisfied",
+            source.display(),
+            backend.id
+        )));
+    }
+
+    if !is_valid_runtime_id(&backend.id) {
+        return Err(crate::Error::Config(format!(
+            "{}: backend \"{}\": declaring a process runtime requires an identifier usable as a \
+             state file name (ASCII letters, digits, \"_\", \".\" and \"-\", starting with a \
+             letter or a digit)",
+            source.display(),
+            backend.id
+        )));
+    }
+
+    // Same rule as `[timeouts].request_secs`: a budget of zero is honoured
+    // literally, so `serve` could never succeed — and a key read then
+    // clamped would be a key silently ignored.
+    if process.startup_timeout_secs == 0 {
+        return Err(crate::Error::Config(format!(
+            "{}: backend \"{}\": [runtime].startup_timeout_secs must be greater than 0 — \
+             a zero budget leaves no time for anything to start",
+            source.display(),
+            backend.id
+        )));
+    }
+
+    // And an upper bound, for a reason the zero check shares: `serve` builds
+    // its deadline as `Instant::now() + Duration::from_secs(value)`, which
+    // PANICS on a large one — exit `101` and a panic message, in place of
+    // the exit-code contract this CLI is driven by. A day is already longer
+    // than any start worth waiting for.
+    if process.startup_timeout_secs > MAX_STARTUP_TIMEOUT_SECS {
+        return Err(crate::Error::Config(format!(
+            "{}: backend \"{}\": [runtime].startup_timeout_secs must be at most \
+             {MAX_STARTUP_TIMEOUT_SECS} (a day); npu cannot build a deadline out of \
+             {}",
+            source.display(),
+            backend.id,
+            process.startup_timeout_secs
+        )));
+    }
+
+    for template in process
+        .arguments
+        .iter()
+        .chain(process.env.values())
+        .chain(std::iter::once(&process.command))
+    {
+        validate_runtime_template(template, &backend.id, source)?;
     }
 
     Ok(())
@@ -552,6 +797,7 @@ fn validate_backend(backend: &Backend, source: &Path) -> crate::Result<()> {
     }
 
     validate_docker(backend, source)?;
+    validate_process(backend, source)?;
 
     Ok(())
 }
@@ -728,6 +974,13 @@ pub fn load_scopes(roots: &[PathBuf]) -> crate::Result<Config> {
     // everything downstream — the docker template whitelist included — only
     // ever sees a resolved value.
     for (backend, source) in backends.values_mut() {
+        // The origin, kept rather than dropped with the pair below: it is
+        // what tells two same-named backends of two different projects apart
+        // in the machine-global state directory. Canonicalized so the same
+        // file reached through a symlink or a different spelling still
+        // produces one value; the file was just read, so the fallback is
+        // only there for a filesystem that refuses the call.
+        backend.source = std::fs::canonicalize(&*source).unwrap_or_else(|_| source.clone());
         // Normalization first: `resolve_port` and everything after it read
         // the runtime, never the legacy table, so the fold must already have
         // happened. The double declaration is caught just before, while both
@@ -813,9 +1066,12 @@ mod tests {
     /// is folded into `runtime` at load time, so `runtime()` is the only
     /// shape that survives loading — whichever form the file declared.
     fn docker_table(backend: &Backend) -> &Docker {
-        match backend.runtime().expect("a runtime must be kept") {
-            Runtime::Docker(docker) => docker,
-        }
+        docker_of(backend).expect("a Docker runtime must be kept")
+    }
+
+    /// Its twin for the process family.
+    fn process_table(backend: &Backend) -> &Process {
+        process_of(backend).expect("a process runtime must be kept")
     }
 
     /// Writes a backend declaring `port = <port_value>` (raw TOML), whose
@@ -1445,6 +1701,385 @@ mod tests {
 
         let config = load(&root).expect("the legacy [docker] table must still load");
         assert_eq!(docker_table(&config.backends["b"]).image, "img");
+    }
+
+    // -- the process runtime family ---------------------------------------
+
+    /// Everything the family reads, in one declaration, arriving intact.
+    #[test]
+    fn load_accepts_a_process_runtime() {
+        let root = fixture_dir("process-tagged");
+        write_runtime_backend(
+            &root,
+            r#"
+            [runtime]
+            type = "process"
+            command = "llama-server"
+            arguments = ["--model", "{{ args.model }}"]
+            startup_timeout_secs = 90
+
+            [runtime.env]
+            LLAMA_CACHE = "/var/cache"
+            "#,
+        );
+
+        let config = load(&root).expect("a process runtime must load");
+        let process = process_table(&config.backends["b"]);
+        assert_eq!(process.command, "llama-server");
+        assert_eq!(process.arguments, vec!["--model", "{{ args.model }}"]);
+        assert_eq!(process.startup_timeout_secs, 90);
+        assert_eq!(
+            process.env.get("LLAMA_CACHE").map(String::as_str),
+            Some("/var/cache")
+        );
+    }
+
+    /// The optional keys have to have a value the code actually uses, or
+    /// the default is a fiction.
+    #[test]
+    fn a_process_runtime_reduced_to_its_command_gets_the_default_budget() {
+        let root = fixture_dir("process-minimal");
+        write_runtime_backend(
+            &root,
+            r#"
+            [runtime]
+            type = "process"
+            command = "llama-server"
+            "#,
+        );
+
+        let config = load(&root).expect("a command alone must load");
+        let process = process_table(&config.backends["b"]);
+        assert!(process.arguments.is_empty());
+        assert!(process.env.is_empty());
+        assert_eq!(process.startup_timeout_secs, DEFAULT_STARTUP_TIMEOUT_SECS);
+    }
+
+    #[test]
+    fn load_rejects_an_unknown_key_inside_a_process_runtime() {
+        let root = fixture_dir("process-unknown-key");
+        write_runtime_backend(
+            &root,
+            r#"
+            [runtime]
+            type = "process"
+            command = "llama-server"
+            bogus = 1
+            "#,
+        );
+
+        let err = load(&root).expect_err("an unknown key must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        let message = err.to_string();
+        assert!(message.contains("b.toml"), "got: {message}");
+        assert!(message.contains("bogus"), "got: {message}");
+    }
+
+    /// An unsupported family is a NAMED rejection, which is the whole point
+    /// of the tag.
+    #[test]
+    fn load_rejects_an_unknown_runtime_family() {
+        let root = fixture_dir("process-unknown-family");
+        write_runtime_backend(
+            &root,
+            r#"
+            [runtime]
+            type = "podman"
+            image = "img"
+            "#,
+        );
+
+        let err = load(&root).expect_err("an unknown family must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        let message = err.to_string();
+        assert!(message.contains("b.toml"), "got: {message}");
+        assert!(message.contains("podman"), "got: {message}");
+    }
+
+    /// `{{ backend.port }}` works in the two places the family renders, and
+    /// nowhere else: one template engine, not a second one.
+    #[test]
+    fn a_process_runtime_substitutes_the_port_in_arguments_and_env_values() {
+        let root = fixture_dir("process-port");
+        write(
+            &root,
+            "backends/b.toml",
+            r#"
+            id = "b"
+            base_url = "http://127.0.0.1:{{ backend.port }}"
+            type = "openai-compatible"
+            port = 8081
+
+            [operations.chat]
+            method = "POST"
+            path = "/v1/chat/completions"
+
+            [runtime]
+            type = "process"
+            command = "llama-server"
+            arguments = ["--port", "{{ backend.port }}"]
+
+            [runtime.env]
+            SERVER_PORT = "{{ backend.port }}"
+            "#,
+        );
+
+        let config = load(&root).expect("a declared port must load");
+        let backend = &config.backends["b"];
+        let process = process_table(backend);
+        assert_eq!(backend.base_url, "http://127.0.0.1:8081");
+        assert_eq!(process.arguments, vec!["--port", "8081"]);
+        assert_eq!(
+            process.env.get("SERVER_PORT").map(String::as_str),
+            Some("8081")
+        );
+    }
+
+    /// A port read ONLY by the environment overlay still counts as read:
+    /// rejecting it would make a legitimate declaration impossible.
+    #[test]
+    fn a_port_read_only_by_the_environment_overlay_is_not_reported_as_unused() {
+        let root = fixture_dir("process-port-env-only");
+        write(
+            &root,
+            "backends/b.toml",
+            r#"
+            id = "b"
+            base_url = "http://127.0.0.1:8081"
+            type = "openai-compatible"
+            port = 8081
+
+            [operations.chat]
+            method = "POST"
+            path = "/v1/chat/completions"
+
+            [runtime]
+            type = "process"
+            command = "llama-server"
+
+            [runtime.env]
+            SERVER_PORT = "{{ backend.port }}"
+            "#,
+        );
+
+        let config = load(&root).expect("a port read by the overlay is read");
+        assert_eq!(
+            process_table(&config.backends["b"])
+                .env
+                .get("SERVER_PORT")
+                .map(String::as_str),
+            Some("8081")
+        );
+    }
+
+    /// `port = "auto"` cannot work here: npu has no way to ask a process
+    /// which port it ended up on. The configuration is wrong — exit 2, not
+    /// a runtime that is merely down.
+    #[test]
+    fn port_auto_with_a_process_runtime_is_rejected() {
+        let root = fixture_dir("process-port-auto");
+        write(
+            &root,
+            "backends/b.toml",
+            r#"
+            id = "b"
+            base_url = "http://127.0.0.1:{{ backend.port }}"
+            type = "openai-compatible"
+            port = "auto"
+
+            [operations.chat]
+            method = "POST"
+            path = "/v1/chat/completions"
+
+            [runtime]
+            type = "process"
+            command = "llama-server"
+            arguments = ["--port", "{{ backend.port }}"]
+            "#,
+        );
+
+        let err = load(&root).expect_err("auto must be refused for a process runtime");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert_eq!(err.exit_code(), 2);
+        let message = err.to_string();
+        assert!(message.contains("b.toml"), "got: {message}");
+        assert!(message.contains("\"b\""), "got: {message}");
+    }
+
+    #[test]
+    fn a_process_runtime_referencing_an_unknown_argument_is_rejected() {
+        let root = fixture_dir("process-unknown-arg");
+        write_runtime_backend(
+            &root,
+            r#"
+            [runtime]
+            type = "process"
+            command = "llama-server"
+            arguments = ["{{ args.temperature }}"]
+            "#,
+        );
+
+        let err = load(&root).expect_err("only the model argument is available here");
+        assert!(matches!(err, crate::Error::Config(_)));
+        let message = err.to_string();
+        assert!(message.contains("b.toml"), "got: {message}");
+        assert!(message.contains("temperature"), "got: {message}");
+    }
+
+    /// `npu serve` reads no input, so the placeholder can never resolve —
+    /// in an argument as in an environment value.
+    #[test]
+    fn a_process_runtime_referencing_the_input_placeholder_is_rejected() {
+        let root = fixture_dir("process-input-placeholder");
+        write_runtime_backend(
+            &root,
+            r#"
+            [runtime]
+            type = "process"
+            command = "llama-server"
+
+            [runtime.env]
+            PROMPT = "{{ input }}"
+            "#,
+        );
+
+        let err = load(&root).expect_err("the input placeholder has no meaning for a start");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("b.toml"), "got: {err}");
+    }
+
+    /// Honoured literally, a zero budget makes every start fail; clamped, it
+    /// would be a key read and silently ignored.
+    #[test]
+    fn a_zero_startup_budget_is_rejected() {
+        let root = fixture_dir("process-zero-budget");
+        write_runtime_backend(
+            &root,
+            r#"
+            [runtime]
+            type = "process"
+            command = "llama-server"
+            startup_timeout_secs = 0
+            "#,
+        );
+
+        let err = load(&root).expect_err("a zero budget must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        let message = err.to_string();
+        assert!(message.contains("b.toml"), "got: {message}");
+        assert!(message.contains("startup_timeout_secs"), "got: {message}");
+    }
+
+    /// A budget `Instant + Duration` cannot represent PANICS at `serve`
+    /// time — exit `101` instead of the exit-code contract. Rejected at load
+    /// time naming the file, like the zero case.
+    #[test]
+    fn an_unrepresentable_startup_budget_is_rejected() {
+        let root = fixture_dir("process-huge-budget");
+        write_runtime_backend(
+            &root,
+            &format!(
+                r#"
+            [runtime]
+            type = "process"
+            command = "llama-server"
+            startup_timeout_secs = {}
+            "#,
+                u64::MAX
+            ),
+        );
+
+        let err = load(&root).expect_err("an unrepresentable budget must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert_eq!(err.exit_code(), 2);
+        let message = err.to_string();
+        assert!(message.contains("b.toml"), "got: {message}");
+        assert!(message.contains("startup_timeout_secs"), "got: {message}");
+    }
+
+    /// A `base_url` the readiness probe can never parse is a defect of the
+    /// FILE: left to `serve`, it burns the whole budget and then kills a
+    /// perfectly working server, blaming a timeout key that is correct.
+    #[test]
+    fn a_process_runtime_whose_base_url_cannot_be_parsed_is_rejected() {
+        let root = fixture_dir("process-unparseable-url");
+        write(
+            &root,
+            "backends/b.toml",
+            r#"
+            id = "b"
+            base_url = "127.0.0.1:8000"
+            type = "openai-compatible"
+
+            [operations.chat]
+            method = "POST"
+            path = "/v1/chat/completions"
+
+            [runtime]
+            type = "process"
+            command = "llama-server"
+            "#,
+        );
+
+        let err = load(&root).expect_err("an unprobeable base_url must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert_eq!(err.exit_code(), 2);
+        let message = err.to_string();
+        assert!(message.contains("b.toml"), "got: {message}");
+        assert!(message.contains("127.0.0.1:8000"), "got: {message}");
+    }
+
+    /// A placeholder whose FORM is not recognized used to be reported by
+    /// `prompt` alone, which knows about templates and nothing about files:
+    /// its reader was told a placeholder was wrong without being told which
+    /// of the scope's backend files to open.
+    #[test]
+    fn a_malformed_runtime_placeholder_names_its_file_and_backend() {
+        let root = fixture_dir("runtime-bad-placeholder");
+        write_runtime_backend(
+            &root,
+            r#"
+            [runtime]
+            type = "process"
+            command = "srv-{{ backend.port }}"
+            "#,
+        );
+
+        let err = load(&root).expect_err("an unknown placeholder form must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        let message = err.to_string();
+        assert!(message.contains("b.toml"), "got: {message}");
+        assert!(message.contains("\"b\""), "got: {message}");
+    }
+
+    /// The identifier becomes a state file name, so the same predicate that
+    /// guards a container name guards this too.
+    #[test]
+    fn a_process_runtime_on_an_unusable_identifier_is_rejected() {
+        let root = fixture_dir("process-bad-id");
+        write(
+            &root,
+            "backends/b.toml",
+            r#"
+            id = "../escape"
+            base_url = "http://127.0.0.1:8000"
+            type = "openai-compatible"
+
+            [operations.chat]
+            method = "POST"
+            path = "/v1/chat/completions"
+
+            [runtime]
+            type = "process"
+            command = "llama-server"
+            "#,
+        );
+
+        let err = load(&root).expect_err("an identifier that is not a file name must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        let message = err.to_string();
+        assert!(message.contains("b.toml"), "got: {message}");
+        assert!(message.contains("../escape"), "got: {message}");
     }
 
     /// Declaring both forms has no honest resolution: picking a winner would

@@ -218,6 +218,7 @@ mod tests {
             runtime: None,
             docker: None,
             timeouts,
+            source: std::path::PathBuf::new(),
         }
     }
 
@@ -404,6 +405,7 @@ mod tests {
             runtime: None,
             docker: None,
             timeouts: None,
+            source: std::path::PathBuf::new(),
         };
         let model = crate::config::Model {
             id: "test-model".to_string(),

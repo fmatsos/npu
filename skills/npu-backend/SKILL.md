@@ -1,10 +1,11 @@
 ---
 name: npu-backend
-description: Writes and fixes `npu` backend files (`.npu/backends/*.toml`) — the `id`, `type`, `base_url` and `[operations.<name>]` tables that tell `npu` where to send requests and on which HTTP path, plus the optional `[runtime]` table `npu serve` uses to start the runtime (its untagged `[docker]` spelling of earlier versions is still accepted), and the optional `[timeouts]` table that overrides the request timeout. Covers the constraints enforced at load time — `openai-compatible` is the only supported type, `POST` the only supported method, and unknown keys are rejected rather than ignored. Use it whenever a backend declaration is created, changed or rejected.
+description: Writes and fixes `npu` backend files (`.npu/backends/*.toml`) — the `id`, `type`, `base_url` and `[operations.<name>]` tables that tell `npu` where to send requests and on which HTTP path, plus the optional `[runtime]` table `npu serve` uses to start the runtime — as a Docker container (`type = "docker"`, whose untagged `[docker]` spelling of earlier versions is still accepted) or as a local process (`type = "process"`), and the optional `[timeouts]` table that overrides the request timeout. Covers the constraints enforced at load time — `openai-compatible` is the only supported type, `POST` the only supported method, and unknown keys are rejected rather than ignored. Use it whenever a backend declaration is created, changed or rejected.
 when_to_use: >
   Trigger on "add an npu backend", "point npu at my model server / OVMS /
   llama.cpp / Ollama", "change the base_url", "add an operation", "make npu
-  start OVMS with Docker", or on any npu error mentioning a backend id,
+  start OVMS with Docker", "make npu launch llama-server itself", or on any npu
+  error mentioning a backend id,
   `base_url`, `type`, `method`, an operation name or a `[runtime]`/`[docker]` key.
 model: sonnet
 effort: low
@@ -41,7 +42,7 @@ next reader.
 | `base_url` | yes | joined with an operation's `path`; a trailing `/` is handled either way |
 | `port` | no | declared once, read as `{{ backend.port }}` in `base_url` and `[runtime]` |
 | `[operations.<name>]` | at least one | each needs `method` and `path` |
-| `[runtime]` | no | `type`, `image`, `options`, `args` — how `npu serve` starts this backend |
+| `[runtime]` | no | how `npu serve` starts this backend; `type` picks the family — `"docker"` or `"process"` |
 | `[timeouts]` | no | `request_secs` — overrides the default request timeout (120s) |
 
 ## What is rejected at load time
@@ -55,13 +56,18 @@ silently ignored:
 - `[timeouts].request_secs = 0`, or any key inside `[timeouts]` other than `request_secs`;
 - `port = 0`, a `port` string other than `"auto"`, a `{{ backend.port }}` with no `port` key, or a
   `port` key no placeholder reads;
-- `port = "auto"` without a Docker runtime, or whose `base_url` does not read
-  `{{ backend.port }}`;
+- `port = "auto"` with anything other than a Docker runtime (a process cannot be asked which port
+  it took), or whose `base_url` does not read `{{ backend.port }}`;
 - two files in the same scope sharing an `id`;
-- a `[runtime]` whose `type` is not `"docker"`, and any unknown key inside `[runtime]`;
+- a `[runtime]` whose `type` is neither `"docker"` nor `"process"`, and any unknown key inside
+  `[runtime]` — including a key belonging to the *other* family (`image` under
+  `type = "process"`, `command` under `type = "docker"`);
 - a backend declaring both `[runtime]` and the legacy `[docker]` table;
-- inside `[runtime]`: a placeholder other than `{{ args.model }}` / `{{ env.NAME }}`, and an `id`
-  unusable as a container name (ASCII letters, digits, `_`, `.`, `-`, starting alphanumeric).
+- `[runtime].startup_timeout_secs = 0` (process family), on the `[timeouts].request_secs`
+  precedent;
+- inside `[runtime]`: a placeholder other than `{{ args.model }}` / `{{ env.NAME }}` /
+  `{{ backend.port }}`, and an `id` unusable as a container name — or, for the process family, as
+  a state file name (same rule: ASCII letters, digits, `_`, `.`, `-`, starting alphanumeric).
 
 ## Operation names are yours
 
@@ -94,8 +100,12 @@ Check the server's own documentation for the path; `npu` joins `base_url` and
 ## Starting the backend: the `[runtime]` table
 
 Optional. Declaring it gives this backend a lifecycle — `npu serve <model>`,
-`npu stop <model>`, `npu status`, `npu logs <model>` — and makes Docker a
-prerequisite for those commands alone.
+`npu stop <model>`, `npu status`, `npu logs <model>`. `type` picks the family,
+and each family reads its own keys.
+
+### `type = "docker"`
+
+Makes Docker a prerequisite for those four commands alone.
 
 ```toml
 [runtime]
@@ -117,9 +127,51 @@ Templating is the prompt engine's: `{{ args.model }}` (the served model's
 `model` field, the only argument available here) and `{{ env.NAME }}`.
 `{{ input }}` is rejected — `npu serve` reads no input.
 
-`type = "docker"` is the only family; anything else is rejected by name. The untagged `[docker]`
-table of earlier versions is still accepted and folded into `[runtime]` at load time — write
-`[runtime]` in new files, and never both, which is rejected.
+The untagged `[docker]` table of earlier versions is still accepted and folded into `[runtime]`
+with `type = "docker"` at load time — write `[runtime]` in new files, and never both, which is
+rejected.
+
+### `type = "process"`
+
+Starts the server directly on this machine: no container, no daemon.
+
+```toml
+[runtime]
+type = "process"
+command = "llama-server"
+arguments = [
+    "--model", "{{ args.model }}",
+    "--host", "127.0.0.1",
+    "--port", "{{ backend.port }}",
+]
+startup_timeout_secs = 60
+
+[runtime.env]
+LLAMA_CACHE = "{{ env.HOME }}/.cache/llama.cpp"
+```
+
+| Key | Required | Notes |
+| --- | --- | --- |
+| `command` | yes | absolute/relative path used as-is, or a bare name looked up on `PATH` |
+| `arguments` | no | one list entry per argument, never one string to be split |
+| `[runtime.env]` | no | layered **over** `npu`'s own environment, never replacing it |
+| `startup_timeout_secs` | no | readiness budget, `30` by default, `0` rejected |
+
+Same templating, with one exception: `{{ backend.port }}` is substituted in `arguments` and in
+`[runtime.env]` values, **not** in `command`.
+
+Unlike `docker run -d`, `npu serve` **waits** here until the backend's `base_url` answers, the
+server exits, or the budget runs out — so a `serve` that printed a pid means a server that
+answers. It prints the pid; `npu stop` prints the backend id and escalates `SIGTERM` → `SIGKILL`.
+
+`npu serve` writes a JSON state record and a `.log` file (both streams) under
+`$XDG_STATE_HOME/npu/`, named after the backend — that is how `stop`, `status` and `logs` find the
+process again, Docker's name registry having no equivalent here. The record's `(pid, birth time)`
+pair is the identity check that keeps `stop` from killing a recycled pid; the executable is
+recorded but deliberately not compared, since a `command` ending on `exec` (a wrapper script, a
+`uv`/`conda` shim) keeps the pid and swaps the image.
+
+The spawned server is **not** detached into its own session: a terminal hang-up takes it down.
 
 For OVMS on an accelerator: image `openvino/model_server:<version>-gpu` —
 there is no NPU-only image, the GPU tag carries both plugins. In `options`,
@@ -211,6 +263,10 @@ not started.
 declares a Docker runtime; it means `docker info` succeeded. Its failure is a
 reachability failure too — exit `3`, never `2`.
 
+`✓ runtime command "llama-server" available` is its process-family twin: one check per distinct
+`command`, named, emitted only when a backend declares a process runtime, and a reachability
+failure as well — an absent executable is something to install, not a file to fix.
+
 ## Reference
 
 This skill is a summary. When a case is not covered here, or when the
@@ -220,6 +276,7 @@ documentation is authoritative:
 - [Backends](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#backends)
 - [Scopes and precedence](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#scopes-and-precedence)
 - [Starting a backend with Docker](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#starting-a-backend-with-docker)
+- [Starting a backend as a process](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#starting-a-backend-as-a-process)
 - [`npu doctor`](https://github.com/fmatsos/npu/blob/main/docs/cli.md#npu-doctor)
 - [`npu serve`](https://github.com/fmatsos/npu/blob/main/docs/cli.md#npu-serve)
 

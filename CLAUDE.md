@@ -142,14 +142,19 @@ unwrap_used = "warn"
 
 ## Dependencies
 
-Nine, deliberately: `clap` (builder API, not derive — the command tree is
+Ten, deliberately: `clap` (builder API, not derive — the command tree is
 built at runtime from a directory scan), `serde`, `serde_json`, `toml`,
 `ureq` (blocking, rustls — chosen over `reqwest`, which drags in tokio),
 `jsonschema` with `default-features = false` (its defaults pull `reqwest`
-back in via `resolve-http`), and the three `npu update` brought in:
+back in via `resolve-http`), the three `npu update` brought in:
 `semver` (comparing the release manifest's version to the running one),
 `sha2` (verifying the downloaded binary before it replaces anything) and
-`self-replace` (replacing the running executable at its own path).
+`self-replace` (replacing the running executable at its own path), and
+`sysinfo` with `default-features = false, features = ["system"]` — the
+process-runtime family needs process identity (`start_time`, `exe`) and
+signalling (`kill_with`) through a wholly SAFE API, which
+`unsafe_code = "forbid"` makes non-negotiable; the four unused default
+features would also drag `rayon` in via `multithread`.
 
 Adding one is a measured decision: check the binary size and the crate count
 before and after, and record the numbers.

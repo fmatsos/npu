@@ -38,12 +38,14 @@ $ npu doctor
 What it checks, in order: (1) every scope parses and merges; (2) each backend
 is reachable; (3) the container runtime answers (`docker info`), **only** if a
 backend declares a Docker runtime — Docker is an optional prerequisite and a
-machine without it is never penalized; (4) each model names a backend that
-exists and an operation that backend exposes; (5) each command names a model
-that exists; (6) every declared output schema exists, is readable, is valid
-JSON and compiles.
+machine without it is never penalized; (4) each `command` declared by a process
+runtime is runnable, one named check per distinct command and **only** if a
+backend declares one; (5) each model names a backend that exists and an
+operation that backend exposes; (6) each command names a model that exists;
+(7) every declared output schema exists, is readable, is valid JSON and
+compiles.
 
-Step 6 is the exhaustive pass normal execution deliberately skips — at runtime
+Step 7 is the exhaustive pass normal execution deliberately skips — at runtime
 only the invoked command's schema is compiled, so a broken schema elsewhere
 cannot disable the CLI.
 
@@ -58,8 +60,8 @@ cannot disable the CLI.
 | `4` | **output contract** — the model's answer violated the declaration | your prompt or your schema |
 
 `doctor` narrows it further: `2` if any *configuration* check failed, `3` if
-**only** reachability failed — the backend probe and the container runtime
-check both count as reachability. Configuration takes priority — a broken config
+**only** reachability failed — the backend probe, the container runtime check
+and the runtime-command checks all count as reachability. Configuration takes priority — a broken config
 *and* an unreachable backend gives `2`.
 
 The `2` / `4` split is the useful one for a calling program: `2` means *your
@@ -97,9 +99,10 @@ stderr, then run `npu doctor`.
 | a broken file in a broad scope kills everything | **parse errors on backends/models are always fatal**, even when shadowed: an unparseable file has no knowable identity, so nothing can tell whether it is shadowed. Commands are keyed by path, so a shadowed broken command file is never opened. |
 | exit `3` with everything green in `doctor` | reachable socket, wrong `path` on the operation, or a non-2xx response — `doctor` never sends an HTTP request |
 | `npu serve` exits `2` naming a backend | that backend declares no `[runtime]` table — npu was never told how to start it |
-| `npu serve` exits `3` | `docker` is missing, its daemon is down, or `docker run` failed; its own message is on stderr |
+| `npu serve` exits `3` | Docker family: `docker` is missing, its daemon is down, or `docker run` failed. Process family: the `command` is absent, the port is taken, the spawn was refused, the server exited during startup or never answered within `startup_timeout_secs`. Its own message is on stderr, and names the log file it kept |
 | a command file is diagnosed as having no frontmatter | the fence is `---`; a file still opening with `+++` is rejected with its own message |
 | a container is running but the model does not answer | `docker run -d` returns before the model is loaded — `npu status` says `Up`, `npu logs <model>` says how far it got |
+| `npu status` says `stale state` for a process backend | the recorded pid was recycled and is now somebody else's process; `npu serve` or `npu stop` clears the record, and neither ever signals it |
 | exit `4` | the response violated `[output]`: not JSON, schema violation, or more lines than `max_lines`. Every schema violation is listed, not just the first. |
 
 `npu` does not retry, does not reformulate, and does not ask the model again:

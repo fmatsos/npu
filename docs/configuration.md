@@ -5,6 +5,7 @@
 - [Merge semantics](#merge-semantics)
 - [Backends](#backends)
 - [Starting a backend with Docker](#starting-a-backend-with-docker)
+- [Starting a backend as a process](#starting-a-backend-as-a-process)
 - [Models](#models)
 - [When a broader scope is broken](#when-a-broader-scope-is-broken)
 
@@ -127,8 +128,13 @@ type = "docker"
 options = ["-p", "{{ backend.port }}:8000", "..."]
 ```
 
-`{{ backend.port }}` is substituted at load time in `base_url` and in every `[runtime]` entry. It is
-the only `backend.*` placeholder that exists, and the two halves are enforced together: the
+`{{ backend.port }}` is substituted at load time in `base_url` and in every `[runtime]` entry that
+can be resolved before the runtime exists: `image`, `options` and `args` for a Docker runtime,
+`arguments` and the `[runtime.env]` values for a process one. **Not** a process runtime's
+`command` — an executable whose *name* depends on a port is not a case worth a substitution, and
+leaving it out means a `port` read only there is reported as unused rather than silently dropped.
+
+It is the only `backend.*` placeholder that exists, and the two halves are enforced together: the
 placeholder without a `port` key is rejected, and a `port` key nothing references is rejected too —
 a value read and then ignored is exactly what this configuration does not do.
 
@@ -196,9 +202,14 @@ accelerator such as an NPU). `request_secs = 0` is rejected at load time, naming
 
 ## Starting a backend with Docker
 
-A backend may declare how to start its own runtime. `npu serve <model>` then runs it, and Docker
-becomes a prerequisite — an **optional** one: nothing changes for a configuration without this
-table.
+A backend may declare how to start its own runtime, in a `[runtime]` table whose `type` picks the
+**family**: `"docker"` (below) or `"process"` (see
+[Starting a backend as a process](#starting-a-backend-as-a-process)). Each family reads its own
+keys, and a key belonging to the other one is rejected by name — the table is tagged precisely so
+that `npu` never has to guess which shape it is looking at.
+
+`npu serve <model>` then runs it, and the family's prerequisite — Docker here — becomes an
+**optional** one: nothing changes for a configuration without this table.
 
 ```toml
 # .npu/backends/ovms.toml, continued
@@ -215,14 +226,15 @@ args = [
 
 | Key | Required | Notes |
 | --- | --- | --- |
-| `type` | yes | the runtime family; `"docker"` is the only value supported |
+| `type` | yes | `"docker"`, which selects this family |
 | `image` | yes | the container image to run |
 | `options` | no | passed to `docker run` **before** the image: ports, volumes, devices |
 | `args` | no | passed to the image **after** it: the server's own arguments |
 
 `type` is what makes an unsupported family a named rejection — `unknown variant "podman"`, with
 the file — instead of a table `npu` would have to guess the meaning of. Unknown keys inside
-`[runtime]` are rejected like everywhere else.
+`[runtime]` are rejected like everywhere else, and that includes a key of the *other* family:
+`image` under `type = "process"` is a mistake worth naming, not one to ignore.
 
 ### The legacy `[docker]` table
 
@@ -263,6 +275,137 @@ device flag belongs in `args`: the device is baked into that export's `graph.pbt
 `ovms --configure`, and OVMS reads it from there. One export therefore serves one device, so
 running the same weights on the NPU and the GPU means two backends on two ports — which is also
 what lets several small models run at once.
+
+---
+
+## Starting a backend as a process
+
+The other runtime family starts a server **directly on this machine**, with no container and no
+daemon: `llama.cpp`'s `llama-server`, an MLX server, a shell script of your own. Same table, same
+`npu serve` / `stop` / `status` / `logs`, different `type`.
+
+```toml
+# .npu/backends/llamacpp.toml, continued
+[runtime]
+type = "process"
+command = "llama-server"
+arguments = [
+    "--model", "{{ args.model }}",
+    "--host", "127.0.0.1",
+    "--port", "{{ backend.port }}",
+]
+startup_timeout_secs = 60
+
+[runtime.env]
+LLAMA_CACHE = "{{ env.HOME }}/.cache/llama.cpp"
+```
+
+| Key | Required | Notes |
+| --- | --- | --- |
+| `type` | yes | `"process"`, which selects this family |
+| `command` | yes | an absolute or relative path used as-is, or a bare name looked up on `PATH`; templated like the rest |
+| `arguments` | no | the server's own arguments, one list entry per argument |
+| `[runtime.env]` | no | variables **layered over** the environment `npu` itself runs in |
+| `startup_timeout_secs` | no | readiness budget in seconds, `30` by default; `0` is rejected |
+
+`arguments` is a list of separate entries, never one string to be split: a model path containing a
+space would otherwise become two arguments, and there is no shell here to blame it on. Entries go
+through the same templating as a Docker runtime's — `{{ args.model }}`, `{{ env.NAME }}`,
+`{{ backend.port }}` — with `{{ input }}` rejected, since `npu serve` reads no input.
+
+`command` is templated too — `{{ args.model }}` and `{{ env.NAME }}`, so a server living under a
+path only the environment knows can be named — but **not** `{{ backend.port }}`: an executable
+whose path depends on a port is not a case this supports, and the placeholder is rejected there
+naming the file. `npu doctor` emits no "runtime command available" check for a templated
+`command`: it has no model to resolve it against, and reporting the template itself as a missing
+binary would tell its reader to install `{{ env.LLAMA_BIN }}`.
+
+The lookup requires an **executable** file. A regular file with no execute bit is skipped and the
+`PATH` scan continues, exactly as a shell does — so a non-executable leftover early on `PATH`
+cannot shadow the real server, nor make `npu doctor` green about a command `npu serve` then
+refuses to spawn.
+
+`[runtime.env]` is an **overlay**, not a replacement: the child inherits `npu`'s own environment
+and these values are layered on top. A server needing `HOME`, `PATH` or a proxy setting therefore
+does not have to redeclare them to gain one variable.
+
+`startup_timeout_secs` is what `npu serve` waits, having spawned the server, for it to answer on
+its `base_url` — so a `base_url` this family cannot parse into a host and a port is rejected at
+load time naming the file: a probe that can never succeed would burn the whole budget and then
+terminate a perfectly working server, blaming a timeout key that was correct. The budget's failure
+message carries the last probe error for the same reason, so "connection refused" and "the port in
+`base_url` is not the one `arguments` gave the server" do not look alike. Unlike `docker run -d`, this family does **not** return before the server is ready:
+a `serve` that succeeded means something answered. `0` is rejected at load time naming the file,
+on the `[timeouts].request_secs` precedent — honoured literally it would make every start fail,
+and clamped it would be a key read and then ignored.
+
+Two constraints this family adds, both rejected at load time naming the file:
+
+- `port = "auto"` is refused. Docker can be asked which port it allocated; a process cannot, so
+  there would be nothing to read the answer back from. Declare a fixed `port`.
+- the backend `id` must be usable as a file name (ASCII letters, digits, `_`, `.` and `-`,
+  starting with a letter or a digit) — the same rule the Docker family applies to a container
+  name, here because `npu` derives this backend's state file from the identifier.
+- `startup_timeout_secs` must be between `1` and `86400`. The upper bound is not taste: a larger
+  value cannot be turned into a deadline at all, and a `serve` that panicked would replace this
+  CLI's exit codes with `101`.
+
+This family is **Unix-only**. On Windows a `[runtime] type = "process"` backend is rejected at
+load time naming the file: there is no `$XDG_STATE_HOME`/`$HOME` convention to put the state
+record under, and no `SIGTERM` — `stop`'s graceful step would silently collapse into an immediate
+hard kill, with no chance for a server to flush. Use `type = "docker"` there, or start the server
+outside `npu`.
+
+### What `npu` remembers
+
+Docker is its own registry, so a Docker runtime needs nothing persisted. A process has no
+registry: `npu serve` therefore writes a small JSON record named after the backend, plus a `.log`
+file it redirects the server's **two** streams into. `stop` deletes the record; `logs` reads the
+file. They live in `$XDG_STATE_HOME/npu/`, or `$HOME/.local/state/npu/` when that variable is
+unset — and on macOS in `$HOME/Library/Application Support/npu/state/`, with no `XDG_STATE_HOME`
+branch at all: the variable has no meaning there, and honouring it would scatter one machine's
+state over two places depending on which shell exported what.
+
+That directory is **machine-global** while backend identifiers are per-scope, so two projects each
+declaring `llamacpp` in their own `./.npu` do land on the same record. The record therefore also
+holds the backend **file** it was served from: one naming another file, while its process is
+alive, is reported as `foreign state` and is never signalled, never cleared and never written
+over — `serve` and `stop` both refuse, naming both files. Once nothing is behind that pid the
+record describes nothing, and the next `serve` simply forgets it.
+
+The record holds the pid and the moment the system says that pid was born. That **pair** is the
+identity check, and it is what keeps `npu stop` from killing an innocent process: a pid alone can,
+after a reboot or enough process churn, name somebody else's. A record whose pid was recycled is
+reported as `stale state` and forgotten — never signalled. The birth is an epoch **second**, which
+is the resolution of the check: two processes sharing a pid and born inside the same second are
+indistinguishable to it. Reaching that needs the pid space to wrap within one second — a container
+with a small `pid_max` namespace, not a stock machine — and there is no finer token without
+`unsafe`.
+
+The executable is recorded too, but only so that whoever reads the file knows what was started. It
+is deliberately **not** compared: a `command` ending on `exec` — a wrapper script, a virtualenv or
+`uv`/`conda` shim — replaces the running image while keeping the pid and its birth, so comparing it
+would declare `npu`'s own child an impostor.
+
+Changing a served backend's `[runtime]` family — or removing the table — leaves that record
+unreachable: `stop`, `status` and `logs` dispatch on what the files say **today**, and a backend
+that now declares Docker is asked about a container. Run `npu stop` before changing the family.
+The record is plain JSON and holds the pid, so a forgotten one is still recoverable by hand.
+
+> [!WARNING]
+> The spawned server is a plain child of the shell `npu serve` ran in. It is **not** detached into
+> its own session, so a terminal hang-up takes it down with everything else in that session. Run
+> `npu serve` from a session that outlives it (a service manager, `nohup`, a multiplexer) if the
+> server is meant to stay up.
+
+> [!WARNING]
+> `npu` signals the process it spawned, and only that one. A `command` whose process **is** the
+> server — a binary, or a launcher ending on `exec` — is stopped correctly. A launcher that forks
+> and waits instead (`sh -c "server | tee log"`, `conda run`, anything that does not `exec`) has
+> its wrapper signalled while the real server survives: `npu stop` reports success and deletes the
+> record, a failed `npu serve` terminates the wrapper and abandons the rest, and the orphan keeps
+> the port while every `npu` command reports the backend as never started. There is no process
+> group to signal instead without `unsafe`, so end your launcher on `exec`.
 
 ---
 

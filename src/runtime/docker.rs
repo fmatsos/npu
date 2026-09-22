@@ -442,6 +442,7 @@ mod tests {
             runtime: None,
             docker: None,
             timeouts: None,
+            source: std::path::PathBuf::new(),
         }
     }
 

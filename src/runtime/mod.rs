@@ -15,6 +15,8 @@
 use std::time::Duration;
 
 pub mod docker;
+pub mod process;
+pub mod state;
 
 /// Budget granted to a `doctor` probe: [`crate::builtin::tcp_probe`] before
 /// it declares a backend unreachable, and [`docker::probe`] before it
@@ -41,6 +43,7 @@ pub(crate) const PROBE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 pub fn label(runtime: &crate::config::Runtime) -> &'static str {
     match runtime {
         crate::config::Runtime::Docker(_) => docker::NAME,
+        crate::config::Runtime::Process(_) => process::NAME,
     }
 }
 
@@ -73,6 +76,9 @@ pub fn resolve_base_url(
 ) -> crate::Result<String> {
     match backend.runtime() {
         Some(crate::config::Runtime::Docker(_)) => docker::resolve_base_url(backend, runner),
-        None => Ok(backend.base_url.clone()),
+        // Nothing to resolve: `port = "auto"` is refused for this family at
+        // load time — npu cannot ask a process which port it ended up on —
+        // so a process backend's `base_url` is already complete.
+        Some(crate::config::Runtime::Process(_)) | None => Ok(backend.base_url.clone()),
     }
 }
