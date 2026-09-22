@@ -97,13 +97,27 @@ jobs:
           curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
+      # Windows spends 2.3x Linux on the same crate graph, and the tell is the
+      # download phase: unpacking the same 149 crates takes 0.9 s on Linux and
+      # 10 s here, with no compilation involved. That is Defender scanning
+      # every small file rustc and cargo write. Excluding the two directories
+      # they write into is the whole fix. Best-effort: an optimization must
+      # never be what fails a release.
+      - name: Keep Defender out of the build directories
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE\target", "$env:USERPROFILE\.cargo"
+
       - name: Add the target
         run: rustup target add ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.label || matrix.target }}
-
+      # No build cache here, deliberately. A cache written by a run on
+      # `refs/tags/vX.Y.Z` is scoped to that tag and unreachable from the next
+      # one, so these eight entries were never read once: ~880 MB written per
+      # release, competing for the 10 GB quota with the `qa` cache — the one
+      # that does hit, because `qa` on `main` writes the same key.
       - run: cargo build --release --locked --target ${{ matrix.target }}
 
       # One archive per target, named after the tag and the target so a
