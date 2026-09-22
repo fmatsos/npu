@@ -2569,6 +2569,45 @@ mod tests {
         assert!(config.models.contains_key("gpt"));
     }
 
+    /// `source` names the backend's state file, so two spellings of one
+    /// root — a symlink, a `..` detour — must yield one value: otherwise
+    /// `stop` run through the other spelling finds no record and orphans
+    /// the server `serve` started.
+    #[cfg(unix)]
+    #[test]
+    fn a_backend_source_does_not_depend_on_how_its_root_was_spelled() {
+        let real = fixture_dir("source-canonical");
+        write(
+            &real,
+            "backends/local.toml",
+            r#"
+            id = "local"
+            base_url = "http://127.0.0.1:8080"
+            type = "openai-compatible"
+
+            [operations.chat]
+            method = "POST"
+            path = "/v1/chat/completions"
+            "#,
+        );
+        let link = real.with_extension("link");
+        drop(std::fs::remove_file(&link));
+        std::os::unix::fs::symlink(&real, &link).expect("the symlink");
+        let detour = real.join("backends").join("..");
+
+        let sources: Vec<PathBuf> = [real, link, detour]
+            .into_iter()
+            .map(|root| {
+                load_scopes(&[root]).expect("the scope must load").backends["local"]
+                    .source
+                    .clone()
+            })
+            .collect();
+
+        assert_eq!(sources[0], sources[1]);
+        assert_eq!(sources[0], sources[2]);
+    }
+
     #[test]
     fn load_scopes_empty_roots_yields_empty_config() {
         let config = load_scopes(&[]).expect("an empty root list must succeed");

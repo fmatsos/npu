@@ -8,8 +8,8 @@
 //! it spawned — so `npu` keeps its own.
 //!
 //! This module is that persistence and NOTHING else: it locates the state
-//! directory, and it writes, reads and removes one record per backend. It
-//! spawns nothing, signals nothing and probes nothing; deciding whether the
+//! directory, and it writes, reads and removes one record per backend FILE.
+//! It spawns nothing, signals nothing and probes nothing; deciding whether the
 //! recorded pid is still the process we started belongs to the caller, which
 //! is why [`State`] carries `process_start_time` rather than a verdict.
 //!
@@ -18,6 +18,7 @@
 //! nothing else.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -126,37 +127,91 @@ pub fn state_dir(env: &StateEnv) -> crate::Result<PathBuf> {
     })
 }
 
-/// The state file of `backend_id`, inside [`state_dir`].
+/// The state file of the backend `backend_id` declared by the file
+/// `source`, inside [`state_dir`].
+///
+/// Takes the ORIGIN as well as the identifier because this directory is
+/// machine-global while backend identifiers are per-scope: two projects
+/// each declaring `llamacpp` in their own `./.npu` would otherwise share
+/// one record and one log, and the second project's `npu logs` would hand
+/// back the first one's output.
+///
+/// `source` is the backend file as `config.rs` recorded it — canonicalized
+/// when the filesystem allowed it, so two spellings of one file land on
+/// one record.
 ///
 /// # Errors
 ///
 /// `Error::Io` from [`state_dir`], or `Error::Config` naming the backend
 /// when its identifier could not be used as a file name.
-pub fn state_path(env: &StateEnv, backend_id: &str) -> crate::Result<PathBuf> {
-    Ok(state_dir(env)?.join(file_name(backend_id)?))
+pub fn state_path(env: &StateEnv, backend_id: &str, source: &Path) -> crate::Result<PathBuf> {
+    Ok(state_dir(env)?.join(file_name(backend_id, source)?))
 }
 
-/// `<backend_id>.json`, once the identifier is known to be safe as a file
-/// name.
+/// `<backend_id>-<digest>.json`, once the identifier is known to be safe as
+/// a file name.
 ///
 /// The check is [`crate::config::is_valid_runtime_id`], the crate's single
 /// identifier predicate, reused rather than reinvented: its character set
 /// (`[a-zA-Z0-9][a-zA-Z0-9_.-]*`) already excludes the empty string, `/`,
 /// `.` and `..` by construction, so a traversal cannot be spelled at all.
+/// The digest adds nothing to defend against — it is hex — but it is
+/// appended to an ALREADY validated identifier, never a reason to stop
+/// validating it.
 ///
 /// Checked HERE and not left to `config.rs` alone, although that is where
 /// the same predicate runs at load time: `validate_docker` only applies it
 /// to a backend that declares a Docker runtime, so the guarantee is
 /// conditional on a family. A function that turns an identifier into a path
 /// may not depend on someone else having validated it.
-fn file_name(backend_id: &str) -> crate::Result<String> {
+fn file_name(backend_id: &str, source: &Path) -> crate::Result<String> {
     if !crate::config::is_valid_runtime_id(backend_id) {
         return Err(crate::Error::Config(format!(
             "backend \"{backend_id}\": identifier unusable as a state file name (ASCII \
              letters, digits, \"_\", \".\" and \"-\", starting with a letter or a digit)"
         )));
     }
-    Ok(format!("{backend_id}.json"))
+    Ok(format!("{backend_id}-{}.json", source_digest(source)))
+}
+
+/// How many hex characters of the source digest the file name carries.
+///
+/// Eight — 32 bits — and the length is a trade, not a default:
+///
+/// - the identifier has to stay READABLE in the name. The record is
+///   documented as plain JSON a human can open when a runtime was
+///   forgotten, and `llamacpp-3f2a19c4.json` still says which backend it
+///   is, where a 64-character digest buries it;
+/// - the population is tiny. A machine has a handful of backend files, not
+///   a million: at 100 distinct sources the birthday bound is about
+///   100² / 2 / 2³² ≈ one chance in 900 000;
+/// - and the residual collision is not silent. Two sources landing on one
+///   name still carry different [`State::source`] values, which
+///   `runtime::process::presence` compares before acting — the collision is
+///   reported as a foreign record, never signalled.
+const SOURCE_DIGEST_HEX: usize = 8;
+
+/// The first [`SOURCE_DIGEST_HEX`] hex characters of the SHA-256 of
+/// `source`'s bytes.
+///
+/// SHA-256 and not `std::collections::hash_map::DefaultHasher`: that hasher
+/// is explicitly not stable across Rust releases, and a state file whose
+/// name moves when the toolchain moves orphans a running server — the
+/// record `stop` needs is suddenly somewhere else. `sha2` is already in the
+/// graph for the updater, so this costs no dependency.
+///
+/// Hashes the OS bytes rather than a lossy UTF-8 conversion: a path this
+/// platform accepts but Unicode cannot spell must still map to one name.
+fn source_digest(source: &Path) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let digest = Sha256::digest(source.as_os_str().as_encoded_bytes());
+    let mut encoded = String::with_capacity(SOURCE_DIGEST_HEX);
+    for byte in digest.iter().take(SOURCE_DIGEST_HEX / 2) {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
 }
 
 /// What `npu` persisted about a runtime it started.
@@ -204,11 +259,17 @@ pub struct State {
     ///
     /// Part of the identity, and for a reason `pid` cannot cover: this
     /// directory is machine-global while backend identifiers are per-scope,
-    /// so two projects each declaring `.npu/backends/llamacpp.toml` land on
-    /// the same record. Without this field the second project's `npu stop`
-    /// signals the first project's server — a pid that genuinely is an
-    /// npu-started process, with a birth that genuinely matches. It is the
-    /// wrong BACKEND, which only the origin can tell.
+    /// so two projects each declaring `.npu/backends/llamacpp.toml` would
+    /// otherwise land on the same record.
+    ///
+    /// What keeps them apart is the file NAME, which carries a digest of
+    /// this very path (see [`SOURCE_DIGEST_HEX`]). The field itself is what
+    /// catches the residual case that digest cannot: 32 bits can collide,
+    /// two sources can meet on one name, and the pid behind such a record is
+    /// a genuine npu-started process with a genuinely matching birth. Only
+    /// the origin, compared in full by `runtime::process::presence`, tells
+    /// that it is the wrong BACKEND — on the one path where being wrong is a
+    /// SIGKILL against another project's server.
     pub source: PathBuf,
 }
 
@@ -236,7 +297,8 @@ fn invalid_at(path: &Path, detail: &str) -> crate::Error {
 
 /// Writes `state` for its backend, atomically, and returns the file written.
 ///
-/// `<id>.json.tmp` -> write -> `flush` -> `sync_all` -> close -> `rename`.
+/// `<id>-<digest>.json.tmp` -> write -> `flush` -> `sync_all` -> close ->
+/// `rename`.
 /// Every step earns its place: a truncate-in-place would leave a half
 /// written record readable by the `npu stop` running in another process, and
 /// deciding which process to kill from a truncated file is how the wrong one
@@ -246,7 +308,10 @@ fn invalid_at(path: &Path, detail: &str) -> crate::Error {
 /// rename, which Windows requires to replace an existing file.
 ///
 /// The version written is [`SCHEMA_VERSION`], whatever the record carries:
-/// the writer owns the schema.
+/// the writer owns the schema. The path comes from the record too — its own
+/// `backend` and its own `source` — rather than from a second parameter: a
+/// record filed under an origin it does not claim is a record `load` could
+/// never be made to agree with.
 ///
 /// # Errors
 ///
@@ -254,7 +319,7 @@ fn invalid_at(path: &Path, detail: &str) -> crate::Error {
 /// name; otherwise `Error::Io` naming the path that failed.
 pub fn save(env: &StateEnv, state: &State) -> crate::Result<PathBuf> {
     let dir = state_dir(env)?;
-    let name = file_name(&state.backend)?;
+    let name = file_name(&state.backend, &state.source)?;
 
     std::fs::create_dir_all(&dir).map_err(|err| io_at(&dir, &err))?;
 
@@ -303,7 +368,7 @@ struct VersionProbe {
     pid: Option<u32>,
 }
 
-/// Reads the state of `backend_id`, if any.
+/// Reads the state of the backend `backend_id` declared by `source`, if any.
 ///
 /// # Errors
 ///
@@ -312,8 +377,8 @@ struct VersionProbe {
 /// version is `Error::Io` NAMING the path — never a silent `None`, which
 /// would let a `serve` start a second process next to the one already
 /// running, and never a deletion.
-pub fn load(env: &StateEnv, backend_id: &str) -> crate::Result<Option<State>> {
-    let path = state_path(env, backend_id)?;
+pub fn load(env: &StateEnv, backend_id: &str, source: &Path) -> crate::Result<Option<State>> {
+    let path = state_path(env, backend_id, source)?;
 
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
@@ -354,7 +419,7 @@ pub fn load(env: &StateEnv, backend_id: &str) -> crate::Result<Option<State>> {
     Ok(Some(state))
 }
 
-/// Forgets the state of `backend_id`.
+/// Forgets the state of the backend `backend_id` declared by `source`.
 ///
 /// # Errors
 ///
@@ -362,8 +427,8 @@ pub fn load(env: &StateEnv, backend_id: &str) -> crate::Result<Option<State>> {
 /// is idempotent because `stop` is, and a `stop` that fails on a runtime
 /// already gone would make the lifecycle a one-way trip (same reason
 /// `docker rm --force` is used over `docker stop`).
-pub fn clear(env: &StateEnv, backend_id: &str) -> crate::Result<()> {
-    let path = state_path(env, backend_id)?;
+pub fn clear(env: &StateEnv, backend_id: &str, source: &Path) -> crate::Result<()> {
+    let path = state_path(env, backend_id, source)?;
 
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
@@ -372,7 +437,7 @@ pub fn clear(env: &StateEnv, backend_id: &str) -> crate::Result<()> {
     }
 }
 
-/// Forgets the state of `backend_id`, but ONLY if it still names `pid`.
+/// Forgets that state, but ONLY if the record still names `pid`.
 ///
 /// `serve` holds no lock: between the moment it reads the record and the
 /// moment one of its failure paths gives up, a second `serve` on the same
@@ -388,10 +453,10 @@ pub fn clear(env: &StateEnv, backend_id: &str) -> crate::Result<()> {
 /// # Errors
 ///
 /// Whatever [`load`] and [`clear`] return.
-pub fn clear_of(env: &StateEnv, backend_id: &str, pid: u32) -> crate::Result<()> {
-    match load(env, backend_id)? {
+pub fn clear_of(env: &StateEnv, backend_id: &str, source: &Path, pid: u32) -> crate::Result<()> {
+    match load(env, backend_id, source)? {
         Some(state) if state.pid != pid => Ok(()),
-        _ => clear(env, backend_id),
+        _ => clear(env, backend_id, source),
     }
 }
 
@@ -433,6 +498,14 @@ mod tests {
         }
     }
 
+    /// The backend FILE every record of this module pretends to come from,
+    /// and the second key of every state file name.
+    const SOURCE: &str = "/home/alice/projA/.npu/backends/llamacpp.toml";
+
+    fn source() -> PathBuf {
+        PathBuf::from(SOURCE)
+    }
+
     fn sample(backend: &str) -> State {
         State {
             version: SCHEMA_VERSION,
@@ -443,7 +516,7 @@ mod tests {
             started_at: 1_790_084_826,
             process_start_time: 1_790_084_820,
             base_url: "http://127.0.0.1:8080/v1".to_string(),
-            source: PathBuf::from("/home/alice/projA/.npu/backends/llamacpp.toml"),
+            source: source(),
         }
     }
 
@@ -516,7 +589,7 @@ mod tests {
     fn a_backend_identifier_that_escapes_the_directory_is_rejected() {
         let e = fixture_env("escape");
         for id in ["../evil", "a/b", "", ".", "..", "/etc/passwd"] {
-            let err = state_path(&e, id).expect_err("must not become a path");
+            let err = state_path(&e, id, &source()).expect_err("must not become a path");
             assert!(matches!(err, crate::Error::Config(_)), "{id}");
             assert_eq!(err.exit_code(), 2, "{id}");
         }
@@ -525,7 +598,7 @@ mod tests {
     #[test]
     fn the_rejection_names_the_offending_backend() {
         let e = fixture_env("escape-named");
-        let err = state_path(&e, "../evil").expect_err("must not become a path");
+        let err = state_path(&e, "../evil", &source()).expect_err("must not become a path");
         assert!(err.to_string().contains("../evil"), "{err}");
     }
 
@@ -533,16 +606,69 @@ mod tests {
     fn a_state_path_stays_inside_the_state_directory() {
         let e = fixture_env("inside");
         let dir = state_dir(&e).expect("a home is set");
-        let path = state_path(&e, "qwen-fast").expect("a valid identifier");
+        let path = state_path(&e, "qwen-fast", &source()).expect("a valid identifier");
         assert_eq!(path.parent(), Some(dir.as_path()));
     }
 
     #[test]
     fn each_backend_gets_its_own_file() {
         let e = fixture_env("per-backend");
-        let first = state_path(&e, "qwen-fast").expect("a valid identifier");
-        let second = state_path(&e, "qwen-big").expect("a valid identifier");
+        let first = state_path(&e, "qwen-fast", &source()).expect("a valid identifier");
+        let second = state_path(&e, "qwen-big", &source()).expect("a valid identifier");
         assert_ne!(first, second);
+    }
+
+    /// The defect the digest exists for: the state directory is
+    /// machine-global while backend identifiers are per-scope, so two
+    /// projects each declaring `llamacpp` must not share one record — nor
+    /// one log, which is the record's path with another extension.
+    #[test]
+    fn two_projects_declaring_the_same_backend_get_different_records() {
+        let e = fixture_env("two-projects");
+        let a = state_path(
+            &e,
+            "llamacpp",
+            Path::new("/projA/.npu/backends/llamacpp.toml"),
+        )
+        .expect("a valid identifier");
+        let b = state_path(
+            &e,
+            "llamacpp",
+            Path::new("/projB/.npu/backends/llamacpp.toml"),
+        )
+        .expect("a valid identifier");
+
+        assert_ne!(a, b);
+        assert_ne!(a.with_extension("log"), b.with_extension("log"));
+    }
+
+    /// A name that moved between two calls would orphan a running server:
+    /// `stop` would look for the record `serve` wrote and find nothing.
+    #[test]
+    fn the_same_backend_always_resolves_to_the_same_record() {
+        let e = fixture_env("stable-digest");
+        let first = state_path(&e, "llamacpp", &source()).expect("a valid identifier");
+        let second = state_path(&e, "llamacpp", &source()).expect("a valid identifier");
+
+        assert_eq!(first, second);
+    }
+
+    /// The identifier stays legible in the name: the record is documented
+    /// as plain JSON to open by hand when a runtime was forgotten.
+    #[test]
+    fn a_record_is_still_named_after_its_backend() {
+        let e = fixture_env("legible");
+        let path = state_path(&e, "llamacpp", &source()).expect("a valid identifier");
+        let name = path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .expect("a UTF-8 file name");
+
+        assert!(name.starts_with("llamacpp-"), "{name}");
+        assert_eq!(
+            path.extension().and_then(std::ffi::OsStr::to_str),
+            Some("json")
+        );
     }
 
     #[test]
@@ -551,7 +677,7 @@ mod tests {
         let state = sample("qwen-fast");
         save(&e, &state).expect("the record must be written");
 
-        let read = load(&e, "qwen-fast")
+        let read = load(&e, "qwen-fast", &source())
             .expect("the record must be readable")
             .expect("the record must be there");
         assert_eq!(read, state);
@@ -565,8 +691,12 @@ mod tests {
         save(&e, &sample("qwen-fast")).expect("the first record");
         save(&e, &other).expect("the second record");
 
-        let first = load(&e, "qwen-fast").expect("readable").expect("present");
-        let second = load(&e, "qwen-big").expect("readable").expect("present");
+        let first = load(&e, "qwen-fast", &source())
+            .expect("readable")
+            .expect("present");
+        let second = load(&e, "qwen-big", &source())
+            .expect("readable")
+            .expect("present");
         assert_eq!(first.pid, 4242);
         assert_eq!(second.pid, 77);
     }
@@ -574,7 +704,10 @@ mod tests {
     #[test]
     fn load_of_an_absent_state_is_none_not_an_error() {
         let e = fixture_env("absent");
-        assert_eq!(load(&e, "never-started").expect("absent is normal"), None);
+        assert_eq!(
+            load(&e, "never-started", &source()).expect("absent is normal"),
+            None
+        );
     }
 
     #[test]
@@ -589,7 +722,9 @@ mod tests {
         second.arguments = vec!["--short".to_string()];
         let path = save(&e, &second).expect("the second record");
 
-        let read = load(&e, "qwen-fast").expect("readable").expect("present");
+        let read = load(&e, "qwen-fast", &source())
+            .expect("readable")
+            .expect("present");
         assert_eq!(read, second);
 
         // A rename replaces, it does not append: nothing of the longer
@@ -622,7 +757,9 @@ mod tests {
         state.version = 999;
         save(&e, &state).expect("the record must be written");
 
-        let read = load(&e, "qwen-fast").expect("readable").expect("present");
+        let read = load(&e, "qwen-fast", &source())
+            .expect("readable")
+            .expect("present");
         assert_eq!(read.version, SCHEMA_VERSION);
     }
 
@@ -630,7 +767,7 @@ mod tests {
     fn plant(e: &StateEnv, backend_id: &str, contents: &str) -> PathBuf {
         let dir = state_dir(e).expect("a home is set");
         std::fs::create_dir_all(&dir).expect("the state directory");
-        let path = state_path(e, backend_id).expect("a valid identifier");
+        let path = state_path(e, backend_id, &source()).expect("a valid identifier");
         std::fs::write(&path, contents).expect("the planted file");
         path
     }
@@ -640,7 +777,8 @@ mod tests {
         let e = fixture_env("unknown-version");
         let path = plant(&e, "qwen-fast", r#"{"version": 999}"#);
 
-        let err = load(&e, "qwen-fast").expect_err("an unknown version must not be guessed at");
+        let err = load(&e, "qwen-fast", &source())
+            .expect_err("an unknown version must not be guessed at");
         assert!(matches!(err, crate::Error::Io(_)));
         assert_eq!(err.exit_code(), 1);
         assert!(
@@ -657,7 +795,8 @@ mod tests {
         let e = fixture_env("unknown-version-pid");
         plant(&e, "qwen-fast", r#"{"version": 999, "pid": 31337}"#);
 
-        let err = load(&e, "qwen-fast").expect_err("an unknown version must not be guessed at");
+        let err = load(&e, "qwen-fast", &source())
+            .expect_err("an unknown version must not be guessed at");
         assert!(err.to_string().contains("31337"), "{err}");
     }
 
@@ -674,7 +813,7 @@ mod tests {
             r#"{"version": 999, "something_new": true}"#,
         );
 
-        let err = load(&e, "qwen-fast").expect_err("a future record must not be read");
+        let err = load(&e, "qwen-fast", &source()).expect_err("a future record must not be read");
         assert!(err.to_string().contains("999"), "{err}");
     }
 
@@ -687,7 +826,7 @@ mod tests {
             .insert("stowaway".to_string(), serde_json::Value::Bool(true));
         let path = plant(&e, "qwen-fast", &json.to_string());
 
-        let err = load(&e, "qwen-fast").expect_err("an unknown key must not be ignored");
+        let err = load(&e, "qwen-fast", &source()).expect_err("an unknown key must not be ignored");
         assert!(
             err.to_string().contains(&path.display().to_string()),
             "{err}"
@@ -699,7 +838,8 @@ mod tests {
         let e = fixture_env("malformed");
         let path = plant(&e, "qwen-fast", "{not json at all");
 
-        let err = load(&e, "qwen-fast").expect_err("a malformed record must not be read");
+        let err =
+            load(&e, "qwen-fast", &source()).expect_err("a malformed record must not be read");
         assert!(matches!(err, crate::Error::Io(_)));
         assert_eq!(err.exit_code(), 1);
         assert!(
@@ -715,7 +855,7 @@ mod tests {
     fn a_malformed_state_file_is_left_on_disk() {
         let e = fixture_env("kept");
         let path = plant(&e, "qwen-fast", "{not json at all");
-        let _ = load(&e, "qwen-fast");
+        let _ = load(&e, "qwen-fast", &source());
         assert!(path.exists());
     }
 
@@ -724,10 +864,13 @@ mod tests {
         let e = fixture_env("clear");
         let path = save(&e, &sample("qwen-fast")).expect("the record must be written");
 
-        clear(&e, "qwen-fast").expect("removal must succeed");
+        clear(&e, "qwen-fast", &source()).expect("removal must succeed");
 
         assert!(!path.exists());
-        assert_eq!(load(&e, "qwen-fast").expect("absent is normal"), None);
+        assert_eq!(
+            load(&e, "qwen-fast", &source()).expect("absent is normal"),
+            None
+        );
     }
 
     #[test]
@@ -735,14 +878,14 @@ mod tests {
         let e = fixture_env("clear-idempotent");
         save(&e, &sample("qwen-fast")).expect("the record must be written");
 
-        clear(&e, "qwen-fast").expect("the first removal");
-        clear(&e, "qwen-fast").expect("removing an absent record is a success");
+        clear(&e, "qwen-fast", &source()).expect("the first removal");
+        clear(&e, "qwen-fast", &source()).expect("removing an absent record is a success");
     }
 
     #[test]
     fn clear_of_a_never_started_backend_is_a_success() {
         let e = fixture_env("clear-never");
-        clear(&e, "never-started").expect("removing nothing is a success");
+        clear(&e, "never-started", &source()).expect("removing nothing is a success");
     }
 
     #[test]
@@ -750,9 +893,12 @@ mod tests {
         let e = fixture_env("clear-of-match");
         save(&e, &sample("qwen-fast")).expect("the record must be written");
 
-        clear_of(&e, "qwen-fast", 4242).expect("removing our own record");
+        clear_of(&e, "qwen-fast", &source(), 4242).expect("removing our own record");
 
-        assert_eq!(load(&e, "qwen-fast").expect("absent is normal"), None);
+        assert_eq!(
+            load(&e, "qwen-fast", &source()).expect("absent is normal"),
+            None
+        );
     }
 
     /// The race this exists for: a second `serve` replaced the record, and
@@ -763,22 +909,25 @@ mod tests {
         let e = fixture_env("clear-of-other");
         save(&e, &sample("qwen-fast")).expect("the record must be written");
 
-        clear_of(&e, "qwen-fast", 7).expect("another pid's record is not ours to remove");
+        clear_of(&e, "qwen-fast", &source(), 7)
+            .expect("another pid's record is not ours to remove");
 
-        let kept = load(&e, "qwen-fast").expect("readable").expect("present");
+        let kept = load(&e, "qwen-fast", &source())
+            .expect("readable")
+            .expect("present");
         assert_eq!(kept.pid, 4242);
     }
 
     #[test]
     fn clear_of_an_absent_record_is_a_success() {
         let e = fixture_env("clear-of-absent");
-        clear_of(&e, "never-started", 4242).expect("removing nothing is a success");
+        clear_of(&e, "never-started", &source(), 4242).expect("removing nothing is a success");
     }
 
     #[test]
     fn clear_rejects_an_escaping_identifier_rather_than_removing_anything() {
         let e = fixture_env("clear-escape");
-        let err = clear(&e, "../evil").expect_err("must not become a path");
+        let err = clear(&e, "../evil", &source()).expect_err("must not become a path");
         assert_eq!(err.exit_code(), 2);
     }
 

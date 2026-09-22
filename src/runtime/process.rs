@@ -231,10 +231,19 @@ pub enum Presence {
     ///
     /// The state directory is machine-global while backend identifiers are
     /// per-scope, so two projects each declaring `llamacpp` in their own
-    /// `./.npu` land on the same record. The pid is a genuine npu-started
-    /// process with a matching birth — [`verdict`] is structurally unable to
-    /// see anything wrong with it — and it belongs to the OTHER project. To
-    /// report, never to signal and never to overwrite.
+    /// `./.npu` would land on one record. What keeps them apart is the file
+    /// NAME, which carries a digest of the backend file (see
+    /// `state::SOURCE_DIGEST_HEX`): the digest ISOLATES.
+    ///
+    /// This variant is what catches the case the digest cannot. Eight hex
+    /// characters are 32 bits, so two distinct source paths CAN meet on one
+    /// name, and a record found there is then another project's: its pid is
+    /// a genuine npu-started process with a matching birth, which
+    /// [`verdict`] is structurally unable to see anything wrong with. The
+    /// origin comparison is the COLLISION GUARD — on the one code path
+    /// where being wrong is a SIGTERM, then a SIGKILL, against an unrelated
+    /// project's server, and therefore unrecoverable. To report, never to
+    /// signal and never to overwrite.
     Foreign(state::State),
 }
 
@@ -297,10 +306,14 @@ fn verdict(state: state::State, facts: Option<&ProcessFacts>) -> Presence {
 /// Reads `backend`'s record and confronts it with the system.
 ///
 /// Takes the whole backend and not just its identifier because the record's
-/// ORIGIN is part of the question: `state::load` finds a file named after
-/// the identifier, and an identifier is only unique within a scope. A record
-/// written from another backend file is [`Presence::Foreign`] as long as its
-/// pid is alive — never `Alive`, which `stop` would signal — and merely
+/// ORIGIN is part of the question, twice over: it is half the state file's
+/// NAME (the digest, which is what keeps two projects' `llamacpp` apart),
+/// and it is compared again in full once the record is read. The second
+/// comparison is not redundant: the digest is 32 bits, two source paths can
+/// meet on one name, and the record found there is then somebody else's.
+///
+/// Such a record is [`Presence::Foreign`] as long as its pid is alive —
+/// never `Alive`, which `stop` would signal — and merely
 /// [`Presence::Exited`] once nothing is behind that pid, since a record that
 /// describes no process can harm nobody by being forgotten.
 ///
@@ -310,7 +323,7 @@ fn verdict(state: state::State, facts: Option<&ProcessFacts>) -> Presence {
 /// is an error naming its path, never a silent "not started" — which would
 /// let `serve` start a second server beside the one already running.
 pub fn presence(backend: &crate::config::Backend, host: &Host<'_>) -> crate::Result<Presence> {
-    let Some(state) = state::load(&host.state, &backend.id)? else {
+    let Some(state) = state::load(&host.state, &backend.id, &backend.source)? else {
         return Ok(Presence::NotStarted);
     };
     let facts = (host.inspect)(state.pid);
@@ -336,7 +349,7 @@ fn foreign(
     state: &state::State,
     host: &Host<'_>,
 ) -> crate::Error {
-    let record = state::state_path(&host.state, &backend.id)
+    let record = state::state_path(&host.state, &backend.id, &backend.source)
         .map_or_else(|_| state.backend.clone(), |path| path.display().to_string());
 
     crate::Error::Backend(format!(
@@ -353,8 +366,14 @@ fn foreign(
 /// The file `serve` redirects a spawned server's two streams into: the state
 /// record's own path with a `.log` extension, so both live in the state
 /// directory and the identifier is validated once, by [`state::state_path`].
-fn log_path(backend_id: &str, host: &Host<'_>) -> crate::Result<PathBuf> {
-    Ok(state::state_path(&host.state, backend_id)?.with_extension(LOG_EXTENSION))
+///
+/// Derived from the record and not from the identifier alone, which is the
+/// half of the isolation `npu logs` needs: the record's name carries a
+/// digest of the backend FILE, so a second project asking for the logs of
+/// its own `llamacpp` is answered "nothing was served" rather than handed
+/// the first project's output.
+fn log_path(backend: &crate::config::Backend, host: &Host<'_>) -> crate::Result<PathBuf> {
+    Ok(state::state_path(&host.state, &backend.id, &backend.source)?.with_extension(LOG_EXTENSION))
 }
 
 /// Can this file be RUN, as opposed to merely existing?
@@ -542,7 +561,9 @@ pub fn serve(
         Presence::Foreign(state) => return Err(foreign(backend, &state, host)),
         // A record whose process is gone is not an error and not a
         // corpse to shoot at: it is forgotten, and the start proceeds.
-        Presence::Exited(_) | Presence::Reused(_) => state::clear(&host.state, &backend.id)?,
+        Presence::Exited(_) | Presence::Reused(_) => {
+            state::clear(&host.state, &backend.id, &backend.source)?;
+        }
         Presence::NotStarted => {}
     }
 
@@ -575,7 +596,7 @@ pub fn serve(
 
     // 4. The log file is created BEFORE the spawn and truncated: a previous
     //    run's log must not be read as this one's evidence.
-    let log = log_path(&backend.id, host)?;
+    let log = log_path(backend, host)?;
     if let Some(parent) = log.parent() {
         std::fs::create_dir_all(parent).map_err(|err| io_at(parent, &err))?;
     }
@@ -699,7 +720,12 @@ fn wait_until_ready(
                 // Already gone: nothing to terminate, only to forget — and
                 // only OUR record, never one another `serve` wrote in the
                 // meantime (cf. `state::clear_of`).
-                drop(state::clear_of(&host.state, &backend.id, child.id()));
+                drop(state::clear_of(
+                    &host.state,
+                    &backend.id,
+                    &backend.source,
+                    child.id(),
+                ));
                 return Err(start_failure(
                     backend,
                     executable,
@@ -754,7 +780,12 @@ fn abandon(
     // `serve` on the same backend may have written its own record in
     // between, and an unconditional removal would delete the record of a
     // server that is running — leaving it with nothing that can stop it.
-    drop(state::clear_of(&host.state, &backend.id, pid));
+    drop(state::clear_of(
+        &host.state,
+        &backend.id,
+        &backend.source,
+        pid,
+    ));
 
     start_failure(backend, executable, log, detail)
 }
@@ -872,7 +903,9 @@ pub fn stop(backend: &crate::config::Backend, host: &Host<'_>) -> crate::Result<
         // Neither signalled nor forgotten: the pid is a live server of
         // another configuration, and both actions would be taken on it.
         Presence::Foreign(state) => return Err(foreign(backend, &state, host)),
-        Presence::Exited(_) | Presence::Reused(_) => state::clear(&host.state, &backend.id)?,
+        Presence::Exited(_) | Presence::Reused(_) => {
+            state::clear(&host.state, &backend.id, &backend.source)?;
+        }
         Presence::Alive(state) => {
             let stopped = (host.signal)(state.pid, Signal::Term)
                 && ceases_within(&state, host, TERMINATION_GRACE);
@@ -888,7 +921,7 @@ pub fn stop(backend: &crate::config::Backend, host: &Host<'_>) -> crate::Result<
                 }
             }
 
-            state::clear(&host.state, &backend.id)?;
+            state::clear(&host.state, &backend.id, &backend.source)?;
         }
     }
 
@@ -975,19 +1008,19 @@ pub fn report(
 /// a read that fails, and whatever `sink` returns (a closed stdout is
 /// `Error::Io`, exit `1`).
 pub fn logs(
-    backend_id: &str,
+    backend: &crate::config::Backend,
     follow: bool,
     host: &Host<'_>,
     sink: &dyn Fn(&[u8]) -> crate::Result<()>,
 ) -> crate::Result<()> {
-    let path = log_path(backend_id, host)?;
+    let path = log_path(backend, host)?;
 
     let mut file = match std::fs::File::open(&path) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return Err(crate::Error::Backend(format!(
-                "backend \"{backend_id}\": no log to read at {} — nothing was served from this \
-                 npu",
+                "backend \"{}\": no log to read at {} — nothing was served from this npu",
+                backend.id,
                 path.display()
             )));
         }
@@ -1189,7 +1222,7 @@ mod tests {
         let env = state_env("foreign");
         let mut other = record("qwen-fast", 4242);
         other.source = PathBuf::from("/projB/.npu/backends/qwen-fast.toml");
-        state::save(&env, &other).expect("the record");
+        plant(&env, &backend("qwen-fast"), &other);
 
         let host = Host {
             env: &|_| None,
@@ -1211,7 +1244,7 @@ mod tests {
         let env = state_env("foreign-dead");
         let mut other = record("qwen-fast", 4242);
         other.source = PathBuf::from("/projB/.npu/backends/qwen-fast.toml");
-        state::save(&env, &other).expect("the record");
+        plant(&env, &backend("qwen-fast"), &other);
 
         let host = Host {
             env: &|_| None,
@@ -1233,7 +1266,7 @@ mod tests {
         let env = state_env("stop-foreign");
         let mut other = record("qwen-fast", 4242);
         other.source = PathBuf::from("/projB/.npu/backends/qwen-fast.toml");
-        state::save(&env, &other).expect("the record");
+        plant(&env, &backend("qwen-fast"), &other);
         let sent: std::sync::Mutex<Vec<Signal>> = std::sync::Mutex::new(Vec::new());
         let host = Host {
             env: &|_| None,
@@ -1250,7 +1283,11 @@ mod tests {
 
         assert_eq!(err.exit_code(), 3);
         assert!(sent.lock().expect("the signal log").is_empty());
-        assert!(state::load(&env, "qwen-fast").expect("readable").is_some());
+        assert!(
+            state::load(&env, "qwen-fast", Path::new(SOURCE))
+                .expect("readable")
+                .is_some()
+        );
     }
 
     /// Both files, because the reader has to know WHICH of their projects
@@ -1260,7 +1297,7 @@ mod tests {
         let env = state_env("foreign-named");
         let mut other = record("qwen-fast", 4242);
         other.source = PathBuf::from("/projB/.npu/backends/qwen-fast.toml");
-        state::save(&env, &other).expect("the record");
+        plant(&env, &backend("qwen-fast"), &other);
         let host = Host {
             env: &|_| None,
             state: env,
@@ -1287,7 +1324,7 @@ mod tests {
         let env = state_env("serve-foreign");
         let mut other = record("qwen-fast", 4242);
         other.source = PathBuf::from("/projB/.npu/backends/qwen-fast.toml");
-        state::save(&env, &other).expect("the record");
+        plant(&env, &backend("qwen-fast"), &other);
         let host = Host {
             env: &|_| None,
             state: env.clone(),
@@ -1305,7 +1342,11 @@ mod tests {
         .expect_err("another project's runtime is not ours to replace");
 
         assert_eq!(err.exit_code(), 3);
-        assert!(state::load(&env, "qwen-fast").expect("readable").is_some());
+        assert!(
+            state::load(&env, "qwen-fast", Path::new(SOURCE))
+                .expect("readable")
+                .is_some()
+        );
     }
 
     /// The `foreign state` row: reported, never repaired, like every other
@@ -1315,7 +1356,7 @@ mod tests {
         let env = state_env("report-foreign");
         let mut other = record("qwen-fast", 4242);
         other.source = PathBuf::from("/projB/.npu/backends/qwen-fast.toml");
-        state::save(&env, &other).expect("the record");
+        plant(&env, &backend("qwen-fast"), &other);
         let host = Host {
             env: &|_| None,
             state: env,
@@ -1337,7 +1378,8 @@ mod tests {
         let env = state_env("unreadable");
         let dir = state::state_dir(&env).expect("a home is set");
         std::fs::create_dir_all(&dir).expect("the state directory");
-        let path = state::state_path(&env, "qwen-fast").expect("a valid identifier");
+        let path =
+            state::state_path(&env, "qwen-fast", Path::new(SOURCE)).expect("a valid identifier");
         std::fs::write(&path, "{ not json").expect("the planted record");
 
         let host = Host {
@@ -1643,7 +1685,8 @@ mod tests {
         let env = state_env("status-corrupt");
         let dir = state::state_dir(&env).expect("a home is set");
         std::fs::create_dir_all(&dir).expect("the state directory");
-        let path = state::state_path(&env, "qwen-fast").expect("a valid identifier");
+        let path =
+            state::state_path(&env, "qwen-fast", Path::new(SOURCE)).expect("a valid identifier");
         std::fs::write(&path, "{ not json").expect("the planted record");
 
         let host = Host {
@@ -1701,7 +1744,10 @@ mod tests {
         stop(&backend("qwen-fast"), &host).expect("a stale record is stopped by forgetting it");
 
         assert_eq!(signalled.load(Ordering::Relaxed), 0);
-        assert_eq!(state::load(&env, "qwen-fast").expect("readable"), None);
+        assert_eq!(
+            state::load(&env, "qwen-fast", Path::new(SOURCE)).expect("readable"),
+            None
+        );
     }
 
     #[test]
@@ -1725,7 +1771,10 @@ mod tests {
         stop(&backend("qwen-fast"), &host).expect("a live process must be stopped");
 
         assert_eq!(*sent.lock().expect("the signal log"), vec![Signal::Term]);
-        assert_eq!(state::load(&env, "qwen-fast").expect("readable"), None);
+        assert_eq!(
+            state::load(&env, "qwen-fast", Path::new(SOURCE)).expect("readable"),
+            None
+        );
     }
 
     /// A platform that does not support `SIGTERM` reports `false`, which is
@@ -1758,7 +1807,10 @@ mod tests {
             *sent.lock().expect("the signal log"),
             vec![Signal::Term, Signal::Kill]
         );
-        assert_eq!(state::load(&env, "qwen-fast").expect("readable"), None);
+        assert_eq!(
+            state::load(&env, "qwen-fast", Path::new(SOURCE)).expect("readable"),
+            None
+        );
     }
 
     /// A process that survives everything keeps its record: forgetting it
@@ -1781,7 +1833,11 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("qwen-fast"), "{message}");
         assert!(message.contains("4242"), "{message}");
-        assert!(state::load(&env, "qwen-fast").expect("readable").is_some());
+        assert!(
+            state::load(&env, "qwen-fast", Path::new(SOURCE))
+                .expect("readable")
+                .is_some()
+        );
     }
 
     // -- serve ---------------------------------------------------------------
@@ -1798,6 +1854,24 @@ mod tests {
             timeouts: None,
             source: PathBuf::from(SOURCE),
         }
+    }
+
+    /// Writes `state` where `backend`'s OWN record belongs, whatever origin
+    /// the record itself claims.
+    ///
+    /// This is the shape of a DIGEST COLLISION, and the only way to reach
+    /// [`Presence::Foreign`] now that a record's file name carries a digest
+    /// of the backend file: two distinct source paths meeting on one name is
+    /// precisely "a record found at OUR path, written by somebody else's
+    /// file". `state::save` cannot express it — it files a record under the
+    /// origin the record itself claims, which is what makes the isolation
+    /// hold in production — so the test writes the file itself.
+    fn plant(env: &state::StateEnv, backend: &crate::config::Backend, state: &state::State) {
+        let path =
+            state::state_path(env, &backend.id, &backend.source).expect("a valid identifier");
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("the state directory");
+        std::fs::write(&path, serde_json::to_vec(state).expect("json"))
+            .expect("the planted record");
     }
 
     /// Nothing is spawned here: the refusal comes before any of it.
@@ -1853,7 +1927,10 @@ mod tests {
         .expect_err("the command does not exist");
 
         assert!(err.to_string().contains("does-not-exist-anywhere"), "{err}");
-        assert_eq!(state::load(&env, "qwen-fast").expect("readable"), None);
+        assert_eq!(
+            state::load(&env, "qwen-fast", Path::new(SOURCE)).expect("readable"),
+            None
+        );
     }
 
     #[test]
@@ -1898,15 +1975,36 @@ mod tests {
             probe: &|_| Ok(()),
         };
 
-        let err =
-            logs("qwen-fast", false, &host, &|_| Ok(())).expect_err("there is nothing to read");
+        let err = logs(&backend("qwen-fast"), false, &host, &|_| Ok(()))
+            .expect_err("there is nothing to read");
 
         assert_eq!(err.exit_code(), 3);
-        let expected = log_path("qwen-fast", &host).expect("a valid identifier");
+        let expected = log_path(&backend("qwen-fast"), &host).expect("a valid identifier");
         assert!(
             err.to_string().contains(&expected.display().to_string()),
             "{err}"
         );
+    }
+
+    /// The READ half of the isolation, and the defect the digest exists
+    /// for: `npu logs` must never hand a second project the first one's
+    /// output. Same identifier, two backend FILES, two logs.
+    #[test]
+    fn two_projects_declaring_the_same_backend_have_different_logs() {
+        let host = Host {
+            env: &|_| None,
+            state: state_env("logs-per-project"),
+            inspect: &|_| None,
+            signal: &|_, _| false,
+            probe: &|_| Ok(()),
+        };
+        let mut other = backend("qwen-fast");
+        other.source = PathBuf::from("/projB/.npu/backends/qwen-fast.toml");
+
+        let ours = log_path(&backend("qwen-fast"), &host).expect("a valid identifier");
+        let theirs = log_path(&other, &host).expect("a valid identifier");
+
+        assert_ne!(ours, theirs);
     }
 
     #[test]
@@ -1919,14 +2017,14 @@ mod tests {
             signal: &|_, _| false,
             probe: &|_| Ok(()),
         };
-        let path = log_path("qwen-fast", &host).expect("a valid identifier");
+        let path = log_path(&backend("qwen-fast"), &host).expect("a valid identifier");
         std::fs::create_dir_all(path.parent().expect("a parent")).expect("the state directory");
         // Longer than one read buffer: a log is streamed, not slurped.
         let contents = "café ".repeat(2000);
         std::fs::write(&path, &contents).expect("the log file");
 
         let collected = std::sync::Mutex::new(Vec::new());
-        logs("qwen-fast", false, &host, &|bytes| {
+        logs(&backend("qwen-fast"), false, &host, &|bytes| {
             collected
                 .lock()
                 .expect("the collector")

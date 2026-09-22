@@ -345,7 +345,7 @@ Two constraints this family adds, both rejected at load time naming the file:
   there would be nothing to read the answer back from. Declare a fixed `port`.
 - the backend `id` must be usable as a file name (ASCII letters, digits, `_`, `.` and `-`,
   starting with a letter or a digit) — the same rule the Docker family applies to a container
-  name, here because `npu` derives this backend's state file from the identifier.
+  name, here because the name of this backend's state file starts with the identifier.
 - `startup_timeout_secs` must be between `1` and `86400`. The upper bound is not taste: a larger
   value cannot be turned into a deadline at all, and a `serve` that panicked would replace this
   CLI's exit codes with `101`.
@@ -359,19 +359,25 @@ outside `npu`.
 ### What `npu` remembers
 
 Docker is its own registry, so a Docker runtime needs nothing persisted. A process has no
-registry: `npu serve` therefore writes a small JSON record named after the backend, plus a `.log`
-file it redirects the server's **two** streams into. `stop` deletes the record; `logs` reads the
-file. They live in `$XDG_STATE_HOME/npu/`, or `$HOME/.local/state/npu/` when that variable is
-unset — and on macOS in `$HOME/Library/Application Support/npu/state/`, with no `XDG_STATE_HOME`
-branch at all: the variable has no meaning there, and honouring it would scatter one machine's
-state over two places depending on which shell exported what.
+registry: `npu serve` therefore writes a small JSON record, plus a `.log` file it redirects the
+server's **two** streams into. `stop` deletes the record; `logs` reads the file. Both are named
+`<backend id>-<digest>`, the digest being the first eight hex characters of the SHA-256 of the
+backend **file** the runtime was declared in. They live in `$XDG_STATE_HOME/npu/`, or
+`$HOME/.local/state/npu/` when that variable is unset — and on macOS in
+`$HOME/Library/Application Support/npu/state/`, with no `XDG_STATE_HOME` branch at all: the
+variable has no meaning there, and honouring it would scatter one machine's state over two places
+depending on which shell exported what.
 
-That directory is **machine-global** while backend identifiers are per-scope, so two projects each
-declaring `llamacpp` in their own `./.npu` do land on the same record. The record therefore also
-holds the backend **file** it was served from: one naming another file, while its process is
-alive, is reported as `foreign state` and is never signalled, never cleared and never written
-over — `serve` and `stop` both refuse, naming both files. Once nothing is behind that pid the
-record describes nothing, and the next `serve` simply forgets it.
+That directory is **machine-global** while backend identifiers are per-scope, which is what the
+digest is for: two projects each declaring `llamacpp` in their own `./.npu` get two records, two
+logs and two servers, and neither one's `npu stop` or `npu logs` can reach the other's.
+
+The record **also** holds the backend file it was served from, and that is not a duplicate of the
+digest. Eight hex characters are 32 bits, so two backend files can meet on one name; the full path
+in the record is what catches it. A record naming another file, while its process is alive, is
+reported as `foreign state` and is never signalled, never cleared and never written over — `serve`
+and `stop` both refuse, naming both files. Once nothing is behind that pid the record describes
+nothing, and the next `serve` simply forgets it.
 
 The record holds the pid and the moment the system says that pid was born. That **pair** is the
 identity check, and it is what keeps `npu stop` from killing an innocent process: a pid alone can,

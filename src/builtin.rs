@@ -909,7 +909,7 @@ pub fn logs(
         // them from the file `serve` redirected both streams into rather
         // than from a child process's own streams.
         crate::config::Runtime::Process(_) => {
-            crate::runtime::process::logs(&backend.id, follow, host, sink)
+            crate::runtime::process::logs(backend, follow, host, sink)
         }
     }
 }
@@ -2411,15 +2411,18 @@ mod tests {
         config
             .backends
             .insert("ovms".to_string(), containerized_backend("ovms"));
-        config.backends.insert(
-            "local".to_string(),
-            process_backend("local", "llama-server"),
-        );
+        let local = process_backend("local", "llama-server");
         let state = fixture_state_env("status-corrupt");
         let dir = crate::runtime::state::state_dir(&state).expect("a home is set");
         std::fs::create_dir_all(&dir).expect("the state directory");
-        let path = crate::runtime::state::state_path(&state, "local").expect("a valid identifier");
+        // Planted where `status` will look: a record's name is keyed on the
+        // backend FILE as well as on the identifier, so a path built from
+        // the identifier alone would be read by nobody and this test would
+        // pass without exercising anything.
+        let path = crate::runtime::state::state_path(&state, &local.id, &local.source)
+            .expect("a valid identifier");
         std::fs::write(&path, "{ not json").expect("the planted record");
+        config.backends.insert("local".to_string(), local);
 
         let host = crate::runtime::process::Host {
             env: &|_| None,

@@ -275,6 +275,17 @@ model = "qwen3-4b"
         }
     }
 
+    /// This fixture's backend FILE, as `npu` records it: canonicalized when
+    /// the filesystem allows it, exactly as `config.rs` does.
+    ///
+    /// Half the state record's name, so a test cannot find that record
+    /// without it — which is the whole point: the same identifier in
+    /// another project is another file and another record.
+    fn backend_source(&self) -> PathBuf {
+        let declared = self.scope.join("npu").join("backends").join("local.toml");
+        std::fs::canonicalize(&declared).unwrap_or(declared)
+    }
+
     /// The state record `npu serve` writes.
     ///
     /// Derived through the library's own resolver rather than by restating
@@ -282,8 +293,10 @@ model = "qwen3-4b"
     /// and `$HOME/Library/Application Support/npu/state` on macOS, and a
     /// hard-coded path here would make every assertion below fail on the
     /// second platform for a reason that has nothing to do with the runtime.
+    /// The file NAME is resolved the same way, and for the same reason: it
+    /// carries a digest of the backend file this suite must not restate.
     fn record(&self) -> PathBuf {
-        npu::runtime::state::state_path(&self.state_env(), "local")
+        npu::runtime::state::state_path(&self.state_env(), "local", &self.backend_source())
             .expect("a valid backend identifier")
     }
 
@@ -465,19 +478,29 @@ fn a_server_reached_through_an_exec_ing_wrapper_is_still_ours_to_stop() {
     );
 }
 
-/// The record of ANOTHER project is reported, never signalled and never
-/// deleted.
+/// Another project's runtime is neither stopped nor taken over.
 ///
-/// Two projects each declaring a backend `local` share one state file, since
-/// the state directory is machine-global while identifiers are per-scope.
-/// Before the record carried the backend FILE it was served from, the second
-/// project's `npu stop` found a pid that was genuinely an npu-started
-/// process with a genuinely matching birth, and SIGTERM/SIGKILLed the first
-/// project's server — then cleared the record, leaving `npu status` in the
-/// first project reporting a runtime that had never been stopped by anyone
-/// who meant to.
+/// Two projects each declaring a backend `local` share the state DIRECTORY,
+/// which is machine-global while identifiers are per-scope. They no longer
+/// share a state FILE: its name carries a digest of the backend file it was
+/// served from, so each project gets its own record, its own log and its own
+/// server.
+///
+/// Before that, the second project's `npu stop` found a pid that was
+/// genuinely an npu-started process with a genuinely matching birth, and
+/// SIGTERM/SIGKILLed the first project's server — then cleared the record,
+/// leaving `npu status` in the first project reporting a runtime that had
+/// never been stopped by anyone who meant to.
+///
+/// What is asserted here is the OUTCOME, not the mechanism: B never reaches
+/// A's server, and A keeps its record and its ability to stop it. The
+/// mechanism moved — B used to be REFUSED with exit `3`, and is now simply
+/// looking somewhere else — and pinning the refusal would pin the old
+/// design. The refusal itself is still reachable through a digest collision
+/// and is covered where a collision can be constructed
+/// (`runtime::process::tests`).
 #[test]
-fn another_project_s_runtime_is_never_stopped_nor_replaced() {
+fn another_project_s_runtime_is_neither_stopped_nor_taken_over() {
     let project_a = Fixture::new("two-projects-a", "bind", 20);
     let served = project_a.npu(&["serve", "qwen"]);
     assert_eq!(
@@ -490,9 +513,11 @@ fn another_project_s_runtime_is_never_stopped_nor_replaced() {
 
     let project_b = project_a.beside("two-projects-b");
 
+    // B's backend was never served, so B's `stop` is the idempotent
+    // success it is for anything never started — and it reaches nothing of
+    // A's.
     let stopped = project_b.npu(&["stop", "qwen"]);
-    assert_eq!(stopped.status.code(), Some(3), "{}", stderr_of(&stopped));
-    assert!(stopped.stdout.is_empty(), "{:?}", stdout_of(&stopped));
+    assert_eq!(stopped.status.code(), Some(0), "{}", stderr_of(&stopped));
     assert!(
         is_live(pid),
         "the other project's server must not have been signalled"
@@ -501,18 +526,77 @@ fn another_project_s_runtime_is_never_stopped_nor_replaced() {
         project_a.record().exists(),
         "the record of a running server must not be deleted by another project"
     );
+    assert_ne!(
+        project_b.record(),
+        project_a.record(),
+        "two backend files must not share one record"
+    );
 
-    // And `serve` refuses too, before truncating a log or taking a port
-    // that belong to that other server.
+    // And B's `serve` starts B's OWN server, on its own port, without
+    // truncating A's log or overwriting A's record.
     let again = project_b.npu(&["serve", "qwen"]);
-    assert_eq!(again.status.code(), Some(3), "{}", stderr_of(&again));
-    assert!(again.stdout.is_empty(), "{:?}", stdout_of(&again));
-    assert!(is_live(pid));
+    assert_eq!(again.status.code(), Some(0), "{}", stderr_of(&again));
+    let other_pid = served_pid(&again);
+    assert_ne!(other_pid, pid);
+    assert!(is_live(pid), "A's server must still be up");
+    assert!(project_a.record().exists());
 
-    // The project that started it can still stop it.
+    // Each project stops its own, and only its own.
+    let by_b = project_b.npu(&["stop", "qwen"]);
+    assert_eq!(by_b.status.code(), Some(0), "{}", stderr_of(&by_b));
+    assert!(wait_until_gone(other_pid), "B must stop B's server");
+    assert!(is_live(pid), "B's stop must not reach A's server");
+
     let by_owner = project_a.npu(&["stop", "qwen"]);
     assert_eq!(by_owner.status.code(), Some(0), "{}", stderr_of(&by_owner));
     assert!(wait_until_gone(pid), "its own project must still stop it");
+}
+
+/// The READ half of the same isolation, and the defect this keying exists
+/// for: project B's `npu logs` used to print project A's server output on
+/// stdout, with exit `0` — `logs` reads the log file without ever consulting
+/// a record, so nothing compared the two origins.
+#[test]
+fn another_project_s_logs_are_never_handed_over() {
+    let project_a = Fixture::new("two-projects-logs-a", "bind", 20);
+    let served = project_a.npu(&["serve", "qwen"]);
+    assert_eq!(
+        served.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&served)
+    );
+    let pid = served_pid(&served);
+
+    // A has a log, and it holds what A's server wrote.
+    let mine = project_a.npu(&["logs", "qwen"]);
+    assert_eq!(mine.status.code(), Some(0), "{}", stderr_of(&mine));
+    assert!(
+        stdout_of(&mine).contains(STDOUT_MARKER),
+        "{}",
+        stdout_of(&mine)
+    );
+
+    let project_b = project_a.beside("two-projects-logs-b");
+    let theirs = project_b.npu(&["logs", "qwen"]);
+
+    // B served nothing: exit `3`, and stdout is ZERO bytes — never a single
+    // byte of A's log.
+    assert_eq!(theirs.status.code(), Some(3), "{}", stderr_of(&theirs));
+    assert!(theirs.stdout.is_empty(), "{:?}", stdout_of(&theirs));
+    assert!(
+        !stdout_of(&theirs).contains(STDOUT_MARKER),
+        "{}",
+        stdout_of(&theirs)
+    );
+    assert_ne!(
+        project_b.log(),
+        project_a.log(),
+        "two backend files must not share one log"
+    );
+
+    drop(project_a.npu(&["stop", "qwen"]));
+    assert!(wait_until_gone(pid));
 }
 
 /// `stop` is idempotent, exactly like on the Docker side: stopping what was

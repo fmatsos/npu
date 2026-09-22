@@ -165,9 +165,11 @@ server exits, or the budget runs out — so a `serve` that printed a pid means a
 answers. It prints the pid; `npu stop` prints the backend id and escalates `SIGTERM` → `SIGKILL`.
 
 `npu serve` writes a JSON state record and a `.log` file (both streams) under
-`$XDG_STATE_HOME/npu/`, named after the backend — that is how `stop`, `status` and `logs` find the
-process again, Docker's name registry having no equivalent here. The record's `(pid, birth time)`
-pair is the identity check that keeps `stop` from killing a recycled pid; the executable is
+`$XDG_STATE_HOME/npu/`, named `<backend id>-<digest of the backend file>` — that is how `stop`,
+`status` and `logs` find the process again, Docker's name registry having no equivalent here, and
+why two projects each declaring `llamacpp` get two records rather than fighting over one. The
+record's `(pid, birth time)` pair is the identity check that keeps `stop` from killing a recycled
+pid; the executable is
 recorded but deliberately not compared, since a `command` ending on `exec` (a wrapper script, a
 `uv`/`conda` shim) keeps the pid and swaps the image.
 
