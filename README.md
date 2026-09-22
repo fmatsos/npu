@@ -258,8 +258,8 @@ $ npu serve qwen-fast
 
 ```console
 $ npu status
-BACKEND  CONTAINER  STATE
-ovms     npu-ovms   not started
+BACKEND  RUNTIME  INSTANCE  URL                    STATE
+ovms     docker   npu-ovms  http://127.0.0.1:8000  Up Less than a second
 ```
 
 ```console
@@ -274,7 +274,7 @@ $ npu describe translate
 
 `npu serve`, `npu stop`, `npu status` and `npu logs` are the runtime lifecycle: start a model's
 backend, remove its container, see what is up, read what it printed. What gets started comes from
-the backend's `[docker]` table, so switching image, ports or accelerator is a configuration
+the backend's `[runtime]` table, so switching image, ports or accelerator is a configuration
 change, not a rebuild.
 
 `npu doctor` reports on configuration, backend reachability and output schemas. It runs **even

@@ -106,7 +106,7 @@ path = "/v3/chat/completions"
 | `base_url` | yes | joined with an operation's `path`; a trailing `/` is handled either way |
 | `port` | no | the listening port, declared once and read as `{{ backend.port }}` — see below |
 | `[operations.<name>]` | at least one | `method` and `path` |
-| `[docker]` | no | how `npu serve` starts this backend — see below |
+| `[runtime]` | no | how `npu serve` starts this backend — see below |
 
 Unknown keys are rejected, with the file and line. A `type` other than `"openai-compatible"` and
 a `method` other than `POST` are both rejected at load time rather than silently ignored.
@@ -122,11 +122,12 @@ with exit `3`. `port` removes the second spelling:
 port = 8001
 base_url = "http://127.0.0.1:{{ backend.port }}"
 
-[docker]
+[runtime]
+type = "docker"
 options = ["-p", "{{ backend.port }}:8000", "..."]
 ```
 
-`{{ backend.port }}` is substituted at load time in `base_url` and in every `[docker]` entry. It is
+`{{ backend.port }}` is substituted at load time in `base_url` and in every `[runtime]` entry. It is
 the only `backend.*` placeholder that exists, and the two halves are enforced together: the
 placeholder without a `port` key is rejected, and a `port` key nothing references is rejected too —
 a value read and then ignored is exactly what this configuration does not do.
@@ -135,7 +136,7 @@ a value read and then ignored is exactly what this configuration does not do.
 port = "auto"
 ```
 
-`"auto"` hands the allocation to Docker: `{{ backend.port }}` becomes `0` in the `[docker]` lists
+`"auto"` hands the allocation to Docker: `{{ backend.port }}` becomes `0` in the `[runtime]` lists
 (`-p 0:8000`), the kernel picks a free port, and `npu` reads it back with `docker port` whenever it
 needs the URL. **Collision is impossible by construction** — nothing is derived or guessed, so
 there is no second candidate to try.
@@ -150,8 +151,9 @@ write the answer down in.
 > `port = "auto"` makes Docker a prerequisite for **executing commands** on that backend, not just
 > for its lifecycle. A fixed port never consults Docker at all, so this is strictly opt-in per
 > backend. Two further constraints, both rejected at load time naming the file: `"auto"` requires a
-> `[docker]` table (there is nothing to read a port back from otherwise), and it requires
-> `base_url` to read `{{ backend.port }}` (the allocated port would be unreachable otherwise).
+> Docker runtime (`[runtime]` with `type = "docker"`, there is nothing to read a port back from
+> otherwise), and it requires `base_url` to read `{{ backend.port }}` (the allocated port would be
+> unreachable otherwise).
 
 The port changes on each `npu serve`. `npu status` prints the resolved URL, and a backend that is
 not started reports `-` there rather than failing the report.
@@ -200,7 +202,8 @@ table.
 
 ```toml
 # .npu/backends/ovms.toml, continued
-[docker]
+[runtime]
+type = "docker"
 image = "openvino/model_server:latest"
 options = ["-p", "8000:8000", "-v", "{{ env.HOME }}/models:/models:rw"]
 args = [
@@ -212,9 +215,23 @@ args = [
 
 | Key | Required | Notes |
 | --- | --- | --- |
+| `type` | yes | the runtime family; `"docker"` is the only value supported |
 | `image` | yes | the container image to run |
 | `options` | no | passed to `docker run` **before** the image: ports, volumes, devices |
 | `args` | no | passed to the image **after** it: the server's own arguments |
+
+`type` is what makes an unsupported family a named rejection — `unknown variant "podman"`, with
+the file — instead of a table `npu` would have to guess the meaning of. Unknown keys inside
+`[runtime]` are rejected like everywhere else.
+
+### The legacy `[docker]` table
+
+Earlier versions spelled this table `[docker]`, untagged. That spelling is **still accepted**: it
+is folded into `[runtime]` with `type = "docker"` at load time, once, so nothing downstream can
+tell which form a file used. `[runtime]` is the form to write in new files.
+
+A backend declaring **both** is rejected at load time, naming the file and the backend: picking a
+winner would mean reading one table and silently ignoring the other.
 
 Two lists rather than one because `docker run [OPTIONS] IMAGE [ARG...]` is the grammar; merging
 them would make the position of the image implicit. `npu` adds `-d` and
@@ -228,14 +245,14 @@ Every entry goes through the same templating as a prompt:
 - `{{ env.NAME }}` — an environment variable, required to be defined at `serve` time.
 - `{{ input }}` — rejected: `npu serve` reads no input.
 
-Declaring `[docker]` also constrains the backend's `id`, which becomes the container name: ASCII
+Declaring a Docker runtime also constrains the backend's `id`, which becomes the container name: ASCII
 letters, digits, `_`, `.` and `-`, starting with a letter or a digit. An `id` outside that set is
 rejected — with its file named — rather than mangled into something Docker accepts.
 
 > [!WARNING]
 > Scope replacement is per **whole backend**, never field by field. A project scope that redefines
-> `base_url` for `ovms` replaces the user scope's `ovms` entirely, `[docker]` included. Repeat the
-> table in the local file, or `npu serve` will report that the backend declares none.
+> `base_url` for `ovms` replaces the user scope's `ovms` entirely, `[runtime]` included. Repeat
+> the table in the local file, or `npu serve` will report that the backend declares none.
 
 For OpenVINO Model Server specifically: the `-gpu` image tag is the one to use for accelerators
 (there is no NPU-only image; that tag carries both plugins), with `--device /dev/dri` and

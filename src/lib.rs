@@ -13,6 +13,7 @@ pub mod input;
 pub mod log;
 pub mod output;
 pub mod prompt;
+pub mod runtime;
 pub mod scope;
 pub mod updater;
 
@@ -311,7 +312,7 @@ fn chat_with_fallback(
     // outside this `and_then` would make a stopped NPU container bypass the
     // GPU it was supposed to fall back to.
     let call = |backend: &config::Backend, model: &config::Model| {
-        builtin::resolve_base_url(backend, &builtin::docker_runner)
+        runtime::resolve_base_url(backend, &runtime::docker::runner)
             .and_then(|base_url| backend::chat(backend, model, &base_url, prompt, logger))
     };
 
@@ -551,8 +552,8 @@ pub fn run() -> Result<i32> {
             specs_ref,
             load_error_ref,
             &builtin::tcp_probe,
-            &builtin::docker_probe,
-            &builtin::docker_runner,
+            &runtime::docker::probe,
+            &runtime::docker::runner,
         );
         println!("{}", builtin::format_doctor(&checks));
         return Ok(builtin::doctor_exit_code(&checks));
@@ -593,10 +594,10 @@ pub fn run() -> Result<i32> {
         let env = |name: &str| std::env::var(name).ok();
         // The container identifier IS this command's result: stdout, like
         // every other built-in's report. Docker's own output goes to stderr
-        // (cf. `builtin::docker_runner`).
+        // (cf. `runtime::docker::runner`).
         println!(
             "{}",
-            builtin::serve(&config, model_id, &env, &builtin::docker_runner)?
+            builtin::serve(&config, model_id, &env, &runtime::docker::runner)?
         );
         return Ok(0);
     }
@@ -609,14 +610,14 @@ pub fn run() -> Result<i32> {
         logger.info(&format!("stopping the runtime of model \"{model_id}\""));
         println!(
             "{}",
-            builtin::stop(&config, model_id, &builtin::docker_runner)?
+            builtin::stop(&config, model_id, &runtime::docker::runner)?
         );
         return Ok(0);
     }
 
     if builtin_name == Some("status") {
         // The report IS the result: stdout, like `doctor` and `models`.
-        println!("{}", builtin::status(&config, &builtin::docker_runner)?);
+        println!("{}", builtin::status(&config, &runtime::docker::runner)?);
         return Ok(0);
     }
 
@@ -627,9 +628,9 @@ pub fn run() -> Result<i32> {
             .unwrap_or_default();
         let follow = leaf_matches.get_flag("follow");
         // Nothing is printed here: the container's own streams are the
-        // result, and `builtin::docker_streamer` lets them through
+        // result, and `runtime::docker::streamer` lets them through
         // untouched (cf. its doc).
-        builtin::logs(&config, model_id, follow, &builtin::docker_streamer)?;
+        builtin::logs(&config, model_id, follow, &runtime::docker::streamer)?;
         return Ok(0);
     }
 
@@ -719,6 +720,7 @@ mod tests {
             .into_iter()
             .collect(),
             port: None,
+            runtime: None,
             docker: None,
             timeouts: None,
         }

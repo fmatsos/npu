@@ -38,6 +38,101 @@ pub struct Docker {
     pub args: Vec<String>,
 }
 
+/// How `npu serve` starts this backend's runtime, declared by the optional
+/// tagged `[runtime]` table of `backends/*.toml`:
+///
+/// ```toml
+/// [runtime]
+/// type = "docker"
+/// image = "openvino/model_server:latest"
+/// ```
+///
+/// Tagged rather than one table per family (`[docker]`, `[process]`) because
+/// the tag is what makes an unsupported runtime a NAMED rejection
+/// (`unknown variant "podman"`) instead of a table serde would have to guess
+/// the meaning of.
+///
+/// Single variant on purpose: the `process` runtime lands in phase 2. The
+/// enum exists now so the whole call chain is already written against a
+/// runtime FAMILY rather than against Docker, which is the part that would
+/// otherwise have to be rewritten twice.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
+pub enum Runtime {
+    Docker(Docker),
+}
+
+/// The `type` value of the Docker runtime, quoted by the messages that tell
+/// an author which table to write.
+const RUNTIME_DOCKER: &str = "docker";
+
+/// The `[docker]` table of a backend whose runtime is Docker, `None` for a
+/// backend with no runtime at all.
+///
+/// Written as a `match` rather than a `matches!`/`map` pair so the phase 2
+/// `Process` variant makes this function fail to compile instead of
+/// silently answering `None` for a runtime it does not know. `pub(crate)`
+/// for that reason too: it is the ONE family test in the crate, so
+/// `doctor`'s container check joins the same `match` instead of keeping a
+/// `matches!` of its own that a new variant would leave silently answering
+/// `false`.
+pub(crate) fn docker_of(backend: &Backend) -> Option<&Docker> {
+    match backend.runtime.as_ref()? {
+        Runtime::Docker(docker) => Some(docker),
+    }
+}
+
+/// Mutable twin of [`docker_of`], for the load-time `{{ backend.port }}`
+/// substitution.
+fn docker_of_mut(backend: &mut Backend) -> Option<&mut Docker> {
+    match backend.runtime.as_mut()? {
+        Runtime::Docker(docker) => Some(docker),
+    }
+}
+
+/// Does any of a `[docker]` table's templates read `{{ backend.port }}`?
+fn docker_reads_port(docker: &Docker) -> bool {
+    std::iter::once(&docker.image)
+        .chain(&docker.options)
+        .chain(&docker.args)
+        .any(|template| substitute_port(template, 0).1)
+}
+
+/// Rejects a backend declaring BOTH the tagged `[runtime]` table and the
+/// legacy `[docker]` one.
+///
+/// Runs in the load-time mutating pass, immediately BEFORE
+/// [`normalize_runtime`], and not in `validate_backend` where the other
+/// inter-field rules live: normalization folds the legacy table into
+/// `runtime` and leaves nothing behind, so by validation time the evidence
+/// of a double declaration is gone. Reconciling the two instead would mean
+/// picking a winner, which is a key read and then silently ignored.
+fn reject_double_runtime(backend: &Backend, source: &Path) -> crate::Result<()> {
+    if backend.runtime.is_some() && backend.docker.is_some() {
+        return Err(crate::Error::Config(format!(
+            "{}: backend \"{}\": declares both [runtime] and the legacy [docker] table — \
+             keep [runtime] alone, npu will not guess which one wins",
+            source.display(),
+            backend.id
+        )));
+    }
+    Ok(())
+}
+
+/// Folds a legacy `[docker]` table into `runtime = Runtime::Docker`.
+///
+/// Done at LOAD time, once, rather than on every read: it is what lets
+/// [`Backend::runtime`] hand out a plain reference (no `Cow`, no clone per
+/// call) and what keeps every reader downstream — `builtin.rs`, `runtime/`,
+/// `lib.rs` — written against a runtime FAMILY instead of against Docker.
+fn normalize_runtime(backend: &mut Backend) {
+    if backend.runtime.is_none()
+        && let Some(docker) = backend.docker.take()
+    {
+        backend.runtime = Some(Runtime::Docker(docker));
+    }
+}
+
 /// Per-backend request timeout override, declared by the optional
 /// `[timeouts]` table of `backends/*.toml`. Absent, `backend.rs` falls back
 /// to its own default.
@@ -124,13 +219,7 @@ pub(crate) fn substitute_port(template: &str, port: u16) -> (String, bool) {
 /// a key that would be silently ignored.
 fn resolve_port(backend: &mut Backend, source: &Path) -> crate::Result<()> {
     let references_port = |backend: &Backend| {
-        substitute_port(&backend.base_url, 0).1
-            || backend.docker.as_ref().is_some_and(|docker| {
-                std::iter::once(&docker.image)
-                    .chain(&docker.options)
-                    .chain(&docker.args)
-                    .any(|template| substitute_port(template, 0).1)
-            })
+        substitute_port(&backend.base_url, 0).1 || docker_of(backend).is_some_and(docker_reads_port)
     };
 
     let port = match &backend.port {
@@ -158,10 +247,11 @@ fn resolve_port(backend: &mut Backend, source: &Path) -> crate::Result<()> {
             // `auto` means "Docker allocates, npu asks it back", so both
             // halves must exist: something to start, and a base URL whose
             // port can be filled in afterwards.
-            if backend.docker.is_none() {
+            if docker_of(backend).is_none() {
                 return Err(crate::Error::Config(format!(
-                    "{}: backend \"{}\": port = \"{PORT_AUTO}\" requires a [docker] table — \
-                     npu can only read back a port it asked Docker to allocate",
+                    "{}: backend \"{}\": port = \"{PORT_AUTO}\" requires a Docker runtime \
+                     ([runtime] type = \"{RUNTIME_DOCKER}\") — npu can only read back a port it \
+                     asked Docker to allocate",
                     source.display(),
                     backend.id
                 )));
@@ -172,12 +262,7 @@ fn resolve_port(backend: &mut Backend, source: &Path) -> crate::Result<()> {
             // allocated port is unreachable — a failure that would only
             // surface at the first command, as advice ("start it with npu
             // serve") that could never work.
-            let in_docker = backend.docker.as_ref().is_some_and(|docker| {
-                std::iter::once(&docker.image)
-                    .chain(&docker.options)
-                    .chain(&docker.args)
-                    .any(|template| substitute_port(template, 0).1)
-            });
+            let in_docker = docker_of(backend).is_some_and(docker_reads_port);
             if !substitute_port(&backend.base_url, 0).1 || !in_docker {
                 return Err(crate::Error::Config(format!(
                     "{}: backend \"{}\": port = \"{PORT_AUTO}\" requires \
@@ -213,7 +298,7 @@ fn resolve_port(backend: &mut Backend, source: &Path) -> crate::Result<()> {
         used |= hit;
     }
 
-    if let Some(docker) = &mut backend.docker {
+    if let Some(docker) = docker_of_mut(backend) {
         for template in std::iter::once(&mut docker.image)
             .chain(&mut docker.options)
             .chain(&mut docker.args)
@@ -255,15 +340,44 @@ pub struct Backend {
     /// backend) and only surfaces as exit `3` at execution.
     #[serde(default)]
     pub port: Option<Port>,
-    /// Optional: how `npu serve` starts this backend's runtime.
+    /// Optional: how `npu serve` starts this backend's runtime, tagged form.
+    ///
+    /// Read through [`Backend::runtime`] only: a legacy `[docker]` backend
+    /// is normalized into this field at load time, so this is the single
+    /// shape every reader sees.
+    ///
+    /// `pub(crate)`, unlike every other field: the "read through the
+    /// accessor" rule above is the whole point of the normalization, and a
+    /// `pub` field would leave it to a doc comment nobody is forced to
+    /// read. Serde is indifferent to field visibility.
     #[serde(default)]
-    pub docker: Option<Docker>,
+    pub(crate) runtime: Option<Runtime>,
+    /// Deprecated: the untagged `[docker]` table of earlier versions.
+    ///
+    /// Still DECLARED rather than dropped, for two reasons: removing it
+    /// would make every existing backend file fail on
+    /// `deny_unknown_fields`, and declaring it is what lets a file carrying
+    /// both forms be rejected with its own message instead of being
+    /// diagnosed as an unknown key. `normalize_runtime` empties it at load
+    /// time; nothing downstream ever reads it. `pub(crate)` for the same
+    /// reason as `runtime`.
+    #[serde(default)]
+    pub(crate) docker: Option<Docker>,
     /// Optional: overrides `backend::REQUEST_TIMEOUT` for this backend.
     #[serde(default)]
     pub timeouts: Option<Timeouts>,
 }
 
 impl Backend {
+    /// How this backend's runtime is started, in its normalized form.
+    ///
+    /// `None` means the backend was never told how to start anything — a
+    /// perfectly valid backend, just one `npu serve` cannot act on.
+    #[must_use]
+    pub fn runtime(&self) -> Option<&Runtime> {
+        self.runtime.as_ref()
+    }
+
     /// Does this backend let Docker allocate its port?
     ///
     /// Its `base_url` then still carries `{{ backend.port }}` after loading,
@@ -368,7 +482,7 @@ fn is_valid_container_name(id: &str) -> bool {
 /// be usable as a container name, and every list entry must only reference
 /// placeholders `serve` can actually resolve.
 fn validate_docker(backend: &Backend, source: &Path) -> crate::Result<()> {
-    let Some(docker) = &backend.docker else {
+    let Some(docker) = docker_of(backend) else {
         return Ok(());
     };
 
@@ -614,6 +728,12 @@ pub fn load_scopes(roots: &[PathBuf]) -> crate::Result<Config> {
     // everything downstream — the docker template whitelist included — only
     // ever sees a resolved value.
     for (backend, source) in backends.values_mut() {
+        // Normalization first: `resolve_port` and everything after it read
+        // the runtime, never the legacy table, so the fold must already have
+        // happened. The double declaration is caught just before, while both
+        // halves still exist (cf. `reject_double_runtime`).
+        reject_double_runtime(backend, source)?;
+        normalize_runtime(backend);
         resolve_port(backend, source)?;
     }
 
@@ -687,6 +807,17 @@ mod tests {
         std::fs::write(path, contents).expect("fixture write");
     }
 
+    /// The `[docker]` table of a LOADED backend.
+    ///
+    /// Goes through `runtime()` and not the `docker` field: the legacy table
+    /// is folded into `runtime` at load time, so `runtime()` is the only
+    /// shape that survives loading — whichever form the file declared.
+    fn docker_table(backend: &Backend) -> &Docker {
+        match backend.runtime().expect("a runtime must be kept") {
+            Runtime::Docker(docker) => docker,
+        }
+    }
+
     /// Writes a backend declaring `port = <port_value>` (raw TOML), whose
     /// `base_url` and `[docker]` both read `{{ backend.port }}`.
     fn write_port_backend(root: &Path, port_value: &str) {
@@ -722,7 +853,7 @@ mod tests {
 
         assert_eq!(backend.base_url, "http://127.0.0.1:8001");
         assert_eq!(
-            backend.docker.as_ref().expect("docker table").options,
+            docker_table(backend).options,
             vec!["-p".to_string(), "8001:8000".to_string()]
         );
     }
@@ -741,9 +872,77 @@ mod tests {
         assert_eq!(backend.base_url, "http://127.0.0.1:{{ backend.port }}");
         // `-p 0:8000` is how Docker is asked to allocate a free one.
         assert_eq!(
-            backend.docker.as_ref().expect("docker table").options[1],
+            docker_table(backend).options[1],
             format!("{DOCKER_EPHEMERAL_PORT}:8000")
         );
+    }
+
+    /// The same `port = "auto"` machinery, reached through the TAGGED form
+    /// instead of the legacy one — no normalization hop involved. Both paths
+    /// must substitute the ephemeral port in `[runtime]` and leave the
+    /// `base_url` templated, or `auto` silently works for one spelling only.
+    #[test]
+    fn port_auto_works_through_the_tagged_runtime_table_too() {
+        let root = fixture_dir("port-auto-tagged");
+        write(
+            &root,
+            "backends/b.toml",
+            r#"
+            id = "b"
+            base_url = "http://127.0.0.1:{{ backend.port }}"
+            type = "openai-compatible"
+            port = "auto"
+
+            [operations.chat]
+            method = "POST"
+            path = "/v1/chat/completions"
+
+            [runtime]
+            type = "docker"
+            image = "img"
+            options = ["-p", "{{ backend.port }}:8000"]
+            "#,
+        );
+
+        let config = load(&root).expect("a tagged runtime must support port = \"auto\"");
+        let backend = config.backends.get("b").expect("backend b");
+
+        assert!(backend.uses_auto_port());
+        assert_eq!(backend.base_url, "http://127.0.0.1:{{ backend.port }}");
+        assert_eq!(
+            docker_table(backend).options[1],
+            format!("{DOCKER_EPHEMERAL_PORT}:8000")
+        );
+    }
+
+    /// Symmetric to the legacy case: the rejection must not be tied to the
+    /// spelling the author used.
+    #[test]
+    fn port_auto_whose_tagged_runtime_ignores_the_placeholder_is_rejected() {
+        let root = fixture_dir("port-auto-tagged-unpublished");
+        write(
+            &root,
+            "backends/b.toml",
+            r#"
+            id = "b"
+            base_url = "http://127.0.0.1:{{ backend.port }}"
+            type = "openai-compatible"
+            port = "auto"
+
+            [operations.chat]
+            method = "POST"
+            path = "/v1/chat/completions"
+
+            [runtime]
+            type = "docker"
+            image = "img"
+            options = ["--rm"]
+            "#,
+        );
+
+        let err = load(&root).expect_err("an auto port nothing publishes must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("b.toml"), "got: {err}");
     }
 
     #[test]
@@ -1146,6 +1345,131 @@ mod tests {
         assert!(msg.contains("ovms"));
     }
 
+    /// Writes a backend whose runtime block is `runtime_toml` verbatim, so
+    /// a test can hand serde any shape it wants to see rejected.
+    fn write_runtime_backend(root: &Path, runtime_toml: &str) {
+        write(
+            root,
+            "backends/b.toml",
+            &format!(
+                r#"
+                id = "b"
+                base_url = "http://127.0.0.1:8000"
+                type = "openai-compatible"
+
+                [operations.chat]
+                method = "POST"
+                path = "/v1/chat/completions"
+
+                {runtime_toml}
+                "#
+            ),
+        );
+    }
+
+    /// The tagged form is the one every reader sees, and it must arrive
+    /// there intact.
+    #[test]
+    fn load_accepts_the_tagged_runtime_table() {
+        let root = fixture_dir("runtime-tagged");
+        write_runtime_backend(
+            &root,
+            r#"
+            [runtime]
+            type = "docker"
+            image = "openvino/model_server:latest"
+            options = ["-p", "8000:8000"]
+            "#,
+        );
+
+        let config = load(&root).expect("a tagged [runtime] table must load");
+        let docker = docker_table(&config.backends["b"]);
+        assert_eq!(docker.image, "openvino/model_server:latest");
+        assert_eq!(docker.options.len(), 2);
+    }
+
+    /// An unsupported family is NAMED by serde instead of being silently
+    /// treated as the only one that exists — the whole reason the enum is
+    /// tagged.
+    #[test]
+    fn load_rejects_an_unknown_runtime_type() {
+        let root = fixture_dir("runtime-unknown-type");
+        write_runtime_backend(
+            &root,
+            r#"
+            [runtime]
+            type = "podman"
+            image = "img"
+            "#,
+        );
+
+        let err = load(&root).expect_err("an unknown runtime type must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("b.toml"), "got: {err}");
+        assert!(err.to_string().contains("podman"), "got: {err}");
+    }
+
+    /// `deny_unknown_fields` must survive the tagged form: a key read by
+    /// nobody is a defect, not a shortcut.
+    #[test]
+    fn load_rejects_an_unknown_key_inside_the_runtime_table() {
+        let root = fixture_dir("runtime-unknown-key");
+        write_runtime_backend(
+            &root,
+            r#"
+            [runtime]
+            type = "docker"
+            image = "img"
+            bogus = 1
+            "#,
+        );
+
+        let err = load(&root).expect_err("an unknown key in [runtime] must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("b.toml"), "got: {err}");
+        assert!(err.to_string().contains("bogus"), "got: {err}");
+    }
+
+    /// The legacy form keeps working, and lands in the SAME place: nothing
+    /// downstream is allowed to care which one was written.
+    #[test]
+    fn load_normalizes_the_legacy_docker_table_into_the_runtime() {
+        let root = fixture_dir("runtime-legacy-normalized");
+        write_runtime_backend(
+            &root,
+            r#"
+            [docker]
+            image = "img"
+            "#,
+        );
+
+        let config = load(&root).expect("the legacy [docker] table must still load");
+        assert_eq!(docker_table(&config.backends["b"]).image, "img");
+    }
+
+    /// Declaring both forms has no honest resolution: picking a winner would
+    /// silently ignore half of what the author wrote.
+    #[test]
+    fn load_rejects_a_backend_declaring_both_runtime_and_the_legacy_docker_table() {
+        let root = fixture_dir("runtime-double-declaration");
+        write_runtime_backend(
+            &root,
+            r#"
+            [runtime]
+            type = "docker"
+            image = "tagged"
+
+            [docker]
+            image = "legacy"
+            "#,
+        );
+
+        let err = load(&root).expect_err("declaring both forms must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("b.toml"), "got: {err}");
+        assert!(err.to_string().contains("\"b\""), "got: {err}");
+    }
+
     #[test]
     fn load_accepts_a_backend_declaring_docker() {
         let root = fixture_dir("accept-docker-table");
@@ -1169,10 +1493,7 @@ mod tests {
         );
 
         let config = load(&root).expect("a valid [docker] table must load");
-        let docker = config.backends["ovms"]
-            .docker
-            .as_ref()
-            .expect("the [docker] table must be kept");
+        let docker = docker_table(&config.backends["ovms"]);
         assert_eq!(docker.image, "openvino/model_server:latest");
         assert_eq!(docker.options.len(), 4);
         assert_eq!(docker.args.len(), 4);
@@ -1199,10 +1520,7 @@ mod tests {
         );
 
         let config = load(&root).expect("[docker] reduced to its image must load");
-        let docker = config.backends["ovms"]
-            .docker
-            .as_ref()
-            .expect("the [docker] table must be kept");
+        let docker = docker_table(&config.backends["ovms"]);
         assert!(docker.options.is_empty());
         assert!(docker.args.is_empty());
     }

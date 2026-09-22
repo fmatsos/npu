@@ -73,21 +73,37 @@ Seven built-ins, all listed in `builtin::RESERVED` (a command file whose first
 path segment matches one is rejected at load time): `doctor`, `models`,
 `describe`, and the lifecycle — `serve`, `stop`, `status`, `logs`.
 
+A backend declares how it is started by the optional TAGGED `[runtime]`
+table (`type = "docker"`), deserialized into `config::Runtime`. The untagged
+`[docker]` table of earlier versions is still accepted and FOLDED into
+`runtime` at load time, once, so every reader downstream sees one shape;
+declaring both is rejected, naming the file and the backend. `.docker` is
+therefore read in exactly two places, both in `config.rs`: the fold and the
+rule that rejects the double declaration. Both fields are `pub(crate)` so
+that rule is structural, not a doc comment: everything else goes through
+`Backend::runtime()`, or through `config::docker_of` — the crate's single
+runtime-family test, an exhaustive `match` a new variant breaks.
+
 The lifecycle drives Docker, which is an **optional** prerequisite. The core
 knows the shape of a `docker run` invocation and nothing else: image, options
-and arguments come from the backend's optional `[docker]` table, so changing
-image, ports or accelerator is a configuration change, never a rebuild. The
+and arguments come from the backend's `[runtime]` table, so changing image,
+ports or accelerator is a configuration change, never a rebuild. The
 container is named `npu-<backend-id>`, which is how `stop`/`status`/`logs`
 find it again.
+
+`builtin.rs` is ORCHESTRATION: it resolves model and backend, `match`es on
+the runtime family, and formats. `src/runtime/` holds what actually touches
+the outside world — dispatch is a `match`, never a trait object, so a new
+family is a compile error at every site that must handle it.
 
 Everything that touches the outside world is **injected**, like `probe` in
 `doctor`: `runner` (captures stdout), `streamer` (inherits both streams, for
 `logs`), `container_probe`. No test in the suite needs Docker installed, and
-`std::process::Command` appears in exactly one module (`builtin.rs`).
+`std::process::Command` appears only in `src/runtime/`.
 
-`doctor`'s container check only exists when a backend declares `[docker]` — a
-machine that never asked for a container must not be penalized — and it is a
-`Reachability` check, so a missing runtime gives `3`, never `2`.
+`doctor`'s container check only exists when a backend declares a Docker
+runtime — a machine that never asked for a container must not be penalized —
+and it is a `Reachability` check, so a missing runtime gives `3`, never `2`.
 
 ## Tests
 
@@ -126,11 +142,14 @@ unwrap_used = "warn"
 
 ## Dependencies
 
-Seven, deliberately: `clap` (builder API, not derive — the command tree is
+Nine, deliberately: `clap` (builder API, not derive — the command tree is
 built at runtime from a directory scan), `serde`, `serde_json`, `toml`,
 `ureq` (blocking, rustls — chosen over `reqwest`, which drags in tokio),
 `jsonschema` with `default-features = false` (its defaults pull `reqwest`
-back in via `resolve-http`).
+back in via `resolve-http`), and the three `npu update` brought in:
+`semver` (comparing the release manifest's version to the running one),
+`sha2` (verifying the downloaded binary before it replaces anything) and
+`self-replace` (replacing the running executable at its own path).
 
 Adding one is a measured decision: check the binary size and the crate count
 before and after, and record the numbers.

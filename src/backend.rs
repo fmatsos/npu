@@ -215,6 +215,7 @@ mod tests {
             kind: "openai-compatible".to_string(),
             operations: HashMap::new(),
             port: None,
+            runtime: None,
             docker: None,
             timeouts,
         }
@@ -400,6 +401,7 @@ mod tests {
             .into_iter()
             .collect(),
             port: None,
+            runtime: None,
             docker: None,
             timeouts: None,
         };

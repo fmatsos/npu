@@ -1,11 +1,11 @@
 ---
 name: npu-backend
-description: Writes and fixes `npu` backend files (`.npu/backends/*.toml`) — the `id`, `type`, `base_url` and `[operations.<name>]` tables that tell `npu` where to send requests and on which HTTP path, plus the optional `[docker]` table `npu serve` uses to start the runtime, and the optional `[timeouts]` table that overrides the request timeout. Covers the constraints enforced at load time — `openai-compatible` is the only supported type, `POST` the only supported method, and unknown keys are rejected rather than ignored. Use it whenever a backend declaration is created, changed or rejected.
+description: Writes and fixes `npu` backend files (`.npu/backends/*.toml`) — the `id`, `type`, `base_url` and `[operations.<name>]` tables that tell `npu` where to send requests and on which HTTP path, plus the optional `[runtime]` table `npu serve` uses to start the runtime (its untagged `[docker]` spelling of earlier versions is still accepted), and the optional `[timeouts]` table that overrides the request timeout. Covers the constraints enforced at load time — `openai-compatible` is the only supported type, `POST` the only supported method, and unknown keys are rejected rather than ignored. Use it whenever a backend declaration is created, changed or rejected.
 when_to_use: >
   Trigger on "add an npu backend", "point npu at my model server / OVMS /
   llama.cpp / Ollama", "change the base_url", "add an operation", "make npu
   start OVMS with Docker", or on any npu error mentioning a backend id,
-  `base_url`, `type`, `method`, an operation name or a `[docker]` key.
+  `base_url`, `type`, `method`, an operation name or a `[runtime]`/`[docker]` key.
 model: sonnet
 effort: low
 allowed-tools: Read Write Edit Glob Grep Bash(npu:*)
@@ -39,9 +39,9 @@ next reader.
 | `id` | yes | merge key across scopes, and how models refer to this backend |
 | `type` | yes | **`"openai-compatible"` is the only accepted value** |
 | `base_url` | yes | joined with an operation's `path`; a trailing `/` is handled either way |
-| `port` | no | declared once, read as `{{ backend.port }}` in `base_url` and `[docker]` |
+| `port` | no | declared once, read as `{{ backend.port }}` in `base_url` and `[runtime]` |
 | `[operations.<name>]` | at least one | each needs `method` and `path` |
-| `[docker]` | no | `image`, `options`, `args` — how `npu serve` starts this backend |
+| `[runtime]` | no | `type`, `image`, `options`, `args` — how `npu serve` starts this backend |
 | `[timeouts]` | no | `request_secs` — overrides the default request timeout (120s) |
 
 ## What is rejected at load time
@@ -55,10 +55,12 @@ silently ignored:
 - `[timeouts].request_secs = 0`, or any key inside `[timeouts]` other than `request_secs`;
 - `port = 0`, a `port` string other than `"auto"`, a `{{ backend.port }}` with no `port` key, or a
   `port` key no placeholder reads;
-- `port = "auto"` without a `[docker]` table, or whose `base_url` does not read
+- `port = "auto"` without a Docker runtime, or whose `base_url` does not read
   `{{ backend.port }}`;
 - two files in the same scope sharing an `id`;
-- inside `[docker]`: a placeholder other than `{{ args.model }}` / `{{ env.NAME }}`, and an `id`
+- a `[runtime]` whose `type` is not `"docker"`, and any unknown key inside `[runtime]`;
+- a backend declaring both `[runtime]` and the legacy `[docker]` table;
+- inside `[runtime]`: a placeholder other than `{{ args.model }}` / `{{ env.NAME }}`, and an `id`
   unusable as a container name (ASCII letters, digits, `_`, `.`, `-`, starting alphanumeric).
 
 ## Operation names are yours
@@ -89,14 +91,15 @@ path = "/v1/chat/completions"
 Check the server's own documentation for the path; `npu` joins `base_url` and
 `path` verbatim and does not probe for it.
 
-## Starting the backend: the `[docker]` table
+## Starting the backend: the `[runtime]` table
 
 Optional. Declaring it gives this backend a lifecycle — `npu serve <model>`,
 `npu stop <model>`, `npu status`, `npu logs <model>` — and makes Docker a
 prerequisite for those commands alone.
 
 ```toml
-[docker]
+[runtime]
+type = "docker"
 image = "openvino/model_server:latest"
 options = ["-p", "8000:8000", "-v", "{{ env.HOME }}/models:/models:rw"]
 args = [
@@ -113,6 +116,10 @@ IMAGE [ARG...]`. `npu` adds `-d` and `--name npu-<backend-id>`, nothing else. Th
 Templating is the prompt engine's: `{{ args.model }}` (the served model's
 `model` field, the only argument available here) and `{{ env.NAME }}`.
 `{{ input }}` is rejected — `npu serve` reads no input.
+
+`type = "docker"` is the only family; anything else is rejected by name. The untagged `[docker]`
+table of earlier versions is still accepted and folded into `[runtime]` at load time — write
+`[runtime]` in new files, and never both, which is rejected.
 
 For OVMS on an accelerator: image `openvino/model_server:<version>-gpu` —
 there is no NPU-only image, the GPU tag carries both plugins. In `options`,
@@ -137,19 +144,20 @@ this file's nastiest failure: `npu doctor` stays green (its probe reaches whatev
 port = 8001
 base_url = "http://127.0.0.1:{{ backend.port }}"
 
-[docker]
+[runtime]
+type = "docker"
 options = ["-p", "{{ backend.port }}:8000", "..."]
 ```
 
-`{{ backend.port }}` is substituted at load time in `base_url` and every `[docker]` entry — the
+`{{ backend.port }}` is substituted at load time in `base_url` and every `[runtime]` entry — the
 only `backend.*` placeholder there is. Both halves are enforced: the placeholder without a `port`
 is rejected, and a `port` nothing reads is rejected too.
 
-`port = "auto"` hands the allocation to Docker: `{{ backend.port }}` becomes `0` in the `[docker]`
+`port = "auto"` hands the allocation to Docker: `{{ backend.port }}` becomes `0` in the `[runtime]`
 lists (`-p 0:8000`), the kernel picks a free port, and `npu` reads it back with `docker port`.
 Collision is impossible by construction — nothing is derived or guessed. The cost is that Docker
 becomes a prerequisite for **executing commands** on that backend, not just for its lifecycle; a
-fixed port never consults it. Two further rules, enforced at load: `"auto"` needs a `[docker]`
+fixed port never consults it. Two further rules, enforced at load: `"auto"` needs a Docker runtime
 table, and it needs `base_url` to read `{{ backend.port }}`.
 
 The port changes on each `npu serve`; `npu status` prints the resolved URL, and shows `-` for a
@@ -181,7 +189,7 @@ rejected at load time naming the file.
 
 Merging is **replacement**: a file in `./.npu` with the same `id` as one in
 `/etc/npu` replaces it whole. Copy every field you still need — nothing is
-inherited, `[docker]` included.
+inherited, `[runtime]` included.
 
 ## Verifying
 
@@ -200,7 +208,7 @@ gives `npu doctor` exit code `3`: the configuration is fine, the runtime is
 not started.
 
 `✓ container runtime available` only appears when at least one backend
-declares `[docker]`; it means `docker info` succeeded. Its failure is a
+declares a Docker runtime; it means `docker info` succeeded. Its failure is a
 reachability failure too — exit `3`, never `2`.
 
 ## Reference

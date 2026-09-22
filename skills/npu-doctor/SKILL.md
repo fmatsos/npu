@@ -37,7 +37,7 @@ $ npu doctor
 
 What it checks, in order: (1) every scope parses and merges; (2) each backend
 is reachable; (3) the container runtime answers (`docker info`), **only** if a
-backend declares a `[docker]` table — Docker is an optional prerequisite and a
+backend declares a Docker runtime — Docker is an optional prerequisite and a
 machine without it is never penalized; (4) each model names a backend that
 exists and an operation that backend exposes; (5) each command names a model
 that exists; (6) every declared output schema exists, is readable, is valid
@@ -96,7 +96,7 @@ stderr, then run `npu doctor`.
 | a local override is ignored | replacement is keyed by `id` for backends and models, by full path for commands — a different `id` creates a second entry instead of replacing |
 | a broken file in a broad scope kills everything | **parse errors on backends/models are always fatal**, even when shadowed: an unparseable file has no knowable identity, so nothing can tell whether it is shadowed. Commands are keyed by path, so a shadowed broken command file is never opened. |
 | exit `3` with everything green in `doctor` | reachable socket, wrong `path` on the operation, or a non-2xx response — `doctor` never sends an HTTP request |
-| `npu serve` exits `2` naming a backend | that backend declares no `[docker]` table — npu was never told how to start it |
+| `npu serve` exits `2` naming a backend | that backend declares no `[runtime]` table — npu was never told how to start it |
 | `npu serve` exits `3` | `docker` is missing, its daemon is down, or `docker run` failed; its own message is on stderr |
 | a command file is diagnosed as having no frontmatter | the fence is `---`; a file still opening with `+++` is rejected with its own message |
 | a container is running but the model does not answer | `docker run -d` returns before the model is loaded — `npu status` says `Up`, `npu logs <model>` says how far it got |

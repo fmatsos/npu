@@ -39,7 +39,7 @@ What it checks, in order:
 1. **Configuration loads** — every scope parses and merges.
 2. **Each backend is reachable.**
 3. **The container runtime answers** — `docker info` succeeds. This check appears **only** if at
-   least one backend declares a `[docker]` table; Docker is an optional prerequisite, and a
+   least one backend declares a Docker runtime; Docker is an optional prerequisite, and a
    machine that never asked for a container is never penalized for not having one.
 4. **Each model** names a backend that exists and an operation that backend exposes.
 5. **Each command** names a model that exists.
@@ -105,7 +105,7 @@ $ npu serve qwen-fast
 The argument is a **model**, not a backend: a model already names exactly one backend
 (`backend = "ovms"`), so there is nothing to disambiguate, and several containerized backends
 coexist without ceremony. What gets run comes entirely from that backend's
-[`[docker]` table](configuration.md#starting-a-backend-with-docker) — `npu` knows the shape of a
+[`[runtime]` table](configuration.md#starting-a-backend-with-docker) — `npu` knows the shape of a
 `docker run` invocation, never which server you run.
 
 The command built is:
@@ -126,7 +126,7 @@ on stderr and nothing on stdout.
 | Code | Meaning |
 | ---: | --- |
 | `0` | the container started; its identifier is on stdout |
-| `2` | unknown model, or its backend declares no `[docker]` table |
+| `2` | unknown model, or its backend declares no `[runtime]` table |
 | `3` | `docker` is missing, its daemon is down, or `docker run` failed |
 
 Code `3` for a failed start is the same `3` as everywhere else in this CLI — a backend problem. To
@@ -158,22 +158,25 @@ would then fail on a conflict and the lifecycle would be a one-way trip. Stoppin
 was never started is not an error — the command prints the same name and exits `0`, so a script
 can call it without checking first.
 
-Exit codes are `npu serve`'s: `2` for an unknown model or a backend without `[docker]`, `3` when
-the runtime itself refuses.
+Exit codes are `npu serve`'s: `2` for an unknown model or a backend without a `[runtime]` table,
+`3` when the runtime itself refuses.
 
 ---
 
 ## `npu status`
 
-Reports the state of every backend that declares a `[docker]` table, sorted by backend, one line
+Reports the state of every backend that declares a runtime, sorted by backend, one line
 each. Its report *is* its result.
 
 ```console
 $ npu status
-BACKEND   CONTAINER     URL                     STATE
-ovms      npu-ovms      http://127.0.0.1:8000   Up 31 seconds
-ovms-gpu  npu-ovms-gpu  http://127.0.0.1:32768  Up 47 seconds
+BACKEND   RUNTIME  INSTANCE      URL                     STATE
+ovms      docker   npu-ovms      http://127.0.0.1:8000   Up 3 hours
+ovms-gpu  docker   npu-ovms-gpu  http://127.0.0.1:32768  Up 3 hours
 ```
+
+`RUNTIME` is the family that manages the backend — `docker` today. `INSTANCE` is what that
+family calls the thing it started: the container name for Docker.
 
 `URL` is the backend's resolved `base_url` — the only place a
 [`port = "auto"`](configuration.md#port-optional) shows up, since Docker allocates that number and
