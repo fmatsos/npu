@@ -4,6 +4,32 @@ Every notable change to `npu`, newest first. Versions follow
 [semantic versioning](https://semver.org); pre-1.0, a breaking change bumps
 the minor.
 
+## [0.2.0] - 2026-09-22
+
+### Added
+
+- `npu version` and `npu update` check, download, verify and install the latest GitHub release
+  binary. Both run in degraded mode like `doctor`, since neither depends on the AI configuration
+  ([`8003b25`](https://github.com/fmatsos/npu/commit/8003b257edbbb10e330f9fc71d11fa236e7b2252))
+
+### Changed
+
+- **Breaking**: a backend's `[timeouts]` table (`request_secs`, in seconds) is now honoured
+  instead of being rejected as an unknown key, and the default request timeout rises from 30s to
+  120s to cover a full `max_tokens` generation on a slow accelerator. `request_secs = 0` is
+  rejected at load time, naming the file
+  ([`e40cd5e`](https://github.com/fmatsos/npu/commit/e40cd5e6a90e9daf801f88034a22610be632137e))
+
+### Fixed
+
+- The `ovms` backend fixture pins the OpenVINO Model Server image to `2026.4.0` (was the floating
+  `:latest` tag) and mounts a persistent `--cache_dir`, so NPU/GPU graph compilation happens once
+  per model instead of on every container restart
+  ([`829e8da`](https://github.com/fmatsos/npu/commit/829e8da063afafb3672a5c3f89b71fada556c091),
+  [`c5b4a31`](https://github.com/fmatsos/npu/commit/c5b4a31c056bde9309a4a0023c1e84d62740f9c8))
+
+**Full changelog**: [`v0.1.0...v0.2.0`](https://github.com/fmatsos/npu/compare/v0.1.0...v0.2.0)
+
 ## [0.1.0] - 2026-09-21
 
 First release. `npu` runs prompts from the command line, and its command
