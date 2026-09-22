@@ -2,8 +2,9 @@
 
 [![QA](https://github.com/fmatsos/npu/actions/workflows/qa.yml/badge.svg)](https://github.com/fmatsos/npu/actions/workflows/qa.yml)
 
-A generic CLI engine for running local AI commands, written in Rust, with a focus on models served
-by an NPU.
+A generic CLI engine for running local AI commands, written in Rust, against any OpenAI-compatible
+model server — OVMS on an Intel NPU, `llama-server` on Apple Silicon, or anything else that speaks
+the protocol.
 
 `npu` hard-codes no business commands. There is no `classify`, no `summarize`, no `transcribe` in
 the binary. You declare your own commands as configuration files, and the CLI builds its command
@@ -321,6 +322,7 @@ structured response is an execution failure, never something `npu` quietly repai
 | [Output contracts](docs/output.md) | text and JSON output, JSON Schema validation, fenced responses |
 | [Built-in commands](docs/cli.md) | `doctor`, `models`, `describe`, degraded mode |
 | [Deploying on an Intel NPU](docs/intel-npu.md) | exporting a model with `optimum-cli`, quantization pitfalls, serving it with OVMS |
+| [Running on Apple Silicon](docs/apple-silicon.md) | serving a GGUF model with `llama-server` on Metal, started and stopped by `npu serve` |
 | [Claude Code skills](skills/README.md) | five skills that teach Claude Code to write and repair an `npu` configuration |
 
 ---
