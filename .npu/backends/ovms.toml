@@ -1,9 +1,9 @@
-# Fixture de démonstration : reflète exactement ce que la phase 1 supporte
-# (une seule opération câblée, `chat`, via l'adaptateur `openai-compatible`
-# en dur dans backend.rs). Les autres opérations de la §7 de
-# npu-cli-spec.md (embeddings, audio_transcriptions, rerank) arriveront avec
-# leur support. `[timeouts]` (request_secs) est implémenté mais omis ici :
-# le défaut de 120s convient à cette fixture.
+# Demo fixture: reflects exactly what phase 1 supports (a single wired
+# operation, `chat`, via the `openai-compatible` adapter hard-coded in
+# backend.rs). The other operations from npu-cli-spec.md §7 (embeddings,
+# audio_transcriptions, rerank) will arrive with their support. `[timeouts]`
+# (request_secs) is implemented but omitted here: the 120s default suits this
+# fixture.
 
 id = "ovms"
 type = "openai-compatible"
@@ -13,12 +13,13 @@ base_url = "http://127.0.0.1:8000"
 method = "POST"
 path = "/v3/chat/completions"
 
-# Démarrage du runtime par `npu serve qwen-fast` (Docker, pré-requis
-# optionnel). `{{ args.model }}` est remplacé par le champ `model` du modèle
-# invoqué, `{{ env.HOME }}` par la variable d'environnement : le cœur ne sait
-# rien d'OVMS, il exécute ce qui est déclaré ici.
-# Variantes GPU/NPU : image `openvino/model_server:2026.4.0-gpu`, plus
-# `--device /dev/dri` (GPU) ou `--device /dev/accel` + `--target_device NPU`.
+# Runtime started by `npu serve qwen-fast` (Docker, an optional prerequisite).
+# `{{ args.model }}` is replaced by the invoked model's `model` field,
+# `{{ env.HOME }}` by the environment variable: the core knows nothing about
+# OVMS, it just runs what is declared here.
+# GPU/NPU variants: image `openvino/model_server:2026.4.0-gpu`, plus
+# `--device /dev/dri` (GPU) or `--device /dev/accel` + `--target_device NPU`
+# (NPU) — see docs/intel-npu.md for the full deployment guide.
 [docker]
 image = "openvino/model_server:2026.4.0"
 options = [

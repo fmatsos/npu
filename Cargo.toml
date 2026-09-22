@@ -2,7 +2,7 @@
 name = "npu"
 version = "0.2.0"
 edition = "2024"
-description = "Moteur générique d'exécution de commandes IA locales"
+description = "Generic execution engine for local AI commands"
 license = "MIT"
 publish = false
 
@@ -17,9 +17,9 @@ self-replace = "1.5.0"
 toml = "1.1.6"
 ureq = { version = "3.4.2", default-features = false, features = ["json", "rustls"] }
 
-# --- Qualité : lints appliqués à la compilation ---------------------------
-# `priority = -1` sur un groupe est obligatoire dès qu'on surcharge un lint
-# individuel du même groupe : sans lui, Cargo refuse le manifeste.
+# --- Quality: lints applied at build time ----------------------------------
+# `priority = -1` on a group is mandatory as soon as an individual lint of
+# that same group is overridden: without it, Cargo rejects the manifest.
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -30,23 +30,23 @@ rust_2018_idioms = { level = "warn", priority = -1 }
 [lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
-# Correction obligatoire : ces patterns cassent le contrat CLI (§14 de la spec,
-# stdout réservé au résultat) ou masquent une erreur.
+# Must fix: these patterns break the CLI contract (spec §14, stdout reserved
+# for the result) or hide an error.
 unwrap_used = "warn"
 expect_used = "warn"
 panic = "warn"
 print_stderr = "allow"
-# Ne doit jamais atteindre un binaire publié.
+# Must never reach a published binary.
 dbg_macro = "deny"
 todo = "warn"
-# Bruit de fond de `pedantic` sans valeur ici.
+# `pedantic` background noise with no value here.
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
-# --- Profils --------------------------------------------------------------
-# panic = "abort" volontairement absent : le CLI expose des codes de sortie
-# distincts (cf. IMPLEMENTATION.md §1.7) qu'un abort remplacerait par un SIGABRT.
+# --- Profiles ---------------------------------------------------------------
+# panic = "abort" deliberately absent: the CLI exposes distinct exit codes
+# (see IMPLEMENTATION.md §1.7) that an abort would replace with a SIGABRT.
 
 [profile.release]
 lto = true
@@ -55,5 +55,5 @@ strip = true
 panic = "unwind"
 
 [profile.dev]
-# Compilation incrémentale rapide, mais debug info allégée.
+# Fast incremental builds, at the cost of lighter debug info.
 debug = "line-tables-only"

@@ -1,11 +1,11 @@
-# Seuils de complexité. Defaults clippy = 7 arguments / 250 lignes.
+# Complexity thresholds. Clippy defaults = 7 arguments / 250 lines.
 too-many-arguments-threshold = 6
 too-many-lines-threshold = 120
-# Refuse les noms bouche-trou.
+# Reject placeholder names.
 disallowed-names = ["foo", "bar", "baz", "tmp", "toto"]
 
-# Bannissements ciblés (rôle « règles » de deptrac/phpmd, sans outil externe).
-# Vide pour l'instant : à remplir quand une API précise devra être interdite,
-# p. ex. un client HTTP concurrent ou un std::env::var direct hors config.
+# Targeted bans (plays the role of deptrac/phpmd "rules", without an external tool).
+# Empty for now: fill in once a specific API needs to be forbidden,
+# e.g. a concurrent HTTP client or a direct std::env::var outside config.
 # disallowed-types = [{ path = "std::collections::HashMap", reason = "..." }]
 # disallowed-methods = []

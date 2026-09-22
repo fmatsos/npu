@@ -1,13 +1,13 @@
-# cargo-deny : audit de l'arbre de dépendances.
-# Couvre les vulnérabilités connues, les licences, et les doublons de crates.
+# cargo-deny: dependency tree audit.
+# Covers known vulnerabilities, licenses, and duplicate crates.
 
 [advisories]
-# Toute vulnérabilité RustSec connue fait échouer l'audit.
+# Any known RustSec vulnerability fails the audit.
 yanked = "deny"
 ignore = []
 
 [licenses]
-# Licences autorisées pour tout l'arbre de dépendances.
+# Licenses allowed across the whole dependency tree.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -16,20 +16,20 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
-    # Licence de DONNÉES (pas de code), permissive et sans copyleft aval.
-    # Portée par webpki-roots, qui n'est que le paquet de certificats racine
-    # Mozilla embarqué par ureq. Autorisée délibérément, pas par défaut.
+    # DATA license (not code), permissive and with no downstream copyleft.
+    # Pulled in by webpki-roots, which is just the Mozilla root certificate
+    # bundle embedded by ureq. Allowed deliberately, not by default.
     "CDLA-Permissive-2.0",
-    # Strictement PLUS permissive que MIT (même texte, sans obligation
-    # d'attribution). Autoriser MIT sans autoriser MIT-0 serait incohérent.
-    # Portée par borrow-or-share, via jsonschema -> referencing -> fluent-uri.
+    # Strictly MORE permissive than MIT (same text, no attribution
+    # requirement). Allowing MIT without MIT-0 would be inconsistent.
+    # Pulled in by borrow-or-share, via jsonschema -> referencing -> fluent-uri.
     "MIT-0",
     "Zlib",
 ]
 confidence-threshold = 0.9
 
 [bans]
-# Deux versions de la même crate = binaire plus gros et compilation plus lente.
+# Two versions of the same crate = a bigger binary and a slower build.
 multiple-versions = "warn"
 wildcards = "deny"
 
