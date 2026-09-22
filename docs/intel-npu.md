@@ -1,6 +1,7 @@
 # Deploying a model on an Intel NPU
 
 - [Overview](#overview)
+- [0. Detecting an Intel NPU on the host](#0-detecting-an-intel-npu-on-the-host)
 - [1. Export the model with `optimum-cli`](#1-export-the-model-with-optimum-cli)
 - [2. Choosing quantization parameters](#2-choosing-quantization-parameters)
 - [3. Serving the export with OVMS on the NPU](#3-serving-the-export-with-ovms-on-the-npu)
@@ -25,6 +26,30 @@ the next one — worth isolating before assuming `npu` or OVMS is at fault:
 optimum-cli export  →  OVMS serves the export  →  npu sends chat requests to OVMS
      (export bug)          (deployment bug)              (client bug)
 ```
+
+---
+
+## 0. Detecting an Intel NPU on the host
+
+Everything below is Intel-specific: `optimum-intel` targets Intel hardware, and `--target_device
+NPU` in OVMS means nothing on a machine without one. Confirm the device exists before spending
+time on an export:
+
+```sh
+ls /dev/accel/accel0 2>/dev/null && echo "NPU device node present"
+lspci -nn 2>/dev/null | grep -i "neural\|npu\|vpu"
+lsmod 2>/dev/null | grep -i intel_vpu
+```
+
+The Linux driver (`intel_vpu`, kernel 6.5+ or the out-of-tree module on older kernels) exposes the
+NPU as `/dev/accel/accel0`. Its absence with the kernel module loaded usually means firmware is
+missing (`intel-driver-compiler-npu` / `linux-firmware`, depending on the distribution) rather than
+missing hardware — a Meteor Lake, Lunar Lake, Arrow Lake or Panther Lake CPU (marketed as "Intel AI
+Boost") that doesn't expose the device node is a driver problem, not an absent NPU.
+
+No device node, no driver, no fix in reach: fall back to `--target_device GPU` or `CPU` in the
+OVMS `args` — everything else in this guide (the export, `--cache_dir`, the backend wiring)
+applies identically, only the device flag changes.
 
 ---
 
