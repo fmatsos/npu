@@ -314,6 +314,7 @@ structured response is an execution failure, never something `npu` quietly repai
 | [Writing commands](docs/commands.md) | command files, frontmatter, arguments, templating, input modes |
 | [Output contracts](docs/output.md) | text and JSON output, JSON Schema validation, fenced responses |
 | [Built-in commands](docs/cli.md) | `doctor`, `models`, `describe`, degraded mode |
+| [Deploying on an Intel NPU](docs/intel-npu.md) | exporting a model with `optimum-cli`, quantization pitfalls, serving it with OVMS |
 | [Claude Code skills](skills/README.md) | five skills that teach Claude Code to write and repair an `npu` configuration |
 
 ---
