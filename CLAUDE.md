@@ -43,8 +43,9 @@ breaking whatever its commit type claims.
 
 This is why every `Deserialize` struct for a configuration file carries
 `#[serde(deny_unknown_fields)]`, why `type` and `method` are validated instead
-of assumed, and why `[timeouts]` — specified but unimplemented — is rejected
-rather than accepted and dropped. Adding a field you read but do not use
+of assumed, and why a backend's optional `[timeouts]` table only accepts the
+one key `backend.rs` actually reads (`request_secs`) — any other key inside
+it is rejected, not silently ignored. Adding a field you read but do not use
 breaks this rule.
 
 ## Exit-code contract — do not change

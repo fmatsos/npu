@@ -11,8 +11,24 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-/// Maximum delay granted to a `chat` request before failure.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Maximum delay granted to a `chat` request before failure, when the
+/// backend declares no `[timeouts]` override. 120s covers a full
+/// `max_tokens` generation on a slow accelerator (observed: ~80s for 1024
+/// tokens on an NPU) with headroom; a backend needing more overrides it via
+/// `[timeouts].request_secs`.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The timeout to grant a `chat` request against `backend`: its
+/// `[timeouts].request_secs` override if declared, [`REQUEST_TIMEOUT`]
+/// otherwise.
+fn effective_timeout(backend: &crate::config::Backend) -> Duration {
+    backend
+        .timeouts
+        .as_ref()
+        .map_or(REQUEST_TIMEOUT, |timeouts| {
+            Duration::from_secs(timeouts.request_secs)
+        })
+}
 
 /// Maximum number of characters of the response body included in an error
 /// message, to stay diagnosable without flooding stderr.
@@ -37,8 +53,10 @@ pub fn chat(
     let url = join_url(&backend.base_url, &operation.path);
     let body = build_chat_request(&model.model, prompt, &model.generation);
 
+    let timeout = effective_timeout(backend);
+
     let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(REQUEST_TIMEOUT))
+        .timeout_global(Some(timeout))
         // A non-2xx status must stay readable: we want its body in the
         // error message, not an opaque ureq error.
         .http_status_as_error(false)
@@ -48,7 +66,7 @@ pub fn chat(
     logger.info(&format!(
         "POST {url} (model \"{}\", timeout {} s)",
         model.model,
-        REQUEST_TIMEOUT.as_secs()
+        timeout.as_secs()
     ));
 
     let started = std::time::Instant::now();
@@ -179,6 +197,32 @@ fn truncate(s: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
     use crate::config::{Generation, Operation};
+    use std::collections::HashMap;
+
+    /// Minimal backend fixture for [`effective_timeout`] tests: only
+    /// `timeouts` varies between cases.
+    fn backend_with_timeouts(timeouts: Option<crate::config::Timeouts>) -> crate::config::Backend {
+        crate::config::Backend {
+            id: "stub".to_string(),
+            base_url: "http://127.0.0.1:0".to_string(),
+            kind: "openai-compatible".to_string(),
+            operations: HashMap::new(),
+            docker: None,
+            timeouts,
+        }
+    }
+
+    #[test]
+    fn effective_timeout_falls_back_to_default_when_unset() {
+        let backend = backend_with_timeouts(None);
+        assert_eq!(effective_timeout(&backend), REQUEST_TIMEOUT);
+    }
+
+    #[test]
+    fn effective_timeout_uses_backend_override_when_set() {
+        let backend = backend_with_timeouts(Some(crate::config::Timeouts { request_secs: 5 }));
+        assert_eq!(effective_timeout(&backend), Duration::from_secs(5));
+    }
 
     #[test]
     fn join_url_without_trailing_slash_on_base() {
@@ -348,6 +392,7 @@ mod tests {
             .into_iter()
             .collect(),
             docker: None,
+            timeouts: None,
         };
         let model = crate::config::Model {
             id: "test-model".to_string(),

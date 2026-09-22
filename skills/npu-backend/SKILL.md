@@ -1,6 +1,6 @@
 ---
 name: npu-backend
-description: Writes and fixes `npu` backend files (`.npu/backends/*.toml`) — the `id`, `type`, `base_url` and `[operations.<name>]` tables that tell `npu` where to send requests and on which HTTP path, plus the optional `[docker]` table `npu serve` uses to start the runtime. Covers the constraints enforced at load time — `openai-compatible` is the only supported type, `POST` the only supported method, unknown keys are rejected rather than ignored, and `[timeouts]` is not implemented. Use it whenever a backend declaration is created, changed or rejected.
+description: Writes and fixes `npu` backend files (`.npu/backends/*.toml`) — the `id`, `type`, `base_url` and `[operations.<name>]` tables that tell `npu` where to send requests and on which HTTP path, plus the optional `[docker]` table `npu serve` uses to start the runtime, and the optional `[timeouts]` table that overrides the request timeout. Covers the constraints enforced at load time — `openai-compatible` is the only supported type, `POST` the only supported method, and unknown keys are rejected rather than ignored. Use it whenever a backend declaration is created, changed or rejected.
 when_to_use: >
   Trigger on "add an npu backend", "point npu at my model server / OVMS /
   llama.cpp / Ollama", "change the base_url", "add an operation", "make npu
@@ -41,6 +41,7 @@ next reader.
 | `base_url` | yes | joined with an operation's `path`; a trailing `/` is handled either way |
 | `[operations.<name>]` | at least one | each needs `method` and `path` |
 | `[docker]` | no | `image`, `options`, `args` — how `npu serve` starts this backend |
+| `[timeouts]` | no | `request_secs` — overrides the default request timeout (120s) |
 
 ## What is rejected at load time
 
@@ -50,9 +51,7 @@ silently ignored:
 - any unknown key, at the top level or under `[operations.*]`;
 - `type` other than `"openai-compatible"`;
 - `method` other than `"POST"`;
-- a `[timeouts]` section — **not implemented**; the request timeout is a fixed
-  30 seconds. It appears in the original specification but rejecting it is
-  deliberate: accepting a timeout and not honouring it would be worse.
+- `[timeouts].request_secs = 0`, or any key inside `[timeouts]` other than `request_secs`;
 - two files in the same scope sharing an `id`;
 - inside `[docker]`: a placeholder other than `{{ args.model }}` / `{{ env.NAME }}`, and an `id`
   unusable as a container name (ASCII letters, digits, `_`, `.`, `-`, starting alphanumeric).
@@ -114,6 +113,20 @@ For OVMS on an accelerator: image `openvino/model_server:latest-gpu`, plus
 `--device /dev/dri` and `--group-add <render gid>` in `options` for the GPU,
 or `--device /dev/accel` in `options` and `--target_device NPU` in `args` for
 the NPU.
+
+## Overriding the request timeout: the `[timeouts]` table
+
+Optional. `npu`'s default (120s) is sized for a full `max_tokens` generation
+on a slow accelerator; a backend that is slower still (a large model on an
+NPU, for instance) overrides it:
+
+```toml
+[timeouts]
+request_secs = 300
+```
+
+`request_secs` is the only key. `0`, or any other key inside the table, is
+rejected at load time naming the file.
 
 ## Overriding a backend from a broader scope
 

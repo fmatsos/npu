@@ -1091,6 +1091,7 @@ mod tests {
                 })
                 .collect(),
             docker: None,
+            timeouts: None,
         }
     }
 

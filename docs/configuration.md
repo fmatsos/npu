@@ -110,10 +110,16 @@ path = "/v3/chat/completions"
 Unknown keys are rejected, with the file and line. A `type` other than `"openai-compatible"` and
 a `method` other than `POST` are both rejected at load time rather than silently ignored.
 
-> [!NOTE]
-> The `[timeouts]` section shown in the original specification is **not** implemented in 0.1.0, and
-> is therefore rejected as an unknown key rather than accepted and ignored. The request timeout is
-> currently a fixed 30 seconds.
+### `[timeouts]` (optional)
+
+```toml
+[timeouts]
+request_secs = 120
+```
+
+`request_secs` bounds a `chat` request against this backend, in seconds. Omitted, the backend
+falls back to the CLI's own default (120s — enough for a full `max_tokens` generation on a slow
+accelerator such as an NPU). `request_secs = 0` is rejected at load time, naming the file.
 
 ---
 

@@ -1,8 +1,9 @@
 # Fixture de démonstration : reflète exactement ce que la phase 1 supporte
 # (une seule opération câblée, `chat`, via l'adaptateur `openai-compatible`
 # en dur dans backend.rs). Les autres opérations de la §7 de
-# npu-cli-spec.md (embeddings, audio_transcriptions, rerank) et les timeouts
-# configurables arriveront avec leur support.
+# npu-cli-spec.md (embeddings, audio_transcriptions, rerank) arriveront avec
+# leur support. `[timeouts]` (request_secs) est implémenté mais omis ici :
+# le défaut de 120s convient à cette fixture.
 
 id = "ovms"
 type = "openai-compatible"

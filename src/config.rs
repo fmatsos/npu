@@ -38,6 +38,18 @@ pub struct Docker {
     pub args: Vec<String>,
 }
 
+/// Per-backend request timeout override, declared by the optional
+/// `[timeouts]` table of `backends/*.toml`. Absent, `backend.rs` falls back
+/// to its own default.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Timeouts {
+    /// Seconds granted to a request before failure. Must be non-zero: a
+    /// backend that declares `[timeouts]` without meaning to bound anything
+    /// should omit the table instead.
+    pub request_secs: u64,
+}
+
 /// An AI backend configured in `backends/*.toml`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -51,6 +63,9 @@ pub struct Backend {
     /// Optional: how `npu serve` starts this backend's runtime.
     #[serde(default)]
     pub docker: Option<Docker>,
+    /// Optional: overrides `backend::REQUEST_TIMEOUT` for this backend.
+    #[serde(default)]
+    pub timeouts: Option<Timeouts>,
 }
 
 /// Optional generation parameters for a model.
@@ -195,6 +210,16 @@ fn validate_backend(backend: &Backend, source: &Path) -> crate::Result<()> {
                 operation.method
             )));
         }
+    }
+
+    if let Some(timeouts) = &backend.timeouts
+        && timeouts.request_secs == 0
+    {
+        return Err(crate::Error::Config(format!(
+            "{}: backend \"{}\": [timeouts].request_secs must be greater than 0",
+            source.display(),
+            backend.id
+        )));
     }
 
     validate_docker(backend, source)?;
@@ -725,9 +750,7 @@ mod tests {
             id = "ovms"
             base_url = "http://127.0.0.1:8000"
             type = "openai-compatible"
-
-            [timeouts]
-            connect = "500ms"
+            retries = 3
 
             [operations.chat]
             method = "POST"
@@ -737,6 +760,87 @@ mod tests {
 
         let err = load(&root).expect_err("an unknown TOML key on a backend must be rejected");
         assert!(matches!(err, crate::Error::Config(_)));
+    }
+
+    #[test]
+    fn load_rejects_timeouts_with_unknown_toml_key() {
+        let root = fixture_dir("reject-unknown-timeouts-key");
+        write(
+            &root,
+            "backends/ovms.toml",
+            r#"
+            id = "ovms"
+            base_url = "http://127.0.0.1:8000"
+            type = "openai-compatible"
+
+            [timeouts]
+            connect_secs = 5
+
+            [operations.chat]
+            method = "POST"
+            path = "/v3/chat/completions"
+            "#,
+        );
+
+        let err = load(&root).expect_err("an unknown key inside [timeouts] must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("ovms.toml"));
+    }
+
+    #[test]
+    fn load_rejects_zero_request_secs() {
+        let root = fixture_dir("reject-zero-request-secs");
+        write(
+            &root,
+            "backends/ovms.toml",
+            r#"
+            id = "ovms"
+            base_url = "http://127.0.0.1:8000"
+            type = "openai-compatible"
+
+            [timeouts]
+            request_secs = 0
+
+            [operations.chat]
+            method = "POST"
+            path = "/v3/chat/completions"
+            "#,
+        );
+
+        let err = load(&root).expect_err("a zero request_secs must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+        let msg = err.to_string();
+        assert!(msg.contains("ovms.toml"));
+        assert!(msg.contains("ovms"));
+    }
+
+    #[test]
+    fn load_accepts_valid_timeouts() {
+        let root = fixture_dir("accept-valid-timeouts");
+        write(
+            &root,
+            "backends/ovms.toml",
+            r#"
+            id = "ovms"
+            base_url = "http://127.0.0.1:8000"
+            type = "openai-compatible"
+
+            [timeouts]
+            request_secs = 120
+
+            [operations.chat]
+            method = "POST"
+            path = "/v3/chat/completions"
+            "#,
+        );
+
+        let config = load(&root).expect("a valid [timeouts] table must load");
+        let backend = &config.backends["ovms"];
+        let timeouts = backend
+            .timeouts
+            .as_ref()
+            .expect("[timeouts] must be present");
+        assert_eq!(timeouts.request_secs, 120);
     }
 
     #[test]
