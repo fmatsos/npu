@@ -316,54 +316,77 @@ The logs *are* this command's result. Exit codes are `npu backend serve`'s.
 
 ## `npu backend tune`
 
-Sizes the static context of every NPU-compiled model from the model and the host, and writes it.
-An OpenVINO NPU graph is compiled for a fixed prompt length plus a fixed answer length: a longer
-prompt is refused, a longer answer is cut. `tune` picks both instead of leaving OVMS's defaults
-(1024 + 128 tokens).
+Sizes the context and memory of every model compiled for the NPU or the GPU, from the model and the
+host, and writes the result. An OpenVINO NPU graph is compiled for a fixed prompt length plus a
+fixed answer length: a longer prompt is refused, and a longer answer is cut. A GPU graph allocates
+its KV cache on demand, and on unified memory nothing bounds it. `tune` sizes both instead of
+leaving OVMS's defaults: 1024 + 128 tokens on NPU, and an unbounded cache on GPU.
 
 ```console
 $ npu backend tune --help
-Size the static context of every NPU-compiled model from the model and the host's RAM, and write it (GPU twins are outside the budget)
+Size the context and memory of every NPU- and GPU-compiled model from the model and the host's RAM, and write it
 
 Usage: npu backend tune [OPTIONS]
 
 Options:
-      --max-models <N|all>    How many NPU models run at the same time [default: all]
+      --npu                   Tune the NPU models only [default: NPU and GPU, same limits]
   -v, --verbose <LEVEL>       Diagnostic verbosity on stderr; stdout always carries the result only [default: warn] [possible values: error, warn, info]
+      --gpu                   Tune the GPU models only
+      --max-models <N|all>    How many of the tuned models run at the same time [default: all]
       --max-memory <PERCENT>  Share of the total RAM those models get together, in percent [default: 50]
       --models-dir <DIR>      Directory holding the exports [default: $HOME/models]
       --dry-run               Print the plan without writing anything
+      --kv-u8                 Store GPU KV caches as u8: about twice the context per GB
   -h, --help                  Print help
 ```
 
-A model is tuned when `<models-dir>/<model>/graph.pbtxt` declares `device: "NPU"`. Its share is
-`--max-memory` percent of the total RAM, minus the weights of the `--max-models` heaviest NPU
-models, divided by `--max-models`. Within that share, the context grows by 1024 tokens up to the
-model's `max_position_embeddings`, and a quarter of it goes to the answer. The memory estimate
-counts the fp16 KV cache and the graph's static buffers, calibrated on a Meteor Lake NPU so that it
-never under-estimates. It prints the plan, which is its result:
+A model is tuned when `<models-dir>/<model>/graph.pbtxt` declares `device: "NPU"` or
+`device: "GPU"`. Without `--npu` or `--gpu`, both devices are tuned together with the same limits.
+With `--npu` or `--gpu`, only that device is tuned, so each device can get its own limits:
 
-```console
-$ npu backend tune
-RAM 65.4 GB x 50% - weights 11.5 GB = 7.0 GB per model (3 of 3 NPU models at once)
-
-model                            model max  KV/token  prompt  answer est. memory
-qwen2.5-coder-7b-instruct            32768      56KB    7680    2560      11.4GB
-qwen3-4b-instruct                   262144     144KB    6912    2304       8.8GB
-qwen3-8b                             40960     144KB    4608    1536      11.3GB
+```sh
+npu backend tune --npu --max-memory 35
+npu backend tune --gpu --max-memory 15 --max-models 1 --kv-u8
 ```
 
-It writes `MAX_PROMPT_LEN` and `MIN_RESPONSE_LEN` at the root of `plugin_config` in each
-`graph.pbtxt`. It also sets `[generation].max_tokens`, to the answer length, in the model file and
-in its `fallback`'s. Nothing is written until every file has been computed. A file is replaced,
-not rewritten, so a `graph.pbtxt` a container created as another user can still be updated. The
-next `npu backend serve` recompiles the graph. GPU twins are **outside the budget**: their context
-is dynamic, but on unified memory a served twin adds its own memory on top of `--max-memory`.
+Each model's share is:
+- `--max-memory` percent of the total RAM,
+- minus the weights of the `--max-models` heaviest tuned models,
+- divided by `--max-models`.
 
-Re-run it after every export, re-export or `--configure`, which reset `graph.pbtxt` to the
-defaults. Also re-run it after adding a model, since each model's share then shrinks. No NPU
-export found is a configuration error (`2`) naming the directory. So is a missing or malformed
-`config.json`, `openvino_model.bin` or `plugin_config`, naming the file.
+A GPU twin loads its own copy of the weights, so it counts like any other model. The plan is the
+command's result:
+
+```console
+$ npu backend tune --dry-run
+RAM 65.4 GB x 50% - weights 23.0 GB = 1.6 GB per model (6 of 6 NPU or GPU models at once)
+
+model                            device model max  KV/token  prompt  answer est. memory
+qwen2.5-coder-7b-instruct        NPU        32768      56KB    1536     512       5.8GB
+qwen2.5-coder-7b-instruct-gpu    GPU        32768      56KB   13824    4608       5.5GB
+qwen3-4b-instruct                NPU       262144     144KB    1536     512       3.7GB
+qwen3-4b-instruct-gpu            GPU       262144     144KB    5376    1792       3.3GB
+qwen3-8b                         NPU        40960     144KB     512     512       5.9GB
+qwen3-8b-gpu                     GPU        40960     144KB    5376    1792       5.9GB
+```
+
+What each device gets:
+
+| Device | Context | `graph.pbtxt` |
+| --- | --- | --- |
+| NPU | Grows by 1024 tokens until the share or the model's `max_position_embeddings` is reached. A quarter goes to the answer. The memory estimate counts the fp16 KV cache and the graph's static buffers, calibrated on a Meteor Lake NPU so that it never under-estimates. | `MAX_PROMPT_LEN` and `MIN_RESPONSE_LEN` at the root of `plugin_config`. `NPUW_LLM_ENABLE_PREFIX_CACHING` under `DEVICE_PROPERTIES.NPU`, which reuses a repeated prompt prefix (the NPU ignores the top-level `enable_prefix_caching`). |
+| GPU | The share, in whole GiB, becomes `cache_size`. The context is what that cache holds, capped by the model. A quarter goes to the answer. | `cache_size`. `max_num_seqs: 4`, since one user never needs 256 sequences in flight. `KV_CACHE_PRECISION: "u8"` in `plugin_config` with `--kv-u8`, which holds about twice the tokens per GiB; it is removed without the flag. |
+
+Each model file gets `[generation].max_tokens` set to the answer length. Nothing is written until
+every file has been computed. A file is replaced, not rewritten, so a `graph.pbtxt` created by a
+container running as another user can still be updated. The next `npu backend serve` applies the
+new graph.
+
+Re-run it after every export, re-export or `--configure`, since they reset `graph.pbtxt` to the
+defaults. Also re-run it after adding a model, since each model's share then shrinks. It fails
+with a configuration error (`2`) when no export for the selected devices is found, naming the
+directory. It also fails with `2` when a `config.json`, `openvino_model.bin` or `graph.pbtxt` is
+missing or malformed, naming the file.
 
 ## `npu describe`
 

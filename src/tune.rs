@@ -94,32 +94,71 @@ fn plan_context(shape: Shape, budget: u64) -> (u64, u64) {
     (total - response, response)
 }
 
-/// Sets `MAX_PROMPT_LEN` and `MIN_RESPONSE_LEN` at the ROOT of the JSON held
-/// by `plugin_config: '...'` — under `DEVICE_PROPERTIES` they are ignored.
-fn set_plugin_lengths(
+/// Sets `key: value` in the `node_options` of a `graph.pbtxt`, replacing the
+/// line that holds it or adding it after `models_path`, with its
+/// indentation.
+fn set_node_option(graph: &str, key: &str, value: &str, source: &Path) -> crate::Result<String> {
+    let holds = |line: &str, name: &str| {
+        line.trim_start()
+            .strip_prefix(name)
+            .is_some_and(|rest| rest.trim_start().starts_with(':'))
+    };
+    let mut lines: Vec<String> = graph.lines().map(str::to_string).collect();
+    let entry = |line: &str| {
+        let indent = &line[..line.len() - line.trim_start().len()];
+        format!("{indent}{key}: {value},")
+    };
+    if let Some(i) = lines.iter().position(|l| holds(l, key)) {
+        lines[i] = entry(&lines[i]);
+    } else {
+        let anchor = lines
+            .iter()
+            .position(|l| holds(l, "models_path"))
+            .ok_or_else(|| {
+                crate::Error::Config(format!(
+                    "{}: no models_path in node_options",
+                    source.display()
+                ))
+            })?;
+        let line = entry(&lines[anchor]);
+        lines.insert(anchor + 1, line);
+    }
+    Ok(lines.join("\n") + "\n")
+}
+
+/// Edits the JSON object held by `plugin_config: '...'`, starting from an
+/// empty one when the graph has none, and leaves the graph without the key
+/// when the result is empty and there was none. `MAX_PROMPT_LEN` and
+/// `MIN_RESPONSE_LEN` belong at its ROOT: under `DEVICE_PROPERTIES` they are
+/// ignored.
+fn edit_plugin_config(
     graph: &str,
-    prompt: u64,
-    response: u64,
     source: &Path,
+    edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
 ) -> crate::Result<String> {
     const OPEN: &str = "plugin_config: '";
     let malformed = |why: &str| crate::Error::Config(format!("{}: {why}", source.display()));
-    let start = graph
-        .find(OPEN)
-        .ok_or_else(|| malformed("no plugin_config"))?
-        + OPEN.len();
-    let end = start
-        + graph[start..]
-            .find('\'')
-            .ok_or_else(|| malformed("unterminated plugin_config"))?;
-    let mut plugin: serde_json::Value = serde_json::from_str(&graph[start..end])
+    let current = match graph.find(OPEN) {
+        Some(at) => {
+            let start = at + OPEN.len();
+            let end = start
+                + graph[start..]
+                    .find('\'')
+                    .ok_or_else(|| malformed("unterminated plugin_config"))?;
+            Some(&graph[start..end])
+        }
+        None => None,
+    };
+    let mut plugin: serde_json::Value = serde_json::from_str(current.unwrap_or("{}"))
         .map_err(|e| malformed(&format!("plugin_config is not JSON: {e}")))?;
     let object = plugin
         .as_object_mut()
         .ok_or_else(|| malformed("plugin_config is not a JSON object"))?;
-    object.insert("MAX_PROMPT_LEN".into(), prompt.into());
-    object.insert("MIN_RESPONSE_LEN".into(), response.into());
-    Ok(format!("{}{plugin}{}", &graph[..start], &graph[end..]))
+    edit(object);
+    if current.is_none() && object.is_empty() {
+        return Ok(graph.to_string());
+    }
+    set_node_option(graph, "plugin_config", &format!("'{plugin}'"), source)
 }
 
 /// Sets `max_tokens` inside the `[generation]` table of a model file, adding
@@ -193,30 +232,133 @@ fn gb(bytes: u64) -> String {
     format!("{}.{}", bytes / 1_000_000_000, bytes / 100_000_000 % 10)
 }
 
-/// What the caller constrains: how many NPU models run at once (`None`: all
-/// of them) and which share of the total RAM they get together, in percent.
+/// A device an export's `graph.pbtxt` is compiled for, as far as `tune` is
+/// concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Device {
+    Npu,
+    Gpu,
+}
+
+impl Device {
+    fn of(graph: &str) -> Option<Self> {
+        if graph.contains("device: \"NPU\"") {
+            Some(Self::Npu)
+        } else if graph.contains("device: \"GPU\"") {
+            Some(Self::Gpu)
+        } else {
+            None
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Npu => "NPU",
+            Self::Gpu => "GPU",
+        }
+    }
+}
+
+/// What the caller constrains: which devices are tuned, how many of their
+/// models run at once (`None`: all of them), which share of the total RAM
+/// they get together, in percent, and whether GPU KV caches are `u8`.
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
+    pub npu: bool,
+    pub gpu: bool,
     pub max_models: Option<usize>,
     pub max_memory_percent: u64,
+    pub kv_u8: bool,
 }
+
+// ponytail: a GPU model is served by continuous batching; one user never
+// runs more than a handful of requests at once, and every slot reserves
+// scheduler memory. Make it a flag the day several users share a backend.
+const GPU_MAX_NUM_SEQS: u64 = 4;
+const GIB: u64 = 1 << 30;
 
 struct Planned {
     id: String,
+    device: Device,
     shape: Shape,
     weights: u64,
     graph: PathBuf,
 }
 
-/// Plans the context of every model whose export under `models_dir` holds
-/// an NPU graph, writes it unless `dry_run`, and returns the plan — this
-/// command's result. Every new content is computed before anything is
+/// The new `graph.pbtxt`, the answer length, and the estimated memory of
+/// one model inside `budget` bytes.
+fn plan_graph(
+    p: &Planned,
+    graph: &str,
+    budget: u64,
+    kv_u8: bool,
+) -> crate::Result<(String, u64, u64, u64)> {
+    match p.device {
+        Device::Npu => {
+            let (prompt, response) = plan_context(p.shape, budget);
+            let text = edit_plugin_config(graph, &p.graph, |plugin| {
+                plugin.insert("MAX_PROMPT_LEN".into(), prompt.into());
+                plugin.insert("MIN_RESPONSE_LEN".into(), response.into());
+                let npu = plugin
+                    .entry("DEVICE_PROPERTIES")
+                    .or_insert_with(|| serde_json::json!({}))
+                    .as_object_mut()
+                    .and_then(|d| {
+                        d.entry("NPU")
+                            .or_insert_with(|| serde_json::json!({}))
+                            .as_object_mut()
+                    });
+                if let Some(npu) = npu {
+                    npu.insert("NPUW_LLM_ENABLE_PREFIX_CACHING".into(), true.into());
+                }
+            })?;
+            let memory = context_bytes(prompt + response, p.shape);
+            Ok((text, prompt, response, memory))
+        }
+        Device::Gpu => {
+            // ponytail: the GPU budget goes to the KV cache alone; activations
+            // are transient and uncalibrated here. Measure a GPU twin under
+            // load and reserve their share if it ever overshoots.
+            let kv = if kv_u8 {
+                p.shape.kv_per_token / 2
+            } else {
+                p.shape.kv_per_token
+            };
+            let cache_gib = (budget / GIB).max(1);
+            let tokens = (cache_gib * GIB / kv.max(1))
+                .min(p.shape.max_context)
+                .max(STEP)
+                / STEP
+                * STEP;
+            let response = (tokens / 4 / 256 * 256).max(STEP / 2);
+            let mut text = set_node_option(graph, "cache_size", &cache_gib.to_string(), &p.graph)?;
+            text = set_node_option(
+                &text,
+                "max_num_seqs",
+                &GPU_MAX_NUM_SEQS.to_string(),
+                &p.graph,
+            )?;
+            text = edit_plugin_config(&text, &p.graph, |plugin| {
+                if kv_u8 {
+                    plugin.insert("KV_CACHE_PRECISION".into(), "u8".into());
+                } else {
+                    plugin.remove("KV_CACHE_PRECISION");
+                }
+            })?;
+            Ok((text, tokens - response, response, cache_gib * GIB))
+        }
+    }
+}
+
+/// Plans every model whose export under `models_dir` is compiled for a
+/// device in `limits`, writes it unless `dry_run`, and returns the plan —
+/// this command's result. Every new content is computed before anything is
 /// written, so a malformed file aborts the whole run instead of half of it.
 ///
 /// # Errors
 ///
-/// - `Error::Config` when no model has an NPU export, or when an export or a
-///   model file is missing or malformed — naming the file;
+/// - `Error::Config` when no model has an export for those devices, or when
+///   an export or a model file is missing or malformed — naming the file;
 /// - `Error::Io` when a file cannot be replaced.
 pub fn tune(
     config: &crate::config::Config,
@@ -233,10 +375,16 @@ pub fn tune(
     for id in ids {
         let export = models_dir.join(&config.models[id].model);
         let graph = export.join("graph.pbtxt");
-        let is_npu = std::fs::read_to_string(&graph).is_ok_and(|g| g.contains("device: \"NPU\""));
-        if !is_npu {
+        let device = std::fs::read_to_string(&graph)
+            .ok()
+            .and_then(|g| Device::of(&g))
+            .filter(|d| match d {
+                Device::Npu => limits.npu,
+                Device::Gpu => limits.gpu,
+            });
+        let Some(device) = device else {
             continue;
-        }
+        };
         let config_json = export.join("config.json");
         let json: serde_json::Value = serde_json::from_str(&read_export(&config_json)?)
             .map_err(|e| crate::Error::Config(format!("{}: {e}", config_json.display())))?;
@@ -246,16 +394,25 @@ pub fn tune(
             .len();
         planned.push(Planned {
             id: id.clone(),
+            device,
             shape: shape_of(&json, &config_json)?,
             weights,
             graph,
         });
     }
+    let devices = match (limits.npu, limits.gpu) {
+        (true, false) => "NPU",
+        (false, true) => "GPU",
+        _ => "NPU or GPU",
+    };
     if planned.is_empty() {
         return Err(crate::Error::Config(format!(
-            "no configured model has an NPU export under {}",
+            "no configured model has an {devices} export under {}",
             models_dir.display()
         )));
+    }
+    if limits.kv_u8 && !limits.gpu {
+        logger.warn("--kv-u8 only applies to GPU models: ignored with --npu alone");
     }
 
     let at_once = limits
@@ -269,14 +426,15 @@ pub fn tune(
     let budget = granted.saturating_sub(weights) / at_once as u64;
 
     let mut report = format!(
-        "RAM {} GB x {}% - weights {} GB = {} GB per model ({at_once} of {} NPU models at once)\n\n\
-         {:32} {:>9} {:>9} {:>7} {:>7} {:>11}\n",
+        "RAM {} GB x {}% - weights {} GB = {} GB per model ({at_once} of {} {devices} models at once)\n\n\
+         {:32} {:6} {:>9} {:>9} {:>7} {:>7} {:>11}\n",
         gb(total_ram),
         limits.max_memory_percent,
         gb(weights),
         gb(budget),
         planned.len(),
         "model",
+        "device",
         "model max",
         "KV/token",
         "prompt",
@@ -285,9 +443,9 @@ pub fn tune(
     );
     let mut writes = Vec::new();
     for p in &planned {
-        let (prompt, response) = plan_context(p.shape, budget);
-        let context = context_bytes(prompt + response, p.shape);
-        if context > budget {
+        let graph_text = std::fs::read_to_string(&p.graph)?;
+        let (text, prompt, response, memory) = plan_graph(p, &graph_text, budget, limits.kv_u8)?;
+        if memory > budget {
             logger.warn(&format!(
                 "model \"{}\": even the smallest context ({} tokens) exceeds its share of {} GB",
                 p.id,
@@ -297,24 +455,17 @@ pub fn tune(
         }
         let _ = writeln!(
             report,
-            "{:32} {:>9} {:>7}KB {prompt:>7} {response:>7} {:>9}GB",
+            "{:32} {:6} {:>9} {:>7}KB {prompt:>7} {response:>7} {:>9}GB",
             p.id,
+            p.device.label(),
             p.shape.max_context,
             p.shape.kv_per_token / 1024,
-            gb(context + p.weights),
+            gb(memory + p.weights),
         );
-
-        let graph_text = std::fs::read_to_string(&p.graph)?;
-        writes.push((
-            p.graph.clone(),
-            set_plugin_lengths(&graph_text, prompt, response, &p.graph)?,
-        ));
-        let model = &config.models[&p.id];
-        let fallback = model.fallback.as_ref().and_then(|f| config.models.get(f));
-        for file in std::iter::once(model).chain(fallback).map(|m| &m.source) {
-            let text = std::fs::read_to_string(file)?;
-            writes.push((file.clone(), set_max_tokens(&text, response, file)?));
-        }
+        writes.push((p.graph.clone(), text));
+        let file = &config.models[&p.id].source;
+        let model_text = std::fs::read_to_string(file)?;
+        writes.push((file.clone(), set_max_tokens(&model_text, response, file)?));
     }
 
     if !dry_run {
@@ -322,8 +473,8 @@ pub fn tune(
             replace_file(path, text)?;
         }
         logger.info(
-            "applied MAX_PROMPT_LEN and MIN_RESPONSE_LEN to each graph.pbtxt, and max_tokens to each \
-             model and its fallback: the next `npu backend serve` recompiles the NPU graph",
+            "applied the plan to each graph.pbtxt and the max_tokens of each model: \
+             the next `npu backend serve` recompiles the graph",
         );
     }
     Ok(report.trim_end().to_string())
@@ -396,18 +547,57 @@ mod tests {
         }
     }
 
+    const NPU_GRAPH: &str = "  node_options: {\n      max_num_seqs:256,\n      device: \"NPU\",\n      models_path: \".\",\n      plugin_config: '{\"DEVICE_PROPERTIES\":{\"NPU\":{}}}',\n      cache_size: 0,\n  }\n";
+    const GPU_GRAPH: &str = "  node_options: {\n      max_num_seqs:256,\n      device: \"GPU\",\n      models_path: \".\",\n      cache_size: 0,\n  }\n";
+
+    fn plugin_of(graph: &str) -> serde_json::Value {
+        serde_json::from_str(graph.split('\'').nth(1).unwrap_or("null")).unwrap_or_default()
+    }
+
+    fn planned(device: Device) -> Planned {
+        Planned {
+            id: "x".into(),
+            device,
+            shape: QWEN3_4B,
+            weights: 0,
+            graph: PathBuf::from("graph.pbtxt"),
+        }
+    }
+
     #[test]
-    fn plugin_lengths_go_to_the_root_of_plugin_config() {
-        let graph = "a\nplugin_config: '{\"DEVICE_PROPERTIES\":{\"NPU\":{}}}',\nb";
-        let patched = set_plugin_lengths(graph, 3072, 1024, path()).unwrap_or_default();
-        let json: serde_json::Value =
-            serde_json::from_str(patched.split('\'').nth(1).unwrap_or_default())
-                .unwrap_or_default();
-        assert_eq!(json["MAX_PROMPT_LEN"], 3072);
-        assert_eq!(json["MIN_RESPONSE_LEN"], 1024);
-        assert!(json["DEVICE_PROPERTIES"].is_object());
-        assert!(patched.starts_with("a\n") && patched.ends_with("',\nb"));
-        assert!(set_plugin_lengths("nothing", 1, 1, path()).is_err());
+    fn an_npu_graph_gets_its_lengths_at_the_root_and_prefix_caching() {
+        let (graph, prompt, response, _) =
+            plan_graph(&planned(Device::Npu), NPU_GRAPH, 5_000_000_000, false).unwrap_or_default();
+        let json = plugin_of(&graph);
+        assert_eq!(json["MAX_PROMPT_LEN"], prompt);
+        assert_eq!(json["MIN_RESPONSE_LEN"], response);
+        assert_eq!(
+            json["DEVICE_PROPERTIES"]["NPU"]["NPUW_LLM_ENABLE_PREFIX_CACHING"],
+            true
+        );
+        assert!(graph.contains("      cache_size: 0,"));
+    }
+
+    #[test]
+    fn a_gpu_graph_gets_a_bounded_cache_few_sequences_and_an_optional_u8_cache() {
+        let (graph, prompt, response, memory) =
+            plan_graph(&planned(Device::Gpu), GPU_GRAPH, 5 * GIB, false).unwrap_or_default();
+        assert!(graph.contains("      cache_size: 5,") && graph.contains("      max_num_seqs: 4,"));
+        assert!(!graph.contains("plugin_config"));
+        assert_eq!(memory, 5 * GIB);
+        assert!((prompt + response) * QWEN3_4B.kv_per_token <= memory);
+        let (u8_graph, u8_prompt, u8_response, _) =
+            plan_graph(&planned(Device::Gpu), GPU_GRAPH, 5 * GIB, true).unwrap_or_default();
+        assert_eq!(plugin_of(&u8_graph)["KV_CACHE_PRECISION"], "u8");
+        assert!(u8_prompt + u8_response > prompt + response);
+        let (back, ..) =
+            plan_graph(&planned(Device::Gpu), &u8_graph, 5 * GIB, false).unwrap_or_default();
+        assert!(plugin_of(&back).get("KV_CACHE_PRECISION").is_none());
+    }
+
+    #[test]
+    fn a_graph_without_models_path_is_refused() {
+        assert!(set_node_option("nothing", "cache_size", "1", path()).is_err());
     }
 
     const MODEL: &str =

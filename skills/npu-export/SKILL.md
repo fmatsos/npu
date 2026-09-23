@@ -243,7 +243,9 @@ It derives the context of every model file whose export holds an NPU graph from:
 - the model: `max_position_embeddings` and the per-token memory cost, from `config.json`;
 - the host: `--max-memory` percent (default `50`) of the total RAM, minus the weights of the
   `--max-models` heaviest NPU models (default `all`), split evenly between them — so that many
-  of them can be served at once. Ask the user how many models they run together and how much RAM
+  of them can be served at once. The GPU twins are tuned too (`cache_size`, `max_num_seqs`,
+  optional `--kv-u8`) and count their own weights; `--npu` or `--gpu` restricts a run to one device
+  so each can get its own limits. Ask the user how many models they run together and how much RAM
   they grant before picking anything other than the defaults.
 
 It writes `MAX_PROMPT_LEN` and `MIN_RESPONSE_LEN` **at the root** of `plugin_config` in

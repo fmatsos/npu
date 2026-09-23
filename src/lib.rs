@@ -157,6 +157,70 @@ fn build_cli(specs: &[command::CommandSpec]) -> clap::Command {
     root
 }
 
+/// `npu backend tune`'s arguments, kept out of [`add_builtins`] for size.
+fn tune_command() -> clap::Command {
+    clap::Command::new("tune")
+        .about(
+            "Size the context and memory of every NPU- and GPU-compiled model \
+             from the model and the host's RAM, and write it",
+        )
+        .arg(
+            clap::Arg::new("npu")
+                .long("npu")
+                .action(clap::ArgAction::SetTrue)
+                .help("Tune the NPU models only [default: NPU and GPU, same limits]"),
+        )
+        .arg(
+            clap::Arg::new("gpu")
+                .long("gpu")
+                .action(clap::ArgAction::SetTrue)
+                .help("Tune the GPU models only"),
+        )
+        .arg(
+            clap::Arg::new("max-models")
+                .long("max-models")
+                .value_name("N|all")
+                .default_value("all")
+                .value_parser(|v: &str| -> std::result::Result<usize, String> {
+                    if v == "all" {
+                        return Ok(0);
+                    }
+                    match v.parse::<usize>() {
+                        Ok(n) if n >= 1 => Ok(n),
+                        _ => Err("expected \"all\" or a number of models >= 1".into()),
+                    }
+                })
+                .help("How many of the tuned models run at the same time"),
+        )
+        .arg(
+            clap::Arg::new("max-memory")
+                .long("max-memory")
+                .value_name("PERCENT")
+                .default_value("50")
+                .value_parser(clap::value_parser!(u64).range(1..=100))
+                .help("Share of the total RAM those models get together, in percent"),
+        )
+        .arg(
+            clap::Arg::new("models-dir")
+                .long("models-dir")
+                .value_name("DIR")
+                .value_parser(clap::value_parser!(std::path::PathBuf))
+                .help("Directory holding the exports [default: $HOME/models]"),
+        )
+        .arg(
+            clap::Arg::new("dry-run")
+                .long("dry-run")
+                .action(clap::ArgAction::SetTrue)
+                .help("Print the plan without writing anything"),
+        )
+        .arg(
+            clap::Arg::new("kv-u8")
+                .long("kv-u8")
+                .action(clap::ArgAction::SetTrue)
+                .help("Store GPU KV caches as u8: about twice the context per GB"),
+        )
+}
+
 /// Adds the CLI's built-ins — the `backend` group (`serve`, `stop`,
 /// `status`, `logs`), the `config` group (`check`, `models`), `doctor`,
 /// `describe`, `update` and the root `--version` flag — to the
@@ -209,50 +273,7 @@ fn add_builtins(cli: clap::Command) -> clap::Command {
                         .help("Keep streaming as new lines arrive"),
                 ),
         )
-        .subcommand(
-            clap::Command::new("tune")
-                .about(
-                    "Size the static context of every NPU-compiled model from the model \
-                     and the host's RAM, and write it (GPU twins are outside the budget)",
-                )
-                .arg(
-                    clap::Arg::new("max-models")
-                        .long("max-models")
-                        .value_name("N|all")
-                        .default_value("all")
-                        .value_parser(|v: &str| -> std::result::Result<usize, String> {
-                            if v == "all" {
-                                return Ok(0);
-                            }
-                            match v.parse::<usize>() {
-                                Ok(n) if n >= 1 => Ok(n),
-                                _ => Err("expected \"all\" or a number of models >= 1".into()),
-                            }
-                        })
-                        .help("How many NPU models run at the same time"),
-                )
-                .arg(
-                    clap::Arg::new("max-memory")
-                        .long("max-memory")
-                        .value_name("PERCENT")
-                        .default_value("50")
-                        .value_parser(clap::value_parser!(u64).range(1..=100))
-                        .help("Share of the total RAM those models get together, in percent"),
-                )
-                .arg(
-                    clap::Arg::new("models-dir")
-                        .long("models-dir")
-                        .value_name("DIR")
-                        .value_parser(clap::value_parser!(std::path::PathBuf))
-                        .help("Directory holding the exports [default: $HOME/models]"),
-                )
-                .arg(
-                    clap::Arg::new("dry-run")
-                        .long("dry-run")
-                        .action(clap::ArgAction::SetTrue)
-                        .help("Print the plan without writing anything"),
-                ),
-        );
+        .subcommand(tune_command());
     let config = clap::Command::new("config")
         .about("Inspect the configuration: check, models")
         .subcommand_required(true)
@@ -305,7 +326,14 @@ fn backend_tune(
     };
     let mut system = sysinfo::System::new();
     system.refresh_memory();
+    let (npu, gpu) = match (leaf_matches.get_flag("npu"), leaf_matches.get_flag("gpu")) {
+        (false, false) => (true, true),
+        flags => flags,
+    };
     let limits = tune::Limits {
+        npu,
+        gpu,
+        kv_u8: leaf_matches.get_flag("kv-u8"),
         max_models: leaf_matches
             .get_one::<usize>("max-models")
             .copied()
