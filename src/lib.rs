@@ -12,6 +12,7 @@ pub mod error;
 pub mod input;
 pub mod log;
 pub mod output;
+pub mod progress;
 pub mod prompt;
 pub mod runtime;
 pub mod scope;
@@ -407,6 +408,8 @@ fn chat_with_fallback(
     // that is exactly a case the fallback exists to absorb. Resolving
     // outside this `and_then` would make a stopped NPU container bypass the
     // GPU it was supposed to fall back to.
+    // Cleared when this function returns, on every path.
+    let spinner = progress::Indicator::spinner(&format!("waiting for model \"{}\"", model.id));
     let call = |backend: &config::Backend, model: &config::Model| {
         runtime::resolve_base_url(backend, &runtime::docker::runner)
             .and_then(|base_url| backend::chat(backend, model, &base_url, prompt, logger))
@@ -432,6 +435,7 @@ fn chat_with_fallback(
     // configuration error which must keep its own exit code rather than be
     // reported as a backend failure.
     let (fallback_model, fallback_backend) = config.resolve(fallback_id)?;
+    spinner.set_message(&format!("waiting for fallback model \"{fallback_id}\""));
 
     call(fallback_backend, fallback_model).map_err(|err| match err {
         Error::Backend(second) => Error::Backend(format!(
@@ -602,7 +606,9 @@ pub fn run() -> Result<i32> {
     // `get_matches()`, since the degraded-mode warning below is emitted
     // before parsing (cf. `log::level_from_args`). `clap` re-reads the same
     // flag afterwards and is the one that rejects an invalid value.
-    let logger = log::Logger::new(log::level_from_args(std::env::args()));
+    let level = log::level_from_args(std::env::args());
+    let logger = log::Logger::new(level);
+    progress::init(level);
 
     let roots = scope::roots();
     logger.info(&format!(

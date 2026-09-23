@@ -703,6 +703,8 @@ fn wait_until_ready(
     log: &Path,
 ) -> crate::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(process.startup_timeout_secs);
+    let _spinner =
+        crate::progress::Indicator::spinner(&format!("starting backend \"{}\"", backend.id));
 
     loop {
         match child.try_wait() {

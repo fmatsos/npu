@@ -139,7 +139,7 @@ impl Logger {
 
     fn log(self, level: Level, message: &str) {
         if self.enabled(level) {
-            eprintln!("npu: {}: {message}", level.label());
+            crate::progress::suspend(|| eprintln!("npu: {}: {message}", level.label()));
         }
     }
 

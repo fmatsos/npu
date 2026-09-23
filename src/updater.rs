@@ -181,18 +181,32 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn download(agent: &ureq::Agent, url: &str, limit: u64) -> crate::Result<Vec<u8>> {
+    use std::io::Read;
+
     let mut response = agent
         .get(url)
         .header("User-Agent", concat!("npu/", env!("CARGO_PKG_VERSION")))
         .call()
         .map_err(|err| crate::Error::Update(format!("downloading {url} failed: {err}")))?;
 
-    response
-        .body_mut()
-        .with_config()
-        .limit(limit)
-        .read_to_vec()
-        .map_err(|err| crate::Error::Update(format!("reading {url} failed: {err}")))
+    let name = url.rsplit('/').next().unwrap_or(url);
+    let progress = crate::progress::Indicator::bytes(
+        response.body().content_length(),
+        &format!("downloading {name}"),
+    );
+    let read_failed =
+        |err: std::io::Error| crate::Error::Update(format!("reading {url} failed: {err}"));
+    let mut reader = response.body_mut().with_config().limit(limit).reader();
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 16 * 1024];
+    loop {
+        let read = reader.read(&mut chunk).map_err(read_failed)?;
+        if read == 0 {
+            return Ok(bytes);
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+        progress.inc(read as u64);
+    }
 }
 
 fn replace_executable(bytes: &[u8]) -> crate::Result<()> {

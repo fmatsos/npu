@@ -32,6 +32,7 @@ self-replace = "1.5.0"
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 toml = "1.1.6"
 ureq = { version = "3.4.2", default-features = false, features = ["json", "rustls"] }
+indicatif = { version = "0.18.6", default-features = false }
 
 # --- Quality: lints applied at build time ----------------------------------
 # `priority = -1` on a group is mandatory as soon as an individual lint of

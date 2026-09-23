@@ -684,3 +684,26 @@ fn help_lists_configured_commands_and_built_ins_in_separate_sections() {
     }
     assert_eq!(section_of("backend "), section_of("update "));
 }
+
+/// Progress indicators are for a terminal: through a pipe — how every test,
+/// and every program driving npu, sees it — stderr carries no escape
+/// sequence and no carriage return, even while a model is being waited on.
+#[test]
+fn no_indicator_reaches_a_non_terminal_stderr() {
+    let xdg = fixture_dir("no-indicator-xdg");
+    let cwd = fixture_dir("no-indicator-cwd");
+    write_healthy_scope(&xdg, &closed_port_base_url());
+
+    let output = run_npu(&cwd, &xdg, &["--verbose", "info", "commit-message"]);
+
+    assert_eq!(output.status.code(), Some(3));
+    assert!(output.stdout.is_empty());
+    assert!(
+        !output
+            .stderr
+            .iter()
+            .any(|byte| *byte == 0x1b || *byte == b'\r'),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+}
