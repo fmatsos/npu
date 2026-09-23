@@ -382,7 +382,7 @@ fn wait_until_gone(pid: u32) -> bool {
 fn serve_then_status_then_stop_then_status() {
     let fixture = Fixture::new("lifecycle", "bind", 20);
 
-    let served = fixture.npu(&["serve", "qwen"]);
+    let served = fixture.npu(&["backend", "serve", "qwen"]);
     assert_eq!(
         served.status.code(),
         Some(0),
@@ -392,7 +392,7 @@ fn serve_then_status_then_stop_then_status() {
     let pid = served_pid(&served);
     assert!(is_live(pid), "the served process must be running");
 
-    let status = fixture.npu(&["status"]);
+    let status = fixture.npu(&["backend", "status"]);
     assert_eq!(status.status.code(), Some(0));
     let report = stdout_of(&status);
     let line = report
@@ -405,7 +405,7 @@ fn serve_then_status_then_stop_then_status() {
     assert!(line.contains(&pid.to_string()), "{report}");
     assert!(line.contains(&fixture.port.to_string()), "{report}");
 
-    let stopped = fixture.npu(&["stop", "qwen"]);
+    let stopped = fixture.npu(&["backend", "stop", "qwen"]);
     assert_eq!(
         stopped.status.code(),
         Some(0),
@@ -420,7 +420,7 @@ fn serve_then_status_then_stop_then_status() {
     // state word the row prints — a state word is prose, and `status` still
     // has to produce a line either way.
     assert!(!fixture.record().exists(), "{}", fixture.record().display());
-    let after = fixture.npu(&["status"]);
+    let after = fixture.npu(&["backend", "status"]);
     assert_eq!(after.status.code(), Some(0));
     assert!(
         stdout_of(&after)
@@ -448,7 +448,7 @@ fn serve_then_status_then_stop_then_status() {
 fn a_server_reached_through_an_exec_ing_wrapper_is_still_ours_to_stop() {
     let fixture = Fixture::through_a_wrapper("exec-wrapper", "bind", 20);
 
-    let served = fixture.npu(&["serve", "qwen"]);
+    let served = fixture.npu(&["backend", "serve", "qwen"]);
     assert_eq!(
         served.status.code(),
         Some(0),
@@ -458,14 +458,14 @@ fn a_server_reached_through_an_exec_ing_wrapper_is_still_ours_to_stop() {
     let pid = served_pid(&served);
     assert!(is_live(pid), "the served process must be running");
 
-    let report = stdout_of(&fixture.npu(&["status"]));
+    let report = stdout_of(&fixture.npu(&["backend", "status"]));
     let line = report
         .lines()
         .find(|line| line.starts_with("local"))
         .expect("the backend must have a line");
     assert!(line.contains(&pid.to_string()), "{report}");
 
-    let stopped = fixture.npu(&["stop", "qwen"]);
+    let stopped = fixture.npu(&["backend", "stop", "qwen"]);
     assert_eq!(
         stopped.status.code(),
         Some(0),
@@ -502,7 +502,7 @@ fn a_server_reached_through_an_exec_ing_wrapper_is_still_ours_to_stop() {
 #[test]
 fn another_project_s_runtime_is_neither_stopped_nor_taken_over() {
     let project_a = Fixture::new("two-projects-a", "bind", 20);
-    let served = project_a.npu(&["serve", "qwen"]);
+    let served = project_a.npu(&["backend", "serve", "qwen"]);
     assert_eq!(
         served.status.code(),
         Some(0),
@@ -516,7 +516,7 @@ fn another_project_s_runtime_is_neither_stopped_nor_taken_over() {
     // B's backend was never served, so B's `stop` is the idempotent
     // success it is for anything never started — and it reaches nothing of
     // A's.
-    let stopped = project_b.npu(&["stop", "qwen"]);
+    let stopped = project_b.npu(&["backend", "stop", "qwen"]);
     assert_eq!(stopped.status.code(), Some(0), "{}", stderr_of(&stopped));
     assert!(
         is_live(pid),
@@ -534,7 +534,7 @@ fn another_project_s_runtime_is_neither_stopped_nor_taken_over() {
 
     // And B's `serve` starts B's OWN server, on its own port, without
     // truncating A's log or overwriting A's record.
-    let again = project_b.npu(&["serve", "qwen"]);
+    let again = project_b.npu(&["backend", "serve", "qwen"]);
     assert_eq!(again.status.code(), Some(0), "{}", stderr_of(&again));
     let other_pid = served_pid(&again);
     assert_ne!(other_pid, pid);
@@ -542,12 +542,12 @@ fn another_project_s_runtime_is_neither_stopped_nor_taken_over() {
     assert!(project_a.record().exists());
 
     // Each project stops its own, and only its own.
-    let by_b = project_b.npu(&["stop", "qwen"]);
+    let by_b = project_b.npu(&["backend", "stop", "qwen"]);
     assert_eq!(by_b.status.code(), Some(0), "{}", stderr_of(&by_b));
     assert!(wait_until_gone(other_pid), "B must stop B's server");
     assert!(is_live(pid), "B's stop must not reach A's server");
 
-    let by_owner = project_a.npu(&["stop", "qwen"]);
+    let by_owner = project_a.npu(&["backend", "stop", "qwen"]);
     assert_eq!(by_owner.status.code(), Some(0), "{}", stderr_of(&by_owner));
     assert!(wait_until_gone(pid), "its own project must still stop it");
 }
@@ -559,7 +559,7 @@ fn another_project_s_runtime_is_neither_stopped_nor_taken_over() {
 #[test]
 fn another_project_s_logs_are_never_handed_over() {
     let project_a = Fixture::new("two-projects-logs-a", "bind", 20);
-    let served = project_a.npu(&["serve", "qwen"]);
+    let served = project_a.npu(&["backend", "serve", "qwen"]);
     assert_eq!(
         served.status.code(),
         Some(0),
@@ -569,7 +569,7 @@ fn another_project_s_logs_are_never_handed_over() {
     let pid = served_pid(&served);
 
     // A has a log, and it holds what A's server wrote.
-    let mine = project_a.npu(&["logs", "qwen"]);
+    let mine = project_a.npu(&["backend", "logs", "qwen"]);
     assert_eq!(mine.status.code(), Some(0), "{}", stderr_of(&mine));
     assert!(
         stdout_of(&mine).contains(STDOUT_MARKER),
@@ -578,7 +578,7 @@ fn another_project_s_logs_are_never_handed_over() {
     );
 
     let project_b = project_a.beside("two-projects-logs-b");
-    let theirs = project_b.npu(&["logs", "qwen"]);
+    let theirs = project_b.npu(&["backend", "logs", "qwen"]);
 
     // B served nothing: exit `3`, and stdout is ZERO bytes — never a single
     // byte of A's log.
@@ -595,7 +595,7 @@ fn another_project_s_logs_are_never_handed_over() {
         "two backend files must not share one log"
     );
 
-    drop(project_a.npu(&["stop", "qwen"]));
+    drop(project_a.npu(&["backend", "stop", "qwen"]));
     assert!(wait_until_gone(pid));
 }
 
@@ -605,7 +605,7 @@ fn another_project_s_logs_are_never_handed_over() {
 fn stopping_a_backend_that_was_never_served_succeeds() {
     let fixture = Fixture::new("stop-idempotent", "bind", 20);
 
-    let stopped = fixture.npu(&["stop", "qwen"]);
+    let stopped = fixture.npu(&["backend", "stop", "qwen"]);
 
     assert_eq!(stopped.status.code(), Some(0), "{}", stderr_of(&stopped));
     assert_eq!(stdout_of(&stopped).trim(), "local");
@@ -617,11 +617,11 @@ fn stopping_a_backend_that_was_never_served_succeeds() {
 fn serving_twice_is_refused_and_writes_nothing_to_stdout() {
     let fixture = Fixture::new("serve-twice", "bind", 20);
 
-    let served = fixture.npu(&["serve", "qwen"]);
+    let served = fixture.npu(&["backend", "serve", "qwen"]);
     assert_eq!(served.status.code(), Some(0), "{}", stderr_of(&served));
     let pid = served_pid(&served);
 
-    let again = fixture.npu(&["serve", "qwen"]);
+    let again = fixture.npu(&["backend", "serve", "qwen"]);
 
     assert_eq!(again.status.code(), Some(3));
     assert!(again.stdout.is_empty(), "{:?}", stdout_of(&again));
@@ -629,7 +629,7 @@ fn serving_twice_is_refused_and_writes_nothing_to_stdout() {
     assert!(message.contains("local"), "{message}");
     assert!(message.contains(&pid.to_string()), "{message}");
 
-    drop(fixture.npu(&["stop", "qwen"]));
+    drop(fixture.npu(&["backend", "stop", "qwen"]));
     assert!(wait_until_gone(pid));
 }
 
@@ -640,7 +640,7 @@ fn serving_twice_is_refused_and_writes_nothing_to_stdout() {
 fn a_server_that_exits_at_once_fails_with_three_and_keeps_its_log() {
     let fixture = Fixture::new("early-exit", "exit", 20);
 
-    let served = fixture.npu(&["serve", "qwen"]);
+    let served = fixture.npu(&["backend", "serve", "qwen"]);
 
     assert_eq!(served.status.code(), Some(3));
     assert!(served.stdout.is_empty(), "{:?}", stdout_of(&served));
@@ -680,7 +680,7 @@ fn a_server_that_exits_at_once_fails_with_three_and_keeps_its_log() {
 fn a_server_that_never_binds_times_out_and_is_terminated() {
     let fixture = Fixture::new("never-binds", "silent", 1);
 
-    let served = fixture.npu(&["serve", "qwen"]);
+    let served = fixture.npu(&["backend", "serve", "qwen"]);
 
     assert_eq!(served.status.code(), Some(3), "{}", stderr_of(&served));
     assert!(served.stdout.is_empty(), "{:?}", stdout_of(&served));
@@ -717,11 +717,11 @@ fn a_server_that_never_binds_times_out_and_is_terminated() {
 fn logs_hand_back_what_the_server_wrote_on_both_streams() {
     let fixture = Fixture::new("logs", "bind", 20);
 
-    let served = fixture.npu(&["serve", "qwen"]);
+    let served = fixture.npu(&["backend", "serve", "qwen"]);
     assert_eq!(served.status.code(), Some(0), "{}", stderr_of(&served));
     let pid = served_pid(&served);
 
-    let logs = fixture.npu(&["logs", "qwen"]);
+    let logs = fixture.npu(&["backend", "logs", "qwen"]);
 
     assert_eq!(logs.status.code(), Some(0), "{}", stderr_of(&logs));
     let out = stdout_of(&logs);
@@ -733,7 +733,7 @@ fn logs_hand_back_what_the_server_wrote_on_both_streams() {
     // here would notice.
     assert!(out.contains(INHERITED_VALUE), "{out}");
 
-    drop(fixture.npu(&["stop", "qwen"]));
+    drop(fixture.npu(&["backend", "stop", "qwen"]));
     assert!(wait_until_gone(pid));
 }
 
@@ -743,7 +743,7 @@ fn logs_hand_back_what_the_server_wrote_on_both_streams() {
 fn logs_of_a_never_served_backend_fail_with_three_and_an_empty_stdout() {
     let fixture = Fixture::new("logs-absent", "bind", 20);
 
-    let logs = fixture.npu(&["logs", "qwen"]);
+    let logs = fixture.npu(&["backend", "logs", "qwen"]);
 
     assert_eq!(logs.status.code(), Some(3));
     assert!(logs.stdout.is_empty(), "{:?}", stdout_of(&logs));
@@ -840,7 +840,7 @@ model = "qwen3-4b"
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_npu"))
-        .args(["serve", "qwen"])
+        .args(["backend", "serve", "qwen"])
         .current_dir(&home)
         .env("HOME", &home)
         .env("XDG_CONFIG_HOME", &scope)

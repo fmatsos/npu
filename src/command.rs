@@ -229,8 +229,8 @@ fn collect_command_files(
 }
 
 /// Rejects a command path whose FIRST segment collides with a name
-/// reserved for the CLI's built-ins (`builtin::RESERVED`: `doctor`,
-/// `models`, `serve`, `describe`, `version`, `update`, as well as `help`, reserved by `clap`
+/// reserved for the CLI's built-ins (`builtin::RESERVED`: `backend`,
+/// `config`, `doctor`, `describe`, `update`, as well as `help`, reserved by `clap`
 /// itself —
 /// phase 5, point 2 of the shared contract).
 ///
@@ -1074,27 +1074,29 @@ mod tests {
     }
 
     #[test]
-    fn discover_rejects_models_reserved_name() {
-        let root = fixture_dir("reserved-models");
-        write_command(&root, "models", "qwen-fast", "prompt");
+    fn discover_rejects_the_backend_and_config_groups() {
+        for name in ["backend", "config"] {
+            let root = fixture_dir(&format!("reserved-{name}"));
+            write_command(&root, name, "qwen-fast", "prompt");
 
-        let err = discover(&root).expect_err("\"models\" should be rejected as a reserved name");
-
-        let msg = err.to_string();
-        assert!(msg.contains("models.md"), "got: {msg}");
-        assert!(msg.contains("\"models\""), "got: {msg}");
+            let err = discover(&root).expect_err("a built-in group should be reserved");
+            let msg = err.to_string();
+            assert!(msg.contains(&format!("{name}.md")), "got: {msg}");
+            assert!(msg.contains(&format!("\"{name}\"")), "got: {msg}");
+        }
     }
 
     #[test]
-    fn discover_rejects_serve_reserved_name() {
-        let root = fixture_dir("reserved-serve");
-        write_command(&root, "serve", "qwen-fast", "prompt");
+    fn discover_accepts_the_names_the_built_ins_released() {
+        // 0.4.0 moved these under `backend`/`config` or behind `--version`:
+        // they are ordinary command names again.
+        for name in ["serve", "stop", "status", "logs", "models", "version"] {
+            let root = fixture_dir(&format!("released-{name}"));
+            write_command(&root, name, "qwen-fast", "prompt");
 
-        let err = discover(&root).expect_err("\"serve\" should be rejected as a reserved name");
-
-        let msg = err.to_string();
-        assert!(msg.contains("serve.md"), "got: {msg}");
-        assert!(msg.contains("\"serve\""), "got: {msg}");
+            let specs = discover(&root).expect("a released name must be accepted");
+            assert_eq!(specs[0].path, vec![name.to_string()]);
+        }
     }
 
     #[test]
@@ -1110,8 +1112,8 @@ mod tests {
     }
 
     #[test]
-    fn discover_rejects_update_and_version_reserved_names() {
-        for name in ["update", "version"] {
+    fn discover_rejects_update_reserved_name() {
+        for name in ["update"] {
             let root = fixture_dir(&format!("reserved-{name}"));
             write_command(&root, name, "qwen-fast", "prompt");
 

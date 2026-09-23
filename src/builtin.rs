@@ -105,7 +105,7 @@ impl std::fmt::Debug for Probes<'_> {
 /// rejection, `commands/doctor.md` would be silently shadowed by (or
 /// would shadow) the `doctor` built-in built in `lib.rs`.
 pub const RESERVED: &[&str] = &[
-    "doctor", "models", "describe", "serve", "stop", "status", "logs", "version", "update", "help",
+    "backend", "config", "doctor", "describe", "update", "help",
 ];
 
 /// Check (a): was the configuration loaded successfully?

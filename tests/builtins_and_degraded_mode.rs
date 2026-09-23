@@ -191,7 +191,7 @@ fn broken_config_help_still_works_and_lists_builtins_with_stderr_signal() {
     );
 }
 
-/// `version` describes the binary, not its configuration. It therefore stays
+/// `--version` describes the binary, not its configuration. It therefore stays
 /// usable in degraded mode and prints exactly the Cargo package version.
 #[test]
 fn broken_config_version_still_prints_the_release_version() {
@@ -199,17 +199,19 @@ fn broken_config_version_still_prints_the_release_version() {
     let cwd = fixture_dir("broken-version-cwd");
     write_broken_scope(&xdg);
 
-    let output = run_npu(&cwd, &xdg, &["version"]);
+    let output = run_npu(&cwd, &xdg, &["--version"]);
 
     assert!(
         output.status.success(),
-        "npu version must succeed despite a broken configuration; stderr: {}",
+        "npu --version must succeed despite a broken configuration; stderr: {}",
         stderr_of(&output)
     );
     assert_eq!(
         stdout_of(&output),
-        format!("{}\n", env!("CARGO_PKG_VERSION"))
+        format!("npu {}\n", env!("CARGO_PKG_VERSION"))
     );
+    // `--version` never reads the configuration: warning about it would be noise.
+    assert!(stderr_of(&output).is_empty(), "got: {}", stderr_of(&output));
 }
 
 /// (b) Same broken configuration: `npu doctor` exits with code 2 and its
@@ -277,7 +279,7 @@ fn broken_config_any_other_invocation_exits_with_code_two() {
     // stderr must carry the PRESERVED load error, not a generic message,
     // otherwise this test would not distinguish this path from mechanism 1
     // above.
-    let models = run_npu(&cwd, &xdg, &["models"]);
+    let models = run_npu(&cwd, &xdg, &["config", "models"]);
     assert_eq!(
         models.status.code(),
         Some(2),
@@ -352,7 +354,7 @@ fn healthy_config_models_lists_configured_model_with_its_backend_and_operation()
     // does not resolve to a real service is enough.
     write_healthy_scope(&xdg, "http://127.0.0.1:1");
 
-    let output = run_npu(&cwd, &xdg, &["models"]);
+    let output = run_npu(&cwd, &xdg, &["config", "models"]);
 
     assert!(
         output.status.success(),
@@ -402,7 +404,7 @@ fn healthy_config_serve_unknown_model_exits_two_with_empty_stdout() {
     let cwd = fixture_dir("serve-unknown-model-cwd");
     write_healthy_scope(&xdg, "http://127.0.0.1:1");
 
-    let output = run_npu(&cwd, &xdg, &["serve", "absent"]);
+    let output = run_npu(&cwd, &xdg, &["backend", "serve", "absent"]);
 
     assert_eq!(
         output.status.code(),
@@ -431,7 +433,7 @@ fn healthy_config_serve_backend_without_docker_exits_two_with_empty_stdout() {
     let cwd = fixture_dir("serve-no-docker-cwd");
     write_healthy_scope(&xdg, "http://127.0.0.1:1");
 
-    let output = run_npu(&cwd, &xdg, &["serve", "qwen-fast"]);
+    let output = run_npu(&cwd, &xdg, &["backend", "serve", "qwen-fast"]);
 
     assert_eq!(
         output.status.code(),
@@ -460,7 +462,7 @@ fn healthy_config_stop_backend_without_docker_exits_two_with_empty_stdout() {
     let cwd = fixture_dir("stop-no-docker-cwd");
     write_healthy_scope(&xdg, "http://127.0.0.1:1");
 
-    let output = run_npu(&cwd, &xdg, &["stop", "qwen-fast"]);
+    let output = run_npu(&cwd, &xdg, &["backend", "stop", "qwen-fast"]);
 
     assert_eq!(
         output.status.code(),
@@ -482,7 +484,7 @@ fn healthy_config_status_without_containerized_backend_still_prints_its_header()
     let cwd = fixture_dir("status-empty-cwd");
     write_healthy_scope(&xdg, "http://127.0.0.1:1");
 
-    let output = run_npu(&cwd, &xdg, &["status"]);
+    let output = run_npu(&cwd, &xdg, &["backend", "status"]);
 
     assert!(
         output.status.success(),
@@ -527,4 +529,61 @@ fn verbose_changes_stderr_only_and_never_stdout() {
         stdout_of(&verbose),
         "PROOF (k): stdout must not depend on the verbosity level"
     );
+}
+
+// -- 0.4.0 command tree ------------------------------------------------------
+
+/// `config check` is `doctor` under its grouped name: same report, same code.
+#[test]
+fn broken_config_config_check_matches_doctor() {
+    let xdg = fixture_dir("broken-config-check-xdg");
+    let cwd = fixture_dir("broken-config-check-cwd");
+    write_broken_scope(&xdg);
+
+    let doctor = run_npu(&cwd, &xdg, &["doctor"]);
+    let check = run_npu(&cwd, &xdg, &["config", "check"]);
+
+    assert_eq!(check.status.code(), Some(2));
+    assert_eq!(stdout_of(&check), stdout_of(&doctor));
+}
+
+/// The pre-0.4.0 top-level built-ins are gone: each is an unknown command,
+/// rejected by `clap` with nothing on stdout.
+#[test]
+fn removed_top_level_built_ins_are_unknown_commands_with_empty_stdout() {
+    let xdg = fixture_dir("removed-builtins-xdg");
+    let cwd = fixture_dir("removed-builtins-cwd");
+    write_healthy_scope(&xdg, &closed_port_base_url());
+
+    for args in [
+        &["serve", "qwen-fast"][..],
+        &["stop", "qwen-fast"],
+        &["status"],
+        &["logs", "qwen-fast"],
+        &["models"],
+        &["version"],
+    ] {
+        let output = run_npu(&cwd, &xdg, args);
+        assert_eq!(output.status.code(), Some(2), "npu {args:?}");
+        assert!(output.stdout.is_empty(), "npu {args:?} wrote on stdout");
+    }
+}
+
+/// A name the built-ins released is an ordinary command again, and runs as
+/// one: it reaches the backend, which is dead here, hence `3`.
+#[test]
+fn a_command_named_status_is_a_business_command() {
+    let xdg = fixture_dir("custom-status-xdg");
+    let cwd = fixture_dir("custom-status-cwd");
+    write_healthy_scope(&xdg, &closed_port_base_url());
+    write(
+        &xdg,
+        "npu/commands/status.md",
+        "---\ndescription = \"Summarize a status\"\nmodel = \"qwen-fast\"\n---\n{{ input }}\n",
+    );
+
+    let output = run_npu(&cwd, &xdg, &["status"]);
+
+    assert_eq!(output.status.code(), Some(3), "stderr: {}", stderr_of(&output));
+    assert!(output.stdout.is_empty());
 }

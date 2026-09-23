@@ -139,7 +139,7 @@ fn verbose_arg() -> clap::Arg {
 
 /// Builds the complete `clap` tree (builder API) from the discovered
 /// commands. Contains ONLY the business
-/// commands: the built-ins (`doctor`/`models`/`serve`/`stop`/`status`/`logs`/`describe`/`version`/`update`) are added
+/// commands: the built-ins (`backend …`, `config …`, `doctor`, `describe`, `update`, `--version`) are added
 /// separately by [`add_builtins`], unconditionally — this function remains
 /// usable with an empty `specs` (degraded mode, cf. `run`).
 fn build_cli(specs: &[command::CommandSpec]) -> clap::Command {
@@ -153,8 +153,9 @@ fn build_cli(specs: &[command::CommandSpec]) -> clap::Command {
     root
 }
 
-/// Adds the CLI's built-ins (`doctor`, `models`, `serve`, `stop`, `status`,
-/// `logs`, `describe`, `version`, `update`) to the
+/// Adds the CLI's built-ins — the `backend` group (`serve`, `stop`,
+/// `status`, `logs`), the `config` group (`check`, `models`), `doctor`,
+/// `describe`, `update` and the root `--version` flag — to the
 /// tree already built from the discovered business commands.
 ///
 /// Called UNCONDITIONALLY by `run`, including when loading the
@@ -169,63 +170,66 @@ fn add_builtins(cli: clap::Command) -> clap::Command {
     // Help text in English: it is displayed next to the configured
     // commands' `description`, and the repository's documentation is in
     // English.
-    cli.subcommand(clap::Command::new("doctor").about(
-        "Check the runtime environment: configuration, backend reachability, declared \
-         output schemas",
-    ))
-    .subcommand(clap::Command::new("models").about("List configured models"))
-    .subcommand(
-        clap::Command::new("serve")
-            .about("Start the runtime of the backend a model points at")
-            .arg(
-                clap::Arg::new("MODEL")
-                    .required(true)
-                    .help("Identifier of the model to serve (e.g. \"qwen-fast\")"),
-            ),
-    )
-    .subcommand(
-        clap::Command::new("stop")
-            .about("Stop the runtime started for a model's backend")
-            .arg(
-                clap::Arg::new("MODEL")
-                    .required(true)
-                    .help("Identifier of the model whose runtime is stopped"),
-            ),
-    )
-    .subcommand(
-        clap::Command::new("status").about("Report the state of every backend declaring a runtime"),
-    )
-    .subcommand(
-        clap::Command::new("logs")
-            .about("Stream the logs of the runtime started for a model's backend")
-            .arg(
-                clap::Arg::new("MODEL")
-                    .required(true)
-                    .help("Identifier of the model whose runtime is read"),
-            )
-            .arg(
-                clap::Arg::new("follow")
-                    .long("follow")
-                    .short('f')
-                    .action(clap::ArgAction::SetTrue)
-                    .help("Keep streaming as new lines arrive"),
-            ),
-    )
-    .subcommand(
-        clap::Command::new("describe")
-            .about("Describe a dynamically configured command, as JSON")
-            .arg(
-                clap::Arg::new("COMMAND")
-                    .required(true)
-                    .help("Path of the command to describe (e.g. \"classify\" or \"git/review\")"),
-            ),
-    )
-    .subcommand(clap::Command::new("version").about("Print the current npu release version"))
-    .subcommand(
-        clap::Command::new("update")
-            .about("Download and install the latest npu release from GitHub"),
-    )
+    let model_arg = |help: &'static str| clap::Arg::new("MODEL").required(true).help(help);
+    let backend = clap::Command::new("backend")
+        .about("Manage the runtime of a model's backend: serve, stop, status, logs")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .subcommand(
+            clap::Command::new("serve")
+                .about("Start the runtime of the backend a model points at")
+                .arg(model_arg("Identifier of the model to serve (e.g. \"qwen-fast\")")),
+        )
+        .subcommand(
+            clap::Command::new("stop")
+                .about("Stop the runtime started for a model's backend")
+                .arg(model_arg("Identifier of the model whose runtime is stopped")),
+        )
+        .subcommand(
+            clap::Command::new("status")
+                .about("Report the state of every backend declaring a runtime"),
+        )
+        .subcommand(
+            clap::Command::new("logs")
+                .about("Stream the logs of the runtime started for a model's backend")
+                .arg(model_arg("Identifier of the model whose runtime is read"))
+                .arg(
+                    clap::Arg::new("follow")
+                        .long("follow")
+                        .short('f')
+                        .action(clap::ArgAction::SetTrue)
+                        .help("Keep streaming as new lines arrive"),
+                ),
+        );
+    let config = clap::Command::new("config")
+        .about("Inspect the configuration: check, models")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .subcommand(clap::Command::new("check").about(DOCTOR_ABOUT))
+        .subcommand(clap::Command::new("models").about("List configured models"));
+
+    cli.version(updater::VERSION)
+        .subcommand(backend)
+        .subcommand(config)
+        .subcommand(clap::Command::new("doctor").about(DOCTOR_ABOUT))
+        .subcommand(
+            clap::Command::new("describe")
+                .about("Describe a dynamically configured command, as JSON")
+                .arg(
+                    clap::Arg::new("COMMAND")
+                        .required(true)
+                        .help("Path of the command to describe (e.g. \"classify\" or \"git/review\")"),
+                ),
+        )
+        .subcommand(
+            clap::Command::new("update")
+                .about("Download and install the latest npu release from GitHub"),
+        )
 }
+
+/// `doctor` and `config check` are the same command under two names.
+const DOCTOR_ABOUT: &str = "Check the runtime environment: configuration, backend reachability, \
+                            declared output schemas";
 
 /// Reconstructs the path of the selected command by walking down the chain
 /// of subcommands `clap` resolved, and returns the leaf command's
@@ -483,7 +487,7 @@ fn execute_business_command(
 ///   the rest of this function (cf. `tests/clap_error_stdout_purity.rs`);
 /// - `npu doctor` ALWAYS runs (before any other branch) and reports the
 ///   kept load error as a failed check (a) (cf. `builtin::doctor`);
-/// - `version` and `update` run without the configuration, just like `doctor`;
+/// - `--version` and `update` run without the configuration, just like `doctor`;
 /// - any OTHER invocation (business command, `models`, `serve`, `stop`,
 ///   `status`, `logs`, `describe`)
 ///   propagates the kept load error via `loaded?`, exit code 2 — unchanged
@@ -534,9 +538,9 @@ pub fn run() -> Result<i32> {
     let matches = cli.get_matches();
 
     let (path, leaf_matches) = selected_path(&matches);
-    let builtin_name = path.first().map(String::as_str);
+    let route: Vec<&str> = path.iter().map(String::as_str).collect();
 
-    if builtin_name == Some("doctor") {
+    if matches!(route.as_slice(), ["doctor"] | ["config", "check"]) {
         // `doctor` ALWAYS runs, whether loading succeeded or failed: this
         // is precisely its point in degraded mode (point 3 of the shared
         // contract). `probe` is the REAL probe (`builtin::tcp_probe`),
@@ -565,12 +569,7 @@ pub fn run() -> Result<i32> {
     // These two built-ins depend only on the binary itself and GitHub
     // Releases. Like `doctor`, they remain available in degraded mode: a
     // malformed AI configuration is unrelated to reading or updating npu.
-    if builtin_name == Some("version") {
-        println!("{}", updater::VERSION);
-        return Ok(0);
-    }
-
-    if builtin_name == Some("update") {
+    if route == ["update"] {
         return update(logger);
     }
 
@@ -581,7 +580,7 @@ pub fn run() -> Result<i32> {
     // contract).
     let (config, specs) = loaded?;
 
-    if builtin_name == Some("models") {
+    if route == ["config", "models"] {
         println!("{}", builtin::format_models(&config));
         return Ok(0);
     }
@@ -601,7 +600,7 @@ pub fn run() -> Result<i32> {
         probe: &builtin::tcp_probe,
     };
 
-    if builtin_name == Some("serve") {
+    if route == ["backend", "serve"] {
         // `MODEL` is declared `.required(true)` by `add_builtins`: clap has
         // already rejected the invocation if it is absent.
         let model_id = leaf_matches
@@ -620,7 +619,7 @@ pub fn run() -> Result<i32> {
         return Ok(0);
     }
 
-    if builtin_name == Some("stop") {
+    if route == ["backend", "stop"] {
         let model_id = leaf_matches
             .get_one::<String>("MODEL")
             .map(String::as_str)
@@ -633,7 +632,7 @@ pub fn run() -> Result<i32> {
         return Ok(0);
     }
 
-    if builtin_name == Some("status") {
+    if route == ["backend", "status"] {
         // The report IS the result: stdout, like `doctor` and `models`.
         println!(
             "{}",
@@ -642,7 +641,7 @@ pub fn run() -> Result<i32> {
         return Ok(0);
     }
 
-    if builtin_name == Some("logs") {
+    if route == ["backend", "logs"] {
         let model_id = leaf_matches
             .get_one::<String>("MODEL")
             .map(String::as_str)
@@ -663,7 +662,7 @@ pub fn run() -> Result<i32> {
         return Ok(0);
     }
 
-    if builtin_name == Some("describe") {
+    if route == ["describe"] {
         // `COMMAND` is declared `.required(true)` by `add_builtins`: clap
         // has already rejected the invocation before `get_matches()` if
         // the argument is absent, so `leaf_matches` always carries it at
@@ -1175,25 +1174,25 @@ mod tests {
     }
 }
 
-/// `update` and `version` never read the configuration: warning about it
+/// `update` and `--version` never read the configuration: warning about it
 /// there would blame the user's files for an operation they cannot break.
 fn skips_config() -> bool {
     matches!(
-        first_positional(std::env::args().skip(1)).as_deref(),
-        Some("update" | "version")
+        first_word(std::env::args().skip(1)).as_deref(),
+        Some("update" | "--version" | "-V")
     )
 }
 
-/// First argument that is neither a flag nor the value of `--verbose`/`-v`,
+/// First argument that is neither `--verbose`/`-v` nor its value,
 /// read from the RAW command line (cf. [`log::level_from_args`]).
-fn first_positional<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
+fn first_word<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
     let mut expecting_value = false;
     for arg in args {
         if expecting_value {
             expecting_value = false;
         } else if arg == "--verbose" || arg == "-v" {
             expecting_value = true;
-        } else if !arg.starts_with('-') {
+        } else if !arg.starts_with("--verbose=") && !arg.starts_with("-v") {
             return Some(arg);
         }
     }
@@ -1201,11 +1200,11 @@ fn first_positional<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
 }
 
 #[cfg(test)]
-mod first_positional_tests {
-    use super::first_positional;
+mod first_word_tests {
+    use super::first_word;
 
     fn first(args: &[&str]) -> Option<String> {
-        first_positional(args.iter().map(ToString::to_string))
+        first_word(args.iter().map(ToString::to_string))
     }
 
     #[test]
@@ -1222,7 +1221,8 @@ mod first_positional_tests {
             first(&["--verbose=info", "update"]).as_deref(),
             Some("update")
         );
-        assert_eq!(first(&["--help"]), None);
+        assert_eq!(first(&["-vinfo", "--version"]).as_deref(), Some("--version"));
+        assert_eq!(first(&["--verbose", "warn"]), None);
     }
 }
 
