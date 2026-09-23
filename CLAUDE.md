@@ -69,10 +69,11 @@ may ever add or remove a byte on stdout.
 
 ## Built-ins and the container lifecycle
 
-The built-ins live under five names, all listed in `builtin::RESERVED` with
+The built-ins live under six names, all listed in `builtin::RESERVED` with
 `help` (a command file whose first path segment matches one is rejected at
 load time): the `backend` group — the lifecycle, `serve`, `stop`, `status`,
-`logs`, `tune` —, the `config` group — `check`, `models` —, `doctor` (the same
+`logs`, `tune` —, the `config` group — `check`, `models` —, the `model`
+group — `discover`, which needs no configuration —, `doctor` (the same
 command as `config check`, kept at the top level), `describe` and `update`;
 the version is the root `--version` flag. Every other name belongs to the
 user's commands: do not add a top-level built-in, grow a group instead.

@@ -104,7 +104,9 @@ impl std::fmt::Debug for Probes<'_> {
 /// values (phase 5, point 2 of the shared contract): without this
 /// rejection, `commands/doctor.md` would be silently shadowed by (or
 /// would shadow) the `doctor` built-in built in `lib.rs`.
-pub const RESERVED: &[&str] = &["backend", "config", "doctor", "describe", "update", "help"];
+pub const RESERVED: &[&str] = &[
+    "backend", "config", "doctor", "describe", "update", "help", "model",
+];
 
 /// Check (a): was the configuration loaded successfully?
 ///

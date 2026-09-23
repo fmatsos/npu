@@ -23,6 +23,7 @@ file receives the answer alone, byte for byte.
 - [`npu backend status`](#npu-backend-status)
 - [`npu backend logs`](#npu-backend-logs)
 - [`npu backend tune`](#npu-backend-tune)
+- [`npu model discover`](#npu-model-discover)
 - [`npu describe`](#npu-describe)
 - [`npu --version`](#npu-version)
 - [`npu update`](#npu-update)
@@ -392,6 +393,63 @@ with a configuration error (`2`) when no export for the selected devices is foun
 directory. It also fails with `2` when a `config.json`, `openvino_model.bin` or `graph.pbtxt` is
 missing or malformed, naming the file.
 
+## `npu model discover`
+
+Searches Hugging Face for models this host's Intel NPU can run through OpenVINO, and lists only
+those. It needs no configuration: like `doctor`, it works when yours fails to load.
+
+```console
+$ npu model discover --help
+Search Hugging Face for models this host's Intel NPU can run through OpenVINO, scored by llmfit when it is on PATH
+
+Usage: npu model discover [OPTIONS] [QUERY]...
+
+Arguments:
+  [QUERY]...  Words to search for (e.g. "qwen coder"); none lists the most downloaded
+
+Options:
+      --task <TASK>           Hugging Face task the model must serve [default: text-generation]
+  -v, --verbose <LEVEL>       Diagnostic verbosity on stderr; stdout always carries the result only [default: warn] [possible values: error, warn, info]
+  -n, --limit <N>             Most models listed [default: 20]
+      --candidates <N>        Hugging Face results examined before filtering [default: 100]
+      --max-memory <PERCENT>  Share of the total RAM one model's INT4 weights may take, in percent [default: 50]
+  -h, --help                  Print help
+```
+
+A candidate is kept only if all of these hold:
+- its `model_type` is an architecture `optimum-intel` exports for `--task`. The list is read at
+  run time from `optimum-intel`'s own registry (`model_configs.py` on `main`), never frozen in the
+  binary;
+- its Hugging Face `pipeline_tag` is `--task`, which rules out an embedding model that merely
+  carries the tag;
+- it is not already quantized (AWQ, GPTQ, FP8, etc.). `optimum-cli export --weight-format int4`
+  starts from the original weights, and a packed repository misreports its parameter count;
+- it has at least 100M parameters, which rules out tokenizer fixtures and toys;
+- it is not gated, unless `HF_TOKEN` is set, in which case it is also sent to the Hub;
+- its INT4 weights (half a byte per parameter, plus 20 %) fit `--max-memory` percent of the RAM.
+  A client NPU has no memory of its own.
+
+A candidate that fails the filter is left out, never listed with a caveat. When the `llmfit` CLI
+is on `PATH` (`uv tool install llmfit`), its `fit --json` view of the host adds a `score` and a
+`use case` to each model it knows (`-` for the others). Without `llmfit`, those two columns are
+absent.
+
+```console
+$ npu model discover qwen3 instruct -n 4
+model                                            type            params int4 ~GB license          downloads  score  use case
+Qwen/Qwen3-4B-Instruct-2507                      qwen3             4.0B      2.4 apache-2.0         3963193   72.3  Instruction following, chat
+Qwen/Qwen3-30B-A3B-Instruct-2507                 qwen3_moe        30.5B     18.3 apache-2.0          784500   76.2  Instruction following, chat
+Qwen/Qwen3-Coder-30B-A3B-Instruct                qwen3_moe        30.5B     18.3 apache-2.0          564937   80.8  Code generation and completion
+heretic-org/Qwen3-4B-Instruct-2507-heretic       qwen3             4.0B      2.4 apache-2.0           28402   72.9  Instruction following, chat
+```
+
+The report is the result: stdout, sorted by downloads. A host without an Intel NPU (no
+`/dev/accel/accel*`) is refused before any request, with exit `3`. So is a Hub or registry that
+cannot be reached, naming the URL.
+
+This list answers "worth trying". [`npu-export`](intel-npu.md)'s CPU check answers "actually
+works", and [`npu backend tune`](#npu-backend-tune) sizes the context once the model is exported.
+
 ## `npu describe`
 
 Prints a JSON description of a command — a configured one or a built-in — useful for humans, and
@@ -560,6 +618,7 @@ Commands:
 Built-ins:
   backend   Manage the runtime of a model's backend: serve, stop, status, logs, tune
   config    Inspect the configuration: check, models
+  model     Find models for this host: discover
   doctor    Check the runtime environment: configuration, backend reachability, declared output schemas
   describe  Describe a command, built-in or configured, as JSON
   update    Download and install the latest npu release from GitHub

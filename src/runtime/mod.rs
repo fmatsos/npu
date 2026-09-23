@@ -15,6 +15,7 @@
 use std::time::Duration;
 
 pub mod docker;
+pub mod llmfit;
 
 /// Exit code of `exe args…`, both streams discarded; `None` when it could not
 /// be started or was killed by a signal.

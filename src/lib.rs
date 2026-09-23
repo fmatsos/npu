@@ -8,6 +8,7 @@ pub mod backend;
 pub mod builtin;
 pub mod command;
 pub mod config;
+pub mod discover;
 pub mod error;
 pub mod input;
 pub mod log;
@@ -157,6 +158,89 @@ fn build_cli(specs: &[command::CommandSpec]) -> clap::Command {
     root
 }
 
+/// `npu model discover`: reads its flags, the host's RAM and NPU, then
+/// delegates to [`discover::discover`], whose report is the result.
+fn model_discover(leaf_matches: &clap::ArgMatches, logger: log::Logger) -> Result<String> {
+    let words: Vec<&str> = leaf_matches
+        .get_many::<String>("QUERY")
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .collect();
+    let number = |id: &str| usize::from(leaf_matches.get_one::<u16>(id).copied().unwrap_or(1));
+    let query = discover::Query {
+        text: (!words.is_empty()).then(|| words.join(" ")),
+        task: leaf_matches
+            .get_one::<String>("task")
+            .cloned()
+            .unwrap_or_default(),
+        limit: number("limit"),
+        candidates: number("candidates"),
+        max_memory_percent: leaf_matches
+            .get_one::<u64>("max-memory")
+            .copied()
+            .unwrap_or(50),
+        hf_token: std::env::var("HF_TOKEN").ok().filter(|t| !t.is_empty()),
+    };
+    let mut system = sysinfo::System::new();
+    system.refresh_memory();
+    let world = discover::World {
+        fetch: &discover::fetch,
+        llmfit: &runtime::llmfit::fit_json,
+        has_npu: discover::host_has_npu(),
+        total_ram: system.total_memory(),
+    };
+    // Cleared when this function returns, on every path.
+    let _spinner = progress::Indicator::spinner("searching Hugging Face");
+    discover::discover(&query, &world, logger)
+}
+
+/// `npu model discover`'s arguments.
+fn discover_command() -> clap::Command {
+    clap::Command::new("discover")
+        .about(
+            "Search Hugging Face for models this host's Intel NPU can run through OpenVINO, \
+             scored by llmfit when it is on PATH",
+        )
+        .arg(
+            clap::Arg::new("QUERY")
+                .num_args(0..)
+                .help("Words to search for (e.g. \"qwen coder\"); none lists the most downloaded"),
+        )
+        .arg(
+            clap::Arg::new("task")
+                .long("task")
+                .value_name("TASK")
+                .default_value("text-generation")
+                .help("Hugging Face task the model must serve"),
+        )
+        .arg(
+            clap::Arg::new("limit")
+                .long("limit")
+                .short('n')
+                .value_name("N")
+                .default_value("20")
+                .value_parser(clap::value_parser!(u16).range(1..))
+                .help("Most models listed"),
+        )
+        .arg(
+            clap::Arg::new("candidates")
+                .long("candidates")
+                .value_name("N")
+                .default_value("100")
+                .value_parser(clap::value_parser!(u16).range(1..=1000))
+                .help("Hugging Face results examined before filtering"),
+        )
+        .arg(
+            clap::Arg::new("max-memory")
+                .long("max-memory")
+                .value_name("PERCENT")
+                .default_value("50")
+                .value_parser(clap::value_parser!(u64).range(1..=100))
+                .help("Share of the total RAM one model's INT4 weights may take, in percent"),
+        )
+}
+
 /// `npu backend tune`'s arguments, kept out of [`add_builtins`] for size.
 fn tune_command() -> clap::Command {
     clap::Command::new("tune")
@@ -281,9 +365,16 @@ fn add_builtins(cli: clap::Command) -> clap::Command {
         .subcommand(clap::Command::new("check").about(DOCTOR_ABOUT))
         .subcommand(clap::Command::new("models").about("List configured models"));
 
+    let model = clap::Command::new("model")
+        .about("Find models for this host: discover")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .subcommand(discover_command());
+
     cli.version(updater::VERSION)
         .subcommand(backend)
         .subcommand(config)
+        .subcommand(model)
         .subcommand(clap::Command::new("doctor").about(DOCTOR_ABOUT))
         .subcommand(
             clap::Command::new("describe")
@@ -361,6 +452,7 @@ const DEGRADED_MODE_BUILTINS: &[&[&str]] = &[
     &["config", "check"],
     &["update"],
     &["describe"],
+    &["model", "discover"],
 ];
 
 /// The path `npu describe` was given, one segment per word, a word written
@@ -829,6 +921,12 @@ pub fn run() -> Result<i32> {
 
     if route == ["update"] {
         return update(logger);
+    }
+
+    // Needs no configuration: it looks at the host and at Hugging Face.
+    if route == ["model", "discover"] {
+        println!("{}", model_discover(leaf_matches, logger)?);
+        return Ok(0);
     }
 
     // A built-in is described from the `clap` tree alone: like `doctor`,

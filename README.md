@@ -280,7 +280,8 @@ $ npu describe translate
 
 `npu backend serve`, `npu backend stop`, `npu backend status` and `npu backend logs` are the runtime lifecycle: start a model's
 backend, end it, see what is up, read what it printed. `npu backend tune` sizes the context
-and memory of NPU- and GPU-compiled models from the model and the host's RAM. What gets started comes from the backend's
+and memory of NPU- and GPU-compiled models from the model and the host's RAM, and
+`npu model discover` lists the Hugging Face models the host's NPU can run. What gets started comes from the backend's
 `[runtime]` table — a container (`type = "docker"`) or a plain local process
 (`type = "process"`) — so switching family, image, command, ports or accelerator is a
 configuration change, not a rebuild.
