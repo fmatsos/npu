@@ -4,6 +4,20 @@ Every notable change to `npu`, newest first. Versions follow
 [semantic versioning](https://semver.org); pre-1.0, a breaking change bumps
 the minor.
 
+## [0.5.1] - 2026-09-23
+
+### Added
+
+- A free-text answer (`format = "text"`, no `max_lines`) is streamed to a terminal: each token
+  is printed as the model produces it, so the answer starts showing within a second instead of
+  at the end of the generation. The fallback still takes over while nothing is on screen (a
+  stopped container, a prompt the NPU refuses). Once a token is shown, a failure exits `3`
+  after the partial answer. A JSON or `max_lines` answer, and anything written to a pipe or a
+  file, still arrives in one piece, byte for byte as before
+  ([`ecce23c`](https://github.com/fmatsos/npu/commit/ecce23cd3e8a4c965b2a09384227fdfcd594441d))
+
+**Full changelog**: [`v0.5.0...v0.5.1`](https://github.com/fmatsos/npu/compare/v0.5.0...v0.5.1)
+
 ## [0.5.0] - 2026-09-23
 
 ### Added
