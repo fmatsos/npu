@@ -16,6 +16,14 @@ A command's answer, on a terminal, is framed: a blank line, a `●` header namin
 actually answered (the fallback, when it took over), the answer, and a blank line. A pipe or a
 file receives the answer alone, byte for byte.
 
+A free-text answer (`format = "text"` without `max_lines`) is **streamed** to a terminal. `npu`
+asks the backend for `stream: true`, and each token is printed as it arrives. Nothing is printed
+until the first non-blank token. Until then the fallback can still take over, which covers a
+stopped container or a prompt the NPU refuses. Once a token is on screen, the answer belongs to
+that model: a failure mid-way exits `3` after a partial answer, with no fallback. A JSON answer,
+or one bounded by `max_lines`, can only be validated whole, so it is never streamed. Neither is
+anything written to a pipe or a file.
+
 - [`npu doctor`](#npu-doctor) (also `npu config check`)
 - [`npu config models`](#npu-config-models)
 - [`npu backend serve`](#npu-backend-serve)

@@ -717,14 +717,40 @@ fn collect_arg_values(
 /// Single hop by construction: the fallback is called through
 /// `backend::chat` directly, never through this function, so no chain and no
 /// cycle is possible.
+/// Where a streamed answer's tokens go: `(model that answers, token)`.
+type TokenSink<'a> = &'a dyn Fn(&str, &str);
+
+/// What [`chat_with_fallback`] asks of the model and, failing it, of its
+/// fallback.
+#[derive(Clone, Copy)]
+struct Ask<'a> {
+    prompt: &'a str,
+    schema: Option<&'a serde_json::Value>,
+    stream: Option<TokenSink<'a>>,
+}
+
+// `&dyn Fn` cannot derive `Debug`: the closure has nothing to print.
+impl std::fmt::Debug for Ask<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ask")
+            .field("prompt", &self.prompt)
+            .field("streamed", &self.stream.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 fn chat_with_fallback(
     config: &config::Config,
     model: &config::Model,
     backend: &config::Backend,
-    prompt: &str,
-    schema: Option<&serde_json::Value>,
+    ask: &Ask<'_>,
     logger: log::Logger,
 ) -> Result<(String, String)> {
+    let Ask {
+        prompt,
+        schema,
+        stream,
+    } = *ask;
     // Resolving the URL is part of reaching the backend, not a step before
     // it: a `port = "auto"` backend whose container is down fails here, and
     // that is exactly a case the fallback exists to absorb. Resolving
@@ -732,14 +758,32 @@ fn chat_with_fallback(
     // GPU it was supposed to fall back to.
     // Cleared when this function returns, on every path.
     let spinner = progress::Indicator::spinner(&format!("waiting for model \"{}\"", model.id));
+    // Whether a streamed token already reached the terminal: from then on
+    // the answer is committed to this model, and a failure can no longer
+    // be absorbed by the fallback.
+    let emitted = std::cell::Cell::new(false);
     let call = |backend: &config::Backend, model: &config::Model| {
-        runtime::resolve_base_url(backend, &runtime::docker::runner)
-            .and_then(|base_url| backend::chat(backend, model, &base_url, prompt, schema, logger))
+        let on_token = |token: &str| {
+            if let Some(stream) = stream {
+                spinner.clear();
+                emitted.set(true);
+                stream(&model.id, token);
+            }
+        };
+        let on_token: Option<&dyn Fn(&str)> = stream.map(|_| &on_token as &dyn Fn(&str));
+        runtime::resolve_base_url(backend, &runtime::docker::runner).and_then(|base_url| {
+            let request = backend::Request {
+                prompt,
+                schema,
+                on_token,
+            };
+            backend::chat(backend, model, &base_url, &request, logger)
+        })
     };
 
     let primary = match call(backend, model) {
         Ok(output) => return Ok((output, model.id.clone())),
-        Err(Error::Backend(message)) => message,
+        Err(Error::Backend(message)) if !emitted.get() => message,
         Err(other) => return Err(other),
     };
 
@@ -882,14 +926,36 @@ fn execute_business_command(
     // doc). No reformulation or retry here: an invalid output is an
     // execution failure, not something to recover from (§15, out of scope
     // for this phase).
-    let (raw_output, answered_by) = chat_with_fallback(
-        config,
-        model,
-        backend,
-        &prompt,
-        output_schema.as_ref(),
-        logger,
-    )?;
+    // Streamed only where nothing can reject the answer after it is shown
+    // — free text, no `max_lines` — and only to a terminal: a pipe keeps
+    // receiving the answer in one piece, byte for byte as before.
+    let streaming = std::io::IsTerminal::is_terminal(&std::io::stdout())
+        && spec.output.format == output::Format::Text
+        && spec.output.max_lines.is_none();
+    let started = std::cell::Cell::new(false);
+    let print_token = |answered_by: &str, token: &str| {
+        // The answer is trimmed like `finalize` trims it: nothing is shown
+        // until the first non-blank token, which opens the frame.
+        let token = if started.get() {
+            token
+        } else {
+            let token = token.trim_start();
+            if token.is_empty() {
+                return;
+            }
+            anstream::print!("{}", answer_header(answered_by));
+            started.set(true);
+            token
+        };
+        anstream::print!("{token}");
+        let _ = std::io::Write::flush(&mut anstream::stdout());
+    };
+    let ask = Ask {
+        prompt: &prompt,
+        schema: output_schema.as_ref(),
+        stream: streaming.then_some(&print_token as TokenSink<'_>),
+    };
+    let (raw_output, answered_by) = chat_with_fallback(config, model, backend, &ask, logger)?;
     let output = output::finalize(&spec.output, &raw_output, &spec.file)?;
     logger.info(&format!(
         "output contract honoured ({}): {} characters written to stdout",
@@ -897,7 +963,17 @@ fn execute_business_command(
         output.chars().count()
     ));
 
-    if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+    if started.get() {
+        // Already on screen, token by token: only the frame is closed.
+        anstream::print!(
+            "{}",
+            if raw_output.ends_with('\n') {
+                "\n"
+            } else {
+                "\n\n"
+            }
+        );
+    } else if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         anstream::print!("{}", framed_answer(&output, &answered_by));
     } else {
         println!("{output}");
@@ -912,8 +988,14 @@ fn execute_business_command(
 /// written to a TERMINAL: a pipe or a file receives the answer alone, byte
 /// for byte, so no program ever parses this frame.
 fn framed_answer(output: &str, answered_by: &str) -> String {
+    format!("{}{output}\n\n", answer_header(answered_by))
+}
+
+/// The opening of [`framed_answer`], alone: what a streamed answer prints
+/// before its first token.
+fn answer_header(answered_by: &str) -> String {
     format!(
-        "\n{} {}\n{output}\n\n",
+        "\n{} {}\n",
         style::paint(style::ANSWER_MARK, "●"),
         style::paint(style::ANSWER_HEADER, answered_by)
     )
@@ -1271,8 +1353,11 @@ mod tests {
             &config,
             model,
             backend,
-            "hello",
-            None,
+            &Ask {
+                prompt: "hello",
+                schema: None,
+                stream: None,
+            },
             log::Logger::new(log::Level::Error),
         )
         .expect("the fallback must answer");
@@ -1309,8 +1394,11 @@ mod tests {
             &config,
             model,
             backend,
-            "hello",
-            None,
+            &Ask {
+                prompt: "hello",
+                schema: None,
+                stream: None,
+            },
             log::Logger::new(log::Level::Error),
         )
         .expect_err("both backends failing must fail");
@@ -1341,8 +1429,11 @@ mod tests {
             &config,
             model,
             backend,
-            "hello",
-            None,
+            &Ask {
+                prompt: "hello",
+                schema: None,
+                stream: None,
+            },
             log::Logger::new(log::Level::Error),
         )
         .expect_err("a backend failure without fallback must stay a failure");

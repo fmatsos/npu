@@ -99,6 +99,17 @@ impl Indicator {
         }
     }
 
+    /// Clears the indicator now rather than when it is dropped: before a
+    /// streamed answer starts, which must not share a line with a spinner.
+    pub fn clear(&self) {
+        if let Some(progress) = &self.0 {
+            progress.finish_and_clear();
+            if let Ok(mut active) = ACTIVE.lock() {
+                *active = None;
+            }
+        }
+    }
+
     pub fn inc(&self, delta: u64) {
         if let Some(progress) = &self.0 {
             progress.inc(delta);

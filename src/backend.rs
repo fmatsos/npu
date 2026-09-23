@@ -49,10 +49,14 @@ pub fn chat(
     backend: &crate::config::Backend,
     model: &crate::config::Model,
     base_url: &str,
-    prompt: &str,
-    schema: Option<&Value>,
+    request: &Request<'_>,
     logger: crate::log::Logger,
 ) -> crate::Result<String> {
+    let Request {
+        prompt,
+        schema,
+        on_token,
+    } = *request;
     let operation = backend.operations.get(&model.operation).ok_or_else(|| {
         crate::Error::Config(format!(
             "backend \"{}\" does not expose operation \"{}\" (available operations: {})",
@@ -64,7 +68,12 @@ pub fn chat(
 
     let url = join_url(base_url, &operation.path);
     let schema = schema.filter(|_| backend.structured_output);
-    let body = build_chat_request(&model.model, prompt, &model.generation, schema);
+    let mut body = build_chat_request(&model.model, prompt, &model.generation, schema);
+    if on_token.is_some()
+        && let Value::Object(map) = &mut body
+    {
+        map.insert("stream".to_string(), Value::Bool(true));
+    }
 
     let timeout = effective_timeout(backend);
 
@@ -96,6 +105,21 @@ pub fn chat(
     })?;
 
     let status = response.status();
+    if let (Some(on_token), true) = (on_token, status.is_success()) {
+        let answer = read_stream(response.body_mut().as_reader(), on_token).map_err(|err| {
+            crate::Error::Backend(format!(
+                "reading the streamed response from backend \"{}\" ({url}) failed: {err}",
+                backend.id
+            ))
+        })?;
+        logger.info(&format!(
+            "backend \"{}\" streamed {status} in {} ms, {} characters",
+            backend.id,
+            started.elapsed().as_millis(),
+            answer.chars().count()
+        ));
+        return Ok(answer);
+    }
     let response_text = response.body_mut().read_to_string().map_err(|err| {
         crate::Error::Backend(format!(
             "reading the response from backend \"{}\" ({url}) failed: {err}",
@@ -134,6 +158,58 @@ pub fn chat(
             truncate(&response_text, ERROR_BODY_TRUNCATE_AT)
         ))
     })
+}
+
+/// Reads an `OpenAI` `chat/completions` event stream (`data: {...}` lines,
+/// ended by `data: [DONE]` or the end of the body), hands each
+/// `choices[0].delta.content` to `on_token` as it arrives, and returns the
+/// whole answer. Any other line — a blank separator, a comment, an event
+/// without content — is skipped.
+fn read_stream(reader: impl std::io::Read, on_token: &dyn Fn(&str)) -> std::io::Result<String> {
+    use std::io::BufRead;
+    let mut answer = String::new();
+    for line in std::io::BufReader::new(reader).lines() {
+        let line = line?;
+        let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+            continue;
+        };
+        if data == "[DONE]" {
+            break;
+        }
+        let Ok(event) = serde_json::from_str::<Value>(data) else {
+            continue;
+        };
+        let content = event
+            .pointer("/choices/0/delta/content")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !content.is_empty() {
+            on_token(content);
+            answer.push_str(content);
+        }
+    }
+    Ok(answer)
+}
+
+/// What one chat call asks: the prompt, the schema constraining the answer
+/// (sent only to a backend declaring `structured_output`), and where the
+/// answer's tokens go as they arrive — `None` waits for the whole answer.
+#[derive(Clone, Copy)]
+pub struct Request<'a> {
+    pub prompt: &'a str,
+    pub schema: Option<&'a Value>,
+    pub on_token: Option<&'a dyn Fn(&str)>,
+}
+
+// `&dyn Fn` cannot derive `Debug`: the closure has nothing to print.
+impl std::fmt::Debug for Request<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Request")
+            .field("prompt", &self.prompt)
+            .field("schema", &self.schema)
+            .field("streamed", &self.on_token.is_some())
+            .finish()
+    }
 }
 
 /// Joins a base URL and an operation path without doubling or losing the `/`.
@@ -465,13 +541,31 @@ mod tests {
             &backend,
             &model,
             &backend.base_url.clone(),
-            "hello",
-            None,
+            &Request {
+                prompt: "hello",
+                schema: None,
+                on_token: None,
+            },
             crate::log::Logger::new(crate::log::Level::Error),
         )
         .expect("chat() must succeed against the stubbed listener");
         assert_eq!(result, "stubbed reply");
 
         server.join().expect("the server thread must not panic");
+    }
+
+    #[test]
+    fn a_stream_hands_each_delta_over_and_returns_the_whole_answer() {
+        let body = "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n\
+                    data: {\"choices\":[{\"delta\":{\"content\":\"Bon\"}}]}\n\n\
+                    : keep-alive\n\
+                    data: {\"choices\":[{\"delta\":{\"content\":\"jour\"}}]}\n\n\
+                    data: [DONE]\n\n\
+                    data: {\"choices\":[{\"delta\":{\"content\":\"ignored\"}}]}\n";
+        let seen = std::cell::RefCell::new(Vec::new());
+        let answer = read_stream(body.as_bytes(), &|t| seen.borrow_mut().push(t.to_string()))
+            .expect("an in-memory stream reads");
+        assert_eq!(answer, "Bonjour");
+        assert_eq!(*seen.borrow(), ["Bon", "jour"]);
     }
 }
