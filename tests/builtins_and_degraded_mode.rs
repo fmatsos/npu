@@ -650,3 +650,37 @@ fn describe_unknown_path_exits_two_naming_it() {
         stderr_of(&output)
     );
 }
+
+/// `--help` lists the configured commands and the built-ins in two
+/// distinct sections. Asserted on the NAMES and on the blank line between
+/// sections, never on the headings' wording.
+#[test]
+fn help_lists_configured_commands_and_built_ins_in_separate_sections() {
+    let xdg = fixture_dir("help-sections-xdg");
+    let cwd = fixture_dir("help-sections-cwd");
+    write_healthy_scope(&xdg, &closed_port_base_url());
+
+    let output = run_npu(&cwd, &xdg, &["--help"]);
+
+    assert!(output.status.success());
+    let stdout = stdout_of(&output);
+    let section_of = |name: &str| {
+        stdout
+            .split("\n\n")
+            .position(|block| {
+                block
+                    .lines()
+                    .any(|line| line.trim_start().starts_with(name))
+            })
+            .expect("every name must be listed in the help")
+    };
+    let custom = section_of("commit-message ");
+    for builtin in ["backend ", "config ", "doctor ", "describe ", "update "] {
+        assert_ne!(
+            section_of(builtin),
+            custom,
+            "{builtin}shares the configured section"
+        );
+    }
+    assert_eq!(section_of("backend "), section_of("update "));
+}

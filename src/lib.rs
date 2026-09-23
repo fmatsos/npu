@@ -275,6 +275,50 @@ fn describe_builtin(words: &[String]) -> Result<Option<String>> {
     .map(Some)
 }
 
+/// Splits the root help into `Commands:` (the configured commands) and
+/// `Built-ins:`, through a `help_template`.
+///
+/// `clap` has no per-subcommand heading: the built-ins are HIDDEN from its
+/// `{subcommands}` list — hidden, not removed, they parse exactly as
+/// before — and rendered by hand in the template. Plain text, like the rest
+/// of the help: `clap` is built without its `color` feature. The `help`
+/// subcommand is disabled rather than left among the configured commands;
+/// `-h`/`--help` remain on every command.
+fn sectioned_help(cli: clap::Command, load_failed: bool) -> clap::Command {
+    let names: Vec<String> = add_builtins(clap::Command::new("npu"))
+        .get_subcommands()
+        .map(|sub| sub.get_name().to_string())
+        .collect();
+    let configured = cli
+        .get_subcommands()
+        .filter(|sub| !names.iter().any(|name| name == sub.get_name()))
+        .count();
+    let width = names.iter().map(String::len).max().unwrap_or(0);
+
+    let commands = if configured > 0 {
+        "Commands:\n{subcommands}"
+    } else if load_failed {
+        "Commands:\n  none: the configuration failed to load; run \"npu doctor\""
+    } else {
+        "Commands:\n  none configured yet"
+    };
+    let mut builtins = String::from("Built-ins:");
+    let mut cli = cli.disable_help_subcommand(true);
+    for name in &names {
+        let about = cli
+            .find_subcommand(name)
+            .and_then(clap::Command::get_about)
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        builtins = format!("{builtins}\n  {name:width$}  {about}");
+        cli = cli.mut_subcommand(name, |sub| sub.hide(true));
+    }
+    cli.help_template(format!(
+        "{{about-with-newline}}{{usage-heading}} {{usage}}\n\n{commands}\n\n{builtins}\n\n\
+         Options:\n{{options}}{{after-help}}"
+    ))
+}
+
 /// `doctor` and `config check` are the same command under two names.
 const DOCTOR_ABOUT: &str = "Check the runtime environment: configuration, backend reachability, \
                             declared output schemas";
@@ -582,7 +626,7 @@ pub fn run() -> Result<i32> {
         Ok((_, specs)) => specs,
         Err(_) => &[],
     };
-    let cli = add_builtins(build_cli(specs_for_cli));
+    let cli = sectioned_help(add_builtins(build_cli(specs_for_cli)), loaded.is_err());
     let matches = cli.get_matches();
 
     let (path, leaf_matches) = selected_path(&matches);
@@ -624,10 +668,11 @@ pub fn run() -> Result<i32> {
     // A built-in is described from the `clap` tree alone: like `doctor`,
     // this works whatever state the configuration is in.
     if route == ["describe"]
-        && let Some(json) = describe_builtin(&describe_words(leaf_matches))? {
-            println!("{json}");
-            return Ok(0);
-        }
+        && let Some(json) = describe_builtin(&describe_words(leaf_matches))?
+    {
+        println!("{json}");
+        return Ok(0);
+    }
 
     // Any OTHER branch (business command, `models`, the lifecycle commands,
     // `describe`) requires a
