@@ -4,6 +4,66 @@ Every notable change to `npu`, newest first. Versions follow
 [semantic versioning](https://semver.org); pre-1.0, a breaking change bumps
 the minor.
 
+## [0.5.0] - 2026-09-23
+
+### Added
+
+- `npu model discover [words]` searches Hugging Face for the models this host can run, on CPU,
+  GPU or NPU. When the `llmfit` CLI is on `PATH`, a model is kept on its verdict (`Perfect` or
+  `Good`, score at least `--min-score`). Otherwise, its INT4 weights must fit `--max-memory`
+  percent of the RAM.
+  - `--backend openvino|llamacpp|mlx` narrows the list to one engine's packaging. It also
+    accepts a configured backend's identifier, whose engine is read from its runtime. `openvino`
+    keeps the architectures `optimum-intel` exports, read from its registry at run time, with
+    original, open weights.
+  - `--npu` adds the Intel NPU check, and exits `3` on a host without one.
+  - A third-party GGUF inherits llmfit's verdict for the model it packages.
+  - `--sort column[:asc|desc],...` orders the report by one or more columns.
+  - On a terminal the report is coloured; a pipe gets a plain table.
+  - It needs no configuration, except to resolve a backend identifier.
+  ([`496d534`](https://github.com/fmatsos/npu/commit/496d53415e46a7056ccabdac1516d435166ab6d7)) ([`fa8ad71`](https://github.com/fmatsos/npu/commit/fa8ad719a1b1c30f60fb94fb442be71c39c65461)) ([`86bf561`](https://github.com/fmatsos/npu/commit/86bf5618715ddf8cc3e6032867cb81047249741c)) ([`aebbbcb`](https://github.com/fmatsos/npu/commit/aebbbcbf02c24f801d488ac5a4a9211ce0643f35)) ([`00974f2`](https://github.com/fmatsos/npu/commit/00974f21d786150cabcb4236221451ee00ca5b36)) ([`634054c`](https://github.com/fmatsos/npu/commit/634054c81316982625c21376ce088cda822111d9))
+- `npu backend tune` sizes the context of every exported model from the model's `config.json`
+  and the host's RAM, and writes it to `graph.pbtxt`. It also sets each model file's
+  `[generation].max_tokens` to the answer length. Two limits apply: `--max-memory` (percent of
+  the RAM, default 50) and `--max-models` (how many run at once, default all).
+  - On NPU, it writes `MAX_PROMPT_LEN` and `MIN_RESPONSE_LEN`, and enables
+    `NPUW_LLM_ENABLE_PREFIX_CACHING`.
+  - On GPU, it bounds `cache_size` and sets `max_num_seqs` to 4. `--kv-u8` stores the KV cache
+    as u8, which holds about twice the context.
+  - `--npu` or `--gpu` tunes one device, so each can get its own limits. `--dry-run` prints the
+    plan without writing.
+  - It replaces the `npu-context.py` script of the `npu-export` skill.
+  ([`25504d3`](https://github.com/fmatsos/npu/commit/25504d382d58e9b7871b4ce2a9e9ba575b5e9b74)) ([`c3208b0`](https://github.com/fmatsos/npu/commit/c3208b043ec9870f73e43b666cd15e28e8606f7f)) ([`974653c`](https://github.com/fmatsos/npu/commit/974653c849c6e2c0272c2b9fd7072c35a1a03a11))
+- A backend declaring `structured_output = true` receives the command's output schema as an
+  OpenAI `response_format` (`json_schema`). The model's decoding is constrained by it, and the
+  answer is still validated afterwards ([`9d4eae4`](https://github.com/fmatsos/npu/commit/9d4eae48dc342855f7d123f0ca8db1236fa39b40))
+- Commands can declare a `[schemas]` table and paste a schema into the prompt with
+  `{{ schemas.<id> }}`. An undeclared id is rejected at load time, naming the file, and
+  `npu doctor` checks each entry ([`9d4eae4`](https://github.com/fmatsos/npu/commit/9d4eae48dc342855f7d123f0ca8db1236fa39b40))
+- On a terminal, a command's answer is set apart from the command line: a blank line, and a
+  header naming the model that actually answered (the fallback, when it took over). A pipe or a
+  file still receives the answer alone, byte for byte ([`1886c98`](https://github.com/fmatsos/npu/commit/1886c980902d196d380681d526b532293f9e621e)) ([`9b5fc96`](https://github.com/fmatsos/npu/commit/9b5fc968821f669c4b58f4bb27e6f05ebdb91799))
+
+### Changed
+
+- **Breaking**: `model` is now a reserved name, for the new `npu model` group. Rename a
+  configured command whose file is `model.md` or sits under `model/`
+  ([`496d534`](https://github.com/fmatsos/npu/commit/496d53415e46a7056ccabdac1516d435166ab6d7))
+- **Breaking**: a `schema` value that is a bare name, with no `/` and no `.json`, now resolves
+  to `<scope root>/schemas/<name>.json`. A path (relative to the scope root) or an absolute path
+  resolves as before. A bare file name at the scope root must be written with its `.json`
+  extension ([`9d4eae4`](https://github.com/fmatsos/npu/commit/9d4eae48dc342855f7d123f0ca8db1236fa39b40))
+- A fallback taking over is logged at `info` instead of `warn`: it is the designed path, and the
+  command still succeeds. Use `-v info` to see it ([`45418b6`](https://github.com/fmatsos/npu/commit/45418b6034ed4a167bbf756cc947154b283fe185))
+
+### Fixed
+
+- A probe on a stopped container no longer prints Docker's `No such container` on the terminal:
+  Docker's stderr is captured and added to the error, shown only when the error is reported
+  ([`45418b6`](https://github.com/fmatsos/npu/commit/45418b6034ed4a167bbf756cc947154b283fe185))
+
+**Full changelog**: [`v0.4.0...v0.5.0`](https://github.com/fmatsos/npu/compare/v0.4.0...v0.5.0)
+
 ## [0.4.0] - 2026-09-23
 
 ### Added
