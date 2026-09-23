@@ -313,8 +313,10 @@ pub fn state(
 /// The real runner behind [`serve`]: runs `docker` with `args` and returns
 /// its stdout (the container identifier), trailing newline removed.
 ///
-/// The child's stderr is INHERITED — Docker's own diagnostics belong on this
-/// process's stderr, never on its stdout, which carries the result only.
+/// The child's stderr is CAPTURED and folded into the error when `docker`
+/// fails: a probe such as `docker port` on a container that is not running
+/// fails by design, and its `No such container` must not reach the user's
+/// terminal when the caller recovers from it (a fallback, `status`).
 ///
 /// # Errors
 ///
@@ -326,7 +328,6 @@ pub fn runner(args: &[String]) -> crate::Result<String> {
     let output = std::process::Command::new(CONTAINER_RUNTIME)
         .args(args)
         .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::inherit())
         .output()
         .map_err(|err| {
             crate::Error::Backend(format!("cannot run \"{CONTAINER_RUNTIME}\": {err}"))
@@ -334,9 +335,10 @@ pub fn runner(args: &[String]) -> crate::Result<String> {
 
     if !output.status.success() {
         return Err(crate::Error::Backend(format!(
-            "\"{CONTAINER_RUNTIME} {}\" failed ({})",
+            "\"{CONTAINER_RUNTIME} {}\" failed ({}): {}",
             args.join(" "),
-            output.status
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
 

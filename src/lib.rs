@@ -557,7 +557,9 @@ fn chat_with_fallback(
         return Err(Error::Backend(primary));
     };
 
-    logger.warn(&format!(
+    // `info`, not `warn`: the fallback is the designed path for a primary
+    // that is down or refuses the prompt, and the command still succeeds.
+    logger.info(&format!(
         "model \"{}\" failed ({primary}); falling back to model \"{fallback_id}\"",
         model.id
     ));
