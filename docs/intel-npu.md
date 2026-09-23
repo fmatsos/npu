@@ -230,7 +230,7 @@ args = [
 ```
 
 `{{ args.model }}` resolves to the model's `model` field — the export directory name under
-`/models` — so `npu serve <model-id>` starts OVMS pointed at the right export without any
+`/models` — so `npu backend serve <model-id>` starts OVMS pointed at the right export without any
 NPU-specific logic in `npu` itself. A slow accelerator can also need more time than the client's
 default request timeout; see `[timeouts]` in
 [Configuration](configuration.md#timeouts-optional).
@@ -269,7 +269,7 @@ container `npu-<backend-id>`. Compared with the NPU backend, drop `--device /dev
 only needs `/dev/dri` and the render group — and give it a different port through the
 [`port`](configuration.md#port-optional) key, which is read as `{{ backend.port }}` in both
 `base_url` and `-p` so the two cannot diverge. `port = "auto"` lets Docker allocate one,
-which is usually what you want here: nothing outside `npu` connects to the twin, and `npu status`
+which is usually what you want here: nothing outside `npu` connects to the twin, and `npu backend status`
 prints the resolved URL. It does make Docker a prerequisite for running commands on that backend,
 not just for its lifecycle. The two models then read:
 
@@ -306,7 +306,7 @@ The `npu-export` skill performs this whole section automatically.
 | `curl` straight to OVMS reproduces the same garbage as through `npu` | not `npu` | the client did its job faithfully; look at the export and the OVMS logs, not `backend.rs` |
 | OVMS logs show `Available devices: CPU` | deployment | `--device`/`--group-add`/`--user` are missing or wrong; the NPU was never reached |
 | `Cache directory /cache is not writable` | deployment | the container's `--user` cannot write the bind-mounted cache directory |
-| `Unable to open file: .../graph.pbtxt` right after `npu serve` starts | deployment | either [§3a](#3a-bake-the-device-into-the-export) was skipped, or the backend serves with `--source_model`, which fails this way on a local export whatever the file's state — use `--model_name`/`--model_path`. The same message when running `--configure` itself means it cannot *create* the file: `chmod o+w` the export directory (and `.ov_cache`) and retry |
+| `Unable to open file: .../graph.pbtxt` right after `npu backend serve` starts | deployment | either [§3a](#3a-bake-the-device-into-the-export) was skipped, or the backend serves with `--source_model`, which fails this way on a local export whatever the file's state — use `--model_name`/`--model_path`. The same message when running `--configure` itself means it cannot *create* the file: `chmod o+w` the export directory (and `.ov_cache`) and retry |
 | `400 ... Input length exceeds the maximum allowed length` | deployment | the prompt is past the NPU graph's static shape. Recoverable: declare a `fallback` onto a GPU twin, [§6](#6-the-gpu-twin-and-the-npu-fallback) |
 | `400 ... Number of prompt tokens: N exceeds model max length: M` | not the device | the model's own context window, shared by every device and by the GPU twin. A fallback cannot help; shorten the input or use a longer-context model |
 | The NPU model answers on the CPU/GPU instead, or vice versa | deployment | `graph.pbtxt`'s `device:` field is what OVMS obeys; `grep device ~/models/<export>/graph.pbtxt` and re-run `--configure` with the right `--target_device` |

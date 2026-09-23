@@ -1,17 +1,21 @@
 # Built-in commands
 
-`npu` ships nine built-in commands. They are not AI commands, and their names — along with
-`help` — are reserved: a command file whose first path segment is one of them is rejected at load
-time, naming the file.
+`npu` ships its built-in commands under five names: two groups, `backend` (the runtime lifecycle)
+and `config` (inspection), plus `doctor`, `describe` and `update`. They are not AI commands, and
+these five names — along with `help` — are reserved: a command file whose first path segment is
+one of them is rejected at load time, naming the file. Any other name, `status` or `logs`
+included, is yours.
 
-- [`npu doctor`](#npu-doctor)
-- [`npu models`](#npu-models)
-- [`npu serve`](#npu-serve)
-- [`npu stop`](#npu-stop)
-- [`npu status`](#npu-status)
-- [`npu logs`](#npu-logs)
+`npu --help` lists your commands under `Commands:` and the built-ins under `Built-ins:`.
+
+- [`npu doctor`](#npu-doctor) (also `npu config check`)
+- [`npu config models`](#npu-config-models)
+- [`npu backend serve`](#npu-backend-serve)
+- [`npu backend stop`](#npu-backend-stop)
+- [`npu backend status`](#npu-backend-status)
+- [`npu backend logs`](#npu-backend-logs)
 - [`npu describe`](#npu-describe)
-- [`npu version`](#npu-version)
+- [`npu --version`](#npu-version)
 - [`npu update`](#npu-update)
 - [Verbosity](#verbosity)
 - [Degraded mode](#degraded-mode)
@@ -21,6 +25,8 @@ time, naming the file.
 ## `npu doctor`
 
 Validates the runtime environment and reports on stdout. Its report *is* its result.
+`npu config check` is the same command under its grouped name; `doctor` stays at the top level
+because it is what you type when nothing else works.
 
 ```console
 $ npu doctor
@@ -81,14 +87,14 @@ unacceptable side effect for a diagnostic command. The label therefore says *rea
 
 ---
 
-## `npu models`
+## `npu config models`
 
 Lists configured models, sorted by name, with column widths computed from the content.
 `FALLBACK` is the model retried once when this one fails with a backend error, or `-` when none is
 declared — see [`fallback`](configuration.md#fallback-optional).
 
 ```console
-$ npu models
+$ npu config models
 NAME                       BACKEND   OPERATION  FALLBACK
 qwen2.5-coder-3b-instruct  ovms      chat       -
 qwen3-8b                   ovms      chat       qwen3-8b-gpu
@@ -97,7 +103,7 @@ qwen3-8b-gpu               ovms-gpu  chat       -
 
 ---
 
-## `npu serve`
+## `npu backend serve`
 
 Starts the runtime of the backend a model points at, and prints what that runtime family calls
 what it started — its result, and the only thing it writes to stdout. For a
@@ -105,12 +111,12 @@ what it started — its result, and the only thing it writes to stdout. For a
 identifier; for a [process](configuration.md#starting-a-backend-as-a-process) one, the pid.
 
 ```console
-$ npu serve qwen-fast
+$ npu backend serve qwen-fast
 2ac5416d2aae6769b9c2674ee2e284eaab4be049fa7d02d38146852989c35e35
 ```
 
 ```console
-$ npu serve qwen-fast
+$ npu backend serve qwen-fast
 1002664
 ```
 
@@ -143,7 +149,7 @@ the environment `npu` itself runs in. Serving the same backend twice is refused 
 spawned, naming the backend and the pid already holding it — the state record is what makes that
 possible, Docker's name registry having no equivalent here.
 
-Then, unlike the Docker family, `npu serve` **waits**: it polls the backend's `base_url` until
+Then, unlike the Docker family, `npu backend serve` **waits**: it polls the backend's `base_url` until
 something answers, the server exits, or `startup_timeout_secs` runs out. The poll is a TCP
 connection and nothing more — no byte is sent, no protocol is spoken — so a `serve` that printed a
 pid means *something accepted a connection on that address*, which a server still loading its
@@ -174,43 +180,43 @@ log. It is the same `3` as everywhere else in this CLI — a backend problem. To
 calling program, *the runtime could not be brought up* and *the backend is unreachable* call for
 the same reaction.
 
-### What `npu serve` deliberately does not do
+### What `npu backend serve` deliberately does not do
 
 For a Docker backend it does not wait for the server to be ready: `docker run -d` returns as soon
-as the container is created, long before a model is loaded. Use `npu doctor`, `npu status`, or the
+as the container is created, long before a model is loaded. Use `npu doctor`, `npu backend status`, or the
 runtime's own readiness endpoint, to know when it can answer. (A process backend does wait — see
 above.)
 
 It does not detach a spawned process into its own session either, so a terminal hang-up takes it
 down along with everything else in that session.
 
-The rest of the lifecycle lives in its own commands: [`npu stop`](#npu-stop),
-[`npu status`](#npu-status) and [`npu logs`](#npu-logs).
+The rest of the lifecycle lives in its own commands: [`npu backend stop`](#npu-backend-stop),
+[`npu backend status`](#npu-backend-status) and [`npu backend logs`](#npu-backend-logs).
 
 ---
 
-## `npu stop`
+## `npu backend stop`
 
-Ends what `npu serve` started for that model's backend.
+Ends what `npu backend serve` started for that model's backend.
 
 ```console
-$ npu stop qwen-fast
+$ npu backend stop qwen-fast
 npu-ovms
 ```
 
 ```console
-$ npu stop qwen-fast
+$ npu backend stop qwen-fast
 llamacpp
 ```
 
 For a Docker backend it **removes** the container rather than merely stopping it, and prints its
-name: a stopped container still owns that name, so `npu serve` would then fail on a conflict and
+name: a stopped container still owns that name, so `npu backend serve` would then fail on a conflict and
 the lifecycle would be a one-way trip.
 
 For a process backend it prints the **backend identifier**, not the pid `serve` returned. By the
 time `stop` answers, that pid names nothing, and a command printing a pid when it killed one and
 something else when there was nothing to kill would force its caller to branch on which. The pid,
-while it exists, is [`npu status`](#npu-status)'s `INSTANCE` column. Termination escalates:
+while it exists, is [`npu backend status`](#npu-backend-status)'s `INSTANCE` column. Termination escalates:
 `SIGTERM`, a bounded wait, then `SIGKILL`.
 
 Stopping a backend that was never started is not an error in either family — the command prints
@@ -218,27 +224,27 @@ the same name and exits `0`, so a script can call it without checking first. Nei
 whose process is already gone, or whose pid has since been recycled: that record is forgotten,
 never signalled, because the pid it holds may belong to anybody by now.
 
-Exit codes are `npu serve`'s: `2` for an unknown model or a backend without a `[runtime]` table,
+Exit codes are `npu backend serve`'s: `2` for an unknown model or a backend without a `[runtime]` table,
 `3` when the runtime itself refuses — including a process that survived both signals, in which
 case the record is deliberately **kept**, since forgetting a running server would leave it
 unreachable to `npu`.
 
 ---
 
-## `npu status`
+## `npu backend status`
 
 Reports the state of every backend that declares a runtime, sorted by backend, one line
 each. Its report *is* its result.
 
 ```console
-$ npu status
+$ npu backend status
 BACKEND   RUNTIME  INSTANCE      URL                     STATE
 ovms      docker   npu-ovms      http://127.0.0.1:8000   Up 3 hours
 ovms-gpu  docker   npu-ovms-gpu  http://127.0.0.1:32768  Up 3 hours
 ```
 
 ```console
-$ npu status
+$ npu backend status
 BACKEND   RUNTIME  INSTANCE  URL                     STATE
 llamacpp  process  1002664   http://127.0.0.1:18432  running
 ```
@@ -275,12 +281,12 @@ declares a runtime at all.
 
 ---
 
-## `npu logs`
+## `npu backend logs`
 
 Streams what the served runtime wrote.
 
 ```console
-$ npu logs qwen-fast
+$ npu backend logs qwen-fast
 [2026-09-21 17:26:44.688][1][serving][info][server.cpp:115] OpenVINO Model Server 2026.4.0.869b2186a
 [2026-09-21 17:26:44.688][1][serving][info][server.cpp:116] OpenVINO backend 2026.4.0-22959-99c81491cc3-releases/2026/4
 ```
@@ -299,18 +305,19 @@ file and then a poll, so it also works on a server that has not written anything
 `npu` never served has no such file: that is exit `3`, naming the backend and the path that was
 looked for, with nothing on stdout.
 
-The logs *are* this command's result. Exit codes are `npu serve`'s.
+The logs *are* this command's result. Exit codes are `npu backend serve`'s.
 
 ---
 
 ## `npu describe`
 
-Prints a JSON description of a configured command — useful for humans, and for programs driving
-the CLI.
+Prints a JSON description of a command — a configured one or a built-in — useful for humans, and
+for programs driving the CLI. The path is given as words, like the command itself
+(`npu describe git review`); `git/review` is accepted too. Built-ins are looked up first.
 
 ```console
 $ npu describe translate
-{"name":"translate","description":"Translate input text","model":"qwen-fast","input":"stdin_or_file","args":{"language":{"short":"l","required":true,"description":"Target language"}},"output":{"format":"text","schema":null,"max_lines":null}}
+{"name":"translate","kind":"command","description":"Translate input text","model":"qwen3-8b","backend":"ovms","fallback":"qwen3-8b-gpu","source":{"file":"/home/…/npu/.npu/commands/translate.md","scope":"/home/…/npu/.npu"},"input":"stdin_or_file","args":{"language":{"short":"l","required":true,"description":"Target language"}},"output":{"format":"text","schema":null,"max_lines":null}}
 ```
 
 Pipe it through `jq` to read it:
@@ -319,8 +326,15 @@ Pipe it through `jq` to read it:
 $ npu describe commit-message | jq .
 {
   "name": "commit-message",
+  "kind": "command",
   "description": "Generate a conventional commit message",
-  "model": "qwen-fast",
+  "model": "qwen3-8b",
+  "backend": "ovms",
+  "fallback": "qwen3-8b-gpu",
+  "source": {
+    "file": "/home/…/npu/.npu/commands/commit-message.md",
+    "scope": "/home/…/npu/.npu"
+  },
   "input": "stdin",
   "args": {},
   "output": {
@@ -331,23 +345,48 @@ $ npu describe commit-message | jq .
 }
 ```
 
-An unknown command is a configuration error listing what is available:
+For a configured command, `backend` and `fallback` are resolved from its model (`null` when the
+model is not configured, which `describe` reports rather than fails on), and `source` names the
+file that won and the scope it came from — which is how a shadowed command is told apart from its
+winner.
+
+A built-in is described from the command tree itself, so this works even with a broken
+configuration; `degraded_mode` says whether the built-in does too:
+
+```console
+$ npu describe backend serve | jq .
+{
+  "name": "backend/serve",
+  "kind": "builtin",
+  "description": "Start the runtime of the backend a model points at",
+  "args": {
+    "MODEL": {
+      "short": null,
+      "required": true,
+      "description": "Identifier of the model to serve (e.g. \"qwen-fast\")"
+    }
+  },
+  "subcommands": [],
+  "degraded_mode": false
+}
+```
+
+An unknown path is a configuration error listing the configured commands:
 
 ```console
 $ npu describe nexistepas
-configuration error: unknown command: "nexistepas" (available commands: classify, commit-message, translate)
+configuration error: unknown command: "nexistepas" (available commands: classify, code, commit-message, synthese, translate)
 ```
 
 ---
 
-## `npu version`
+## `npu --version`
 
-Prints only the release number embedded from `Cargo.toml`, which makes it safe to capture from a
-script:
+Prints the program name and the release number embedded from `Cargo.toml`:
 
 ```console
-$ npu version
-0.1.0
+$ npu --version
+npu 0.3.1
 ```
 
 It does not load or require a valid AI configuration.
@@ -378,8 +417,10 @@ at the same path. It exits `1` without replacing anything when the manifest, dow
 platform detection, or replacement fails. The executable's directory must therefore be writable
 by the current user.
 
-Like `version`, `update` does not depend on the AI configuration and remains available in degraded
-mode.
+Like `--version`, `update` does not depend on the AI configuration and remains available in degraded
+mode. After a successful update, the **new** binary is asked whether it accepts your configuration;
+if it does not, a warning on stderr points to the changelog and the documentation — the update
+itself has succeeded and exits `0`.
 
 ---
 
@@ -407,6 +448,14 @@ npu: info: POST http://127.0.0.1:8000/v3/chat/completions (model "OpenVINO/Qwen3
 of a command is not a diagnostic. A failure message is printed by the process itself, once, at
 every level — `--verbose error` silences the engine's commentary, never the error you need.
 
+### Progress indicators
+
+On a terminal, `npu` draws a spinner on stderr while it waits for a model (relabelled when the
+fallback takes over) or for a process backend to start, and a progress bar while `npu update`
+downloads. They are drawn only when **stderr is a terminal** and the level is above `error`:
+through a pipe — how a program driving `npu` sees it — stderr receives no escape sequence and no
+carriage return, and `--verbose error` means silence. Indicators never touch stdout.
+
 The name `verbose` and the short letter `-v` are consequently reserved: a command declaring
 `[args.verbose]` or `short = "v"` is rejected at load time, naming the argument.
 
@@ -420,23 +469,22 @@ present, and adds your commands only if loading succeeded.
 
 ```console
 $ npu --help
-Usage: npu [OPTIONS] [COMMAND]
+Usage: npu [OPTIONS]
 
 Commands:
+  none: the configuration failed to load; run "npu doctor"
+
+Built-ins:
+  backend   Manage the runtime of a model's backend: serve, stop, status, logs
+  config    Inspect the configuration: check, models
   doctor    Check the runtime environment: configuration, backend reachability, declared output schemas
-  models    List configured models
-  serve     Start the runtime of the backend a model points at
-  stop      Stop the runtime started for a model's backend
-  status    Report the state of every backend declaring a runtime
-  logs      Stream the logs of the runtime started for a model's backend
-  describe  Describe a dynamically configured command, as JSON
-  version   Print the current npu release version
+  describe  Describe a command, built-in or configured, as JSON
   update    Download and install the latest npu release from GitHub
-  help      Print this message or the help of the given subcommand(s)
 
 Options:
   -v, --verbose <LEVEL>  Diagnostic verbosity on stderr; stdout always carries the result only [default: warn] [possible values: error, warn, info]
   -h, --help             Print help
+  -V, --version          Print version
 ```
 
 Exit code `0`, and on **stderr**:
@@ -459,7 +507,8 @@ From there:
 | Command | Behaviour with a broken configuration |
 | --- | --- |
 | `npu --help` | exit `0`, built-ins listed, warning on stderr |
-| `npu doctor` | exit `2`, report on stdout naming the offending file and line |
-| `npu version`, `update` | run normally; they do not depend on the configuration |
-| `npu serve`, `stop`, `status`, `logs` | exit `2`, stdout empty — they need the configuration that could not load |
+| `npu doctor`, `npu config check` | exit `2`, report on stdout naming the offending file and line |
+| `npu --version`, `update` | run normally; they do not depend on the configuration |
+| `npu describe <built-in>` | runs normally; `npu describe <command>` exits `2` |
+| `npu backend serve`, `stop`, `status`, `logs`, `npu config models` | exit `2`, stdout empty — they need the configuration that could not load |
 | anything else | exit `2`, stdout empty, error on stderr |

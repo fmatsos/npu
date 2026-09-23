@@ -3,7 +3,7 @@ name: npu-model
 description: Writes and fixes `npu` model files (`.npu/models/*.toml`) — the `id`, `backend`, `operation`, `model`, optional `fallback` and optional `[generation]` fields that bridge a command to a backend capability. Covers resolution errors (unknown backend, operation the backend does not expose), the single-hop `fallback` retry that moves an over-long prompt from an NPU-served model to a GPU-served one, the fact that omitted generation fields are not sent at all, and replacement-by-id across configuration scopes. Use it whenever a model alias is created, renamed, retuned or rejected.
 when_to_use: >
   Trigger on "add an npu model", "point this command at another model",
-  "change temperature / max_tokens", "npu models", or on any npu error
+  "change temperature / max_tokens", "npu config models", or on any npu error
   mentioning a model id, an unknown backend, or an operation a backend does
   not expose.
 model: sonnet
@@ -110,13 +110,13 @@ not.
 ## Verifying
 
 ```sh
-npu models    # NAME / BACKEND / OPERATION, sorted by name
+npu config models    # NAME / BACKEND / OPERATION, sorted by name
 npu doctor    # resolves every model against its backend and operation
-npu serve <id>  # starts the backend's runtime, when it declares [docker]
-npu status      # its state afterwards
+npu backend serve <id>  # starts the backend's runtime, when it declares [docker]
+npu backend status      # its state afterwards
 ```
 
-`npu models` lists what actually resolved. A model you just wrote and cannot
+`npu config models` lists what actually resolved. A model you just wrote and cannot
 see there was not loaded — `npu doctor` will say why and name the file.
 
 ## Reference
@@ -127,7 +127,7 @@ documentation is authoritative:
 
 - [Models](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#models)
 - [Merge semantics](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#merge-semantics)
-- [`npu models`](https://github.com/fmatsos/npu/blob/main/docs/cli.md#npu-models)
+- [`npu config models`](https://github.com/fmatsos/npu/blob/main/docs/cli.md#npu-config-models)
 
 Related skills: **npu-backend**, **npu-command**, **npu-doctor**.
 

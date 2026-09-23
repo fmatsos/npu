@@ -114,7 +114,7 @@ of what step 1 said, and that is worth reporting as-is rather than guessing furt
 A directory produced by `optimum-cli export openvino` is a bare OpenVINO IR — it has no
 `graph.pbtxt`. OVMS's `--source_model` serve path only *reads* an existing `graph.pbtxt`; unlike a
 pull from the Hub, it never generates one for a local export, and serving fails immediately with
-`Unable to open file: <path>/graph.pbtxt` (`npu serve` then reports a non-zero backend exit and
+`Unable to open file: <path>/graph.pbtxt` (`npu backend serve` then reports a non-zero backend exit and
 `npu doctor` shows the backend unreachable). Generate it explicitly, once, right after step 3
 passes:
 
@@ -228,7 +228,7 @@ Two coupling facts worth stating when reporting:
 - Re-exporting **in place** (same directory) invalidates the OVMS compilation cache silently —
   clear the stale blob per
   [docs/intel-npu.md §4](https://github.com/fmatsos/npu/blob/main/docs/intel-npu.md#4-persisting-the-compilation-cache)
-  before the next `npu serve` — **and** it changes the twin too, whose `graph.pbtxt` then describes
+  before the next `npu backend serve` — **and** it changes the twin too, whose `graph.pbtxt` then describes
   weights that no longer exist. Re-run step 3.6's `--configure` after any re-export.
 - The twin shares the primary's `config.json`, hence its context length. It lifts the NPU's
   compiled prompt shape, never the model's own context ceiling: a prompt past that fails on both,
@@ -244,13 +244,13 @@ State plainly:
   if permissions had to be fixed, that they were;
 - whether the two model files were written, in which scope, and that `<id>` declares
   `fallback = "<id>-gpu"`;
-- the next step: `npu serve <id>` **and** `npu serve <id>-gpu` (two containers, two ports), then
-  `npu doctor` to confirm both backends resolve, `npu models` to see the `FALLBACK` column, then a
+- the next step: `npu backend serve <id>` **and** `npu backend serve <id>-gpu` (two containers, two ports), then
+  `npu doctor` to confirm both backends resolve, `npu config models` to see the `FALLBACK` column, then a
   real request through the command that will use it.
 
 ## What this skill deliberately does not do
 
-- **It does not start or test the actual serving containers.** `npu serve` needs backends whose
+- **It does not start or test the actual serving containers.** `npu backend serve` needs backends whose
   `[docker]` tables already exist — that is configuration, not export. The `--configure` runs in
   steps 3.5 and 3.6 are preparation (they write `graph.pbtxt` and exit), not served containers, the
   same distinction OVMS itself draws between `--configure`/`--pull` and plain serve.

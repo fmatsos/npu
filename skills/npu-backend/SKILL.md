@@ -1,6 +1,6 @@
 ---
 name: npu-backend
-description: Writes and fixes `npu` backend files (`.npu/backends/*.toml`) — the `id`, `type`, `base_url` and `[operations.<name>]` tables that tell `npu` where to send requests and on which HTTP path, plus the optional `[runtime]` table `npu serve` uses to start the runtime — as a Docker container (`type = "docker"`, whose untagged `[docker]` spelling of earlier versions is still accepted) or as a local process (`type = "process"`), and the optional `[timeouts]` table that overrides the request timeout. Covers the constraints enforced at load time — `openai-compatible` is the only supported type, `POST` the only supported method, and unknown keys are rejected rather than ignored. Use it whenever a backend declaration is created, changed or rejected.
+description: Writes and fixes `npu` backend files (`.npu/backends/*.toml`) — the `id`, `type`, `base_url` and `[operations.<name>]` tables that tell `npu` where to send requests and on which HTTP path, plus the optional `[runtime]` table `npu backend serve` uses to start the runtime — as a Docker container (`type = "docker"`, whose untagged `[docker]` spelling of earlier versions is still accepted) or as a local process (`type = "process"`), and the optional `[timeouts]` table that overrides the request timeout. Covers the constraints enforced at load time — `openai-compatible` is the only supported type, `POST` the only supported method, and unknown keys are rejected rather than ignored. Use it whenever a backend declaration is created, changed or rejected.
 when_to_use: >
   Trigger on "add an npu backend", "point npu at my model server / OVMS /
   llama.cpp / Ollama", "change the base_url", "add an operation", "make npu
@@ -42,7 +42,7 @@ next reader.
 | `base_url` | yes | joined with an operation's `path`; a trailing `/` is handled either way |
 | `port` | no | declared once, read as `{{ backend.port }}` in `base_url` and `[runtime]` |
 | `[operations.<name>]` | at least one | each needs `method` and `path` |
-| `[runtime]` | no | how `npu serve` starts this backend; `type` picks the family — `"docker"` or `"process"` |
+| `[runtime]` | no | how `npu backend serve` starts this backend; `type` picks the family — `"docker"` or `"process"` |
 | `[timeouts]` | no | `request_secs` — overrides the default request timeout (120s) |
 
 ## What is rejected at load time
@@ -99,8 +99,8 @@ Check the server's own documentation for the path; `npu` joins `base_url` and
 
 ## Starting the backend: the `[runtime]` table
 
-Optional. Declaring it gives this backend a lifecycle — `npu serve <model>`,
-`npu stop <model>`, `npu status`, `npu logs <model>`. `type` picks the family,
+Optional. Declaring it gives this backend a lifecycle — `npu backend serve <model>`,
+`npu backend stop <model>`, `npu backend status`, `npu backend logs <model>`. `type` picks the family,
 and each family reads its own keys.
 
 ### `type = "docker"`
@@ -125,7 +125,7 @@ IMAGE [ARG...]`. `npu` adds `-d` and `--name npu-<backend-id>`, nothing else. Th
 
 Templating is the prompt engine's: `{{ args.model }}` (the served model's
 `model` field, the only argument available here) and `{{ env.NAME }}`.
-`{{ input }}` is rejected — `npu serve` reads no input.
+`{{ input }}` is rejected — `npu backend serve` reads no input.
 
 The untagged `[docker]` table of earlier versions is still accepted and folded into `[runtime]`
 with `type = "docker"` at load time — write `[runtime]` in new files, and never both, which is
@@ -160,11 +160,11 @@ LLAMA_CACHE = "{{ env.HOME }}/.cache/llama.cpp"
 Same templating, with one exception: `{{ backend.port }}` is substituted in `arguments` and in
 `[runtime.env]` values, **not** in `command`.
 
-Unlike `docker run -d`, `npu serve` **waits** here until the backend's `base_url` answers, the
+Unlike `docker run -d`, `npu backend serve` **waits** here until the backend's `base_url` answers, the
 server exits, or the budget runs out — so a `serve` that printed a pid means a server that
-answers. It prints the pid; `npu stop` prints the backend id and escalates `SIGTERM` → `SIGKILL`.
+answers. It prints the pid; `npu backend stop` prints the backend id and escalates `SIGTERM` → `SIGKILL`.
 
-`npu serve` writes a JSON state record and a `.log` file (both streams) under
+`npu backend serve` writes a JSON state record and a `.log` file (both streams) under
 `$XDG_STATE_HOME/npu/`, named `<backend id>-<digest of the backend file>` — that is how `stop`,
 `status` and `logs` find the process again, Docker's name registry having no equivalent here, and
 why two projects each declaring `llamacpp` get two records rather than fighting over one. The
@@ -214,10 +214,10 @@ becomes a prerequisite for **executing commands** on that backend, not just for 
 fixed port never consults it. Two further rules, enforced at load: `"auto"` needs a Docker runtime
 table, and it needs `base_url` to read `{{ backend.port }}`.
 
-The port changes on each `npu serve`; `npu status` prints the resolved URL, and shows `-` for a
+The port changes on each `npu backend serve`; `npu backend status` prints the resolved URL, and shows `-` for a
 backend that is not started.
 
-**A fixed port already in use is reported by `npu serve` itself** — exit `3`, naming the backend
+**A fixed port already in use is reported by `npu backend serve` itself** — exit `3`, naming the backend
 and the port, before `docker run` is reached. Never moved automatically: a fixed number is a
 decision something outside `npu` may depend on. `"auto"` is how you say it does not matter.
 
@@ -280,7 +280,7 @@ documentation is authoritative:
 - [Starting a backend with Docker](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#starting-a-backend-with-docker)
 - [Starting a backend as a process](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#starting-a-backend-as-a-process)
 - [`npu doctor`](https://github.com/fmatsos/npu/blob/main/docs/cli.md#npu-doctor)
-- [`npu serve`](https://github.com/fmatsos/npu/blob/main/docs/cli.md#npu-serve)
+- [`npu backend serve`](https://github.com/fmatsos/npu/blob/main/docs/cli.md#npu-backend-serve)
 
 Related skills: **npu-model**, **npu-config**, **npu-doctor**.
 

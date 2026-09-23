@@ -27,15 +27,18 @@ prints that level's help **on stderr** and exits with `2`.
 
 ```console
 $ npu git
-Usage: npu git [COMMAND]
+Usage: npu git [OPTIONS] [COMMAND]
 
 Commands:
   review  Review a diff
-  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -v, --verbose <LEVEL>  Diagnostic verbosity on stderr; stdout always carries the result only [default: warn] [possible values: error, warn, info]
+  -h, --help             Print help
 ```
 
-Eight names are reserved by the built-ins and rejected at load time: `doctor`, `models`, `serve`,
-`stop`, `status`, `logs`, `describe` and `help`. The reservation applies to the **first segment only**, so
+Six names are reserved by the built-ins and rejected at load time: `backend`, `config`, `doctor`,
+`describe`, `update` and `help`. The reservation applies to the **first segment only**, so
 `commands/git/describe.md` is perfectly valid.
 
 ---

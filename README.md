@@ -68,9 +68,9 @@ Server](https://github.com/openvinotoolkit/model_server) is the reference target
 exposing `POST /v1/chat/completions` (or an equivalent path you configure) will do.
 
 Without a backend listening, every business command fails with exit code `3`. The built-ins
-(`doctor`, `models`, `serve`, `describe`) still work.
+(`doctor`, `config models`, `backend serve`, `describe`) still work.
 
-**Docker — optional.** Only the lifecycle commands (`serve`, `stop`, `status`, `logs`) need it: a
+**Docker — optional.** Only the lifecycle commands (`npu backend serve`, `stop`, `status`, `logs`) need it: a
 backend can declare a `[runtime]` table with `type = "docker"` saying how to start its own
 runtime, and those commands drive it. Nothing else in the CLI touches Docker, and a configuration
 without that table never asks for it. The other family, `type = "process"`, needs no daemon at
@@ -242,7 +242,7 @@ Nine commands ship with the binary. They are not AI commands, and their names ar
 reserved — a command file called `doctor.md` is rejected at load time.
 
 ```console
-$ npu version
+$ npu --version
 0.1.0
 ```
 
@@ -252,24 +252,24 @@ updated npu from 0.1.0 to 0.2.0
 ```
 
 ```console
-$ npu models
+$ npu config models
 NAME       BACKEND  OPERATION
 qwen-fast  ovms     chat
 ```
 
 ```console
-$ npu serve qwen-fast
+$ npu backend serve qwen-fast
 2ac5416d2aae6769b9c2674ee2e284eaab4be049fa7d02d38146852989c35e35
 ```
 
 ```console
-$ npu status
+$ npu backend status
 BACKEND  RUNTIME  INSTANCE  URL                    STATE
 ovms     docker   npu-ovms  http://127.0.0.1:8000  Up Less than a second
 ```
 
 ```console
-$ npu logs qwen-fast --follow
+$ npu backend logs qwen-fast --follow
 [2026-09-21 17:26:44.688][1][serving][info][server.cpp:115] OpenVINO Model Server 2026.4.0.869b2186a
 ```
 
@@ -278,7 +278,7 @@ $ npu describe translate
 {"name":"translate","description":"Translate input text","model":"qwen-fast","input":"stdin_or_file","args":{"language":{"short":"l","required":true,"description":"Target language"}},"output":{"format":"text","schema":null,"max_lines":null}}
 ```
 
-`npu serve`, `npu stop`, `npu status` and `npu logs` are the runtime lifecycle: start a model's
+`npu backend serve`, `npu backend stop`, `npu backend status` and `npu backend logs` are the runtime lifecycle: start a model's
 backend, end it, see what is up, read what it printed. What gets started comes from the backend's
 `[runtime]` table — a container (`type = "docker"`) or a plain local process
 (`type = "process"`) — so switching family, image, command, ports or accelerator is a
@@ -288,7 +288,7 @@ configuration change, not a rebuild.
 when your configuration is invalid** — that is its whole point. See [Built-in
 commands](docs/cli.md).
 
-`npu version` prints the version embedded from `Cargo.toml`. `npu update` reads the latest
+`npu --version` prints the version embedded from `Cargo.toml`. `npu update` reads the latest
 release manifest from GitHub, selects the binary for the current platform, verifies its SHA-256,
 then replaces the running executable at the same path. Both commands remain usable when the AI
 configuration is invalid because neither depends on it.
@@ -320,9 +320,9 @@ structured response is an execution failure, never something `npu` quietly repai
 | [Configuration](docs/configuration.md) | scopes and precedence, backends, models, merge semantics |
 | [Writing commands](docs/commands.md) | command files, frontmatter, arguments, templating, input modes |
 | [Output contracts](docs/output.md) | text and JSON output, JSON Schema validation, fenced responses |
-| [Built-in commands](docs/cli.md) | `doctor`, `models`, `describe`, degraded mode |
+| [Built-in commands](docs/cli.md) | `doctor`, `config`, `backend`, `describe`, degraded mode |
 | [Deploying on an Intel NPU](docs/intel-npu.md) | exporting a model with `optimum-cli`, quantization pitfalls, serving it with OVMS |
-| [Running on Apple Silicon](docs/apple-silicon.md) | serving a GGUF model with `llama-server` on Metal, started and stopped by `npu serve` |
+| [Running on Apple Silicon](docs/apple-silicon.md) | serving a GGUF model with `llama-server` on Metal, started and stopped by `npu backend serve` |
 | [Claude Code skills](skills/README.md) | five skills that teach Claude Code to write and repair an `npu` configuration |
 
 ---

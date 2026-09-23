@@ -5,7 +5,7 @@
 - [1. Prerequisites](#1-prerequisites)
 - [2. Checking `llama-server`](#2-checking-llama-server)
 - [3. The backend and the model](#3-the-backend-and-the-model)
-- [4. `npu serve`, `status`, `stop`](#4-npu-serve-status-stop)
+- [4. `npu backend serve`, `status`, `stop`](#4-npu-backend-serve-status-stop)
 - [5. `npu doctor`](#5-npu-doctor)
 - [Troubleshooting](#troubleshooting)
 
@@ -20,7 +20,7 @@ itself through a [process runtime](configuration.md#starting-a-backend-as-a-proc
 container and no daemon.
 
 ```text
-llama-server (Metal)  ←  npu serve / stop / status / logs
+llama-server (Metal)  ←  npu backend serve / stop / status / logs
         ↑
 npu <command>  →  POST /v1/chat/completions
 ```
@@ -64,7 +64,7 @@ Docker is not needed.
 
 ## 2. Checking `llama-server`
 
-`npu serve` looks `command` up on `PATH` the way a shell does, so check it from the shell you will
+`npu backend serve` looks `command` up on `PATH` the way a shell does, so check it from the shell you will
 run `npu` in:
 
 ```sh
@@ -72,7 +72,7 @@ command -v llama-server
 llama-server --version
 ```
 
-If `command -v` prints nothing, `npu serve` fails in the same way (see
+If `command -v` prints nothing, `npu backend serve` fails in the same way (see
 [Troubleshooting](#troubleshooting)). A `llama-server` installed somewhere else can be named by
 its absolute path in `command`.
 
@@ -125,7 +125,7 @@ What each line is for:
   `llama-server` answer under that same name.
 - `--n-gpu-layers 99` offloads every layer to the GPU. Any number at least as large as the model's
   layer count means "all of them".
-- `startup_timeout_secs` is how long `npu serve` waits for the port to answer. Loading a large
+- `startup_timeout_secs` is how long `npu backend serve` waits for the port to answer. Loading a large
   model from disk takes a while, and 30 seconds (the default) can be too short.
 
 Every key is described in
@@ -133,7 +133,7 @@ Every key is described in
 
 ---
 
-## 4. `npu serve`, `status`, `stop`
+## 4. `npu backend serve`, `status`, `stop`
 
 The blocks below were captured by running the binary. Pids differ from run to run, and so do the
 OS error numbers: macOS reports "connection refused" as `os error 61`.
@@ -141,14 +141,14 @@ OS error numbers: macOS reports "connection refused" as `os error 61`.
 `serve` returns only once the server answers on its port, and prints its pid:
 
 ```console
-$ npu serve qwen-local
+$ npu backend serve qwen-local
 1269338
 ```
 
 `status` lists every backend that declares a runtime:
 
 ```console
-$ npu status
+$ npu backend status
 BACKEND   RUNTIME  INSTANCE  URL                    STATE
 llamacpp  process  1269338   http://127.0.0.1:8080  running
 ```
@@ -156,23 +156,23 @@ llamacpp  process  1269338   http://127.0.0.1:8080  running
 A second `serve` refuses to start a second server beside the first one (exit `3`):
 
 ```console
-$ npu serve qwen-local
-backend error: backend "llamacpp" is already served by process 1269338 — `npu status` to see it, `npu stop qwen-local` to end it
+$ npu backend serve qwen-local
+backend error: backend "llamacpp" is already served by process 1269338 — `npu backend status` to see it, `npu backend stop qwen-local` to end it
 ```
 
 `stop` sends `SIGTERM`, then `SIGKILL` if the server does not exit in time, and prints the backend
 id. It is idempotent: stopping a backend that is not running still succeeds.
 
 ```console
-$ npu stop qwen-local
+$ npu backend stop qwen-local
 llamacpp
 ```
 
-`npu logs qwen-local` prints what the server wrote on both streams (`-f` follows it). Its startup
+`npu backend logs qwen-local` prints what the server wrote on both streams (`-f` follows it). Its startup
 lines are the quickest way to confirm that Metal was actually used:
 
 ```sh
-npu logs qwen-local | grep -i -e metal -e offloaded
+npu backend logs qwen-local | grep -i -e metal -e offloaded
 ```
 
 The record and the log live in `$HOME/Library/Application Support/npu/state/`. See
@@ -219,7 +219,7 @@ does not prove that the model answers well.
 and `serve` refuses with exit `3`:
 
 ```console
-$ npu serve qwen-local
+$ npu backend serve qwen-local
 backend error: backend "llamacpp": command "llama-server" not found (an absolute or relative path is used as-is, a bare name is looked up on PATH)
 ```
 
@@ -229,7 +229,7 @@ Apple Silicon is `/opt/homebrew/bin`, and a service manager does not load your s
 **The port is taken.** `serve` checks before spawning anything:
 
 ```console
-$ npu serve qwen-local
+$ npu backend serve qwen-local
 backend error: backend "llamacpp": port 8080 is already in use by something else — change its "port" key, or stop what is listening on it
 ```
 
@@ -237,14 +237,14 @@ Change `port` in the backend file. `base_url` and `--port` follow on their own.
 
 **The server exits during startup.** This happens with a missing model file, an unsupported GGUF,
 or not enough memory. `serve` fails with exit `3`, naming the executable, its exit status and the
-log file it kept. The server's own explanation is in that file: `npu logs qwen-local`.
+log file it kept. The server's own explanation is in that file: `npu backend logs qwen-local`.
 
 **`serve` times out while the model is still loading.** Raise `startup_timeout_secs`.
 
-**The server dies when the terminal closes.** It is a child of the shell `npu serve` ran in, not
-a detached daemon. Run `npu serve` from something that outlives the terminal (`nohup`, `tmux`, a
+**The server dies when the terminal closes.** It is a child of the shell `npu backend serve` ran in, not
+a detached daemon. Run `npu backend serve` from something that outlives the terminal (`nohup`, `tmux`, a
 `launchd` agent) if the server has to stay up.
 
-**`npu stop` succeeded but the port is still held.** `command` is a wrapper script that does not
+**`npu backend stop` succeeded but the port is still held.** `command` is a wrapper script that does not
 end with `exec`. `npu` signalled the wrapper, and the real server survived. End the script with
 `exec llama-server …`.

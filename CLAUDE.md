@@ -69,9 +69,22 @@ may ever add or remove a byte on stdout.
 
 ## Built-ins and the container lifecycle
 
-Seven built-ins, all listed in `builtin::RESERVED` (a command file whose first
-path segment matches one is rejected at load time): `doctor`, `models`,
-`describe`, and the lifecycle — `serve`, `stop`, `status`, `logs`.
+The built-ins live under five names, all listed in `builtin::RESERVED` with
+`help` (a command file whose first path segment matches one is rejected at
+load time): the `backend` group — the lifecycle, `serve`, `stop`, `status`,
+`logs` —, the `config` group — `check`, `models` —, `doctor` (the same
+command as `config check`, kept at the top level), `describe` and `update`;
+the version is the root `--version` flag. Every other name belongs to the
+user's commands: do not add a top-level built-in, grow a group instead.
+
+`npu --help` shows the configured commands and the built-ins in two
+sections through a `help_template` (`lib.rs::sectioned_help`): `clap` has
+no per-subcommand heading, so the built-ins are HIDDEN from its list and
+rendered by hand — they parse as before. The `help` subcommand is disabled.
+
+`describe` resolves built-ins first, from the `clap` tree `add_builtins`
+builds — the single declaration of a built-in, so its description cannot
+drift — then configured commands.
 
 A backend declares how it is started by the optional TAGGED `[runtime]`
 table (`type = "docker"`), deserialized into `config::Runtime`. The untagged
@@ -88,7 +101,7 @@ The lifecycle drives Docker, which is an **optional** prerequisite. The core
 knows the shape of a `docker run` invocation and nothing else: image, options
 and arguments come from the backend's `[runtime]` table, so changing image,
 ports or accelerator is a configuration change, never a rebuild. The
-container is named `npu-<backend-id>`, which is how `stop`/`status`/`logs`
+container is named `npu-<backend-id>`, which is how `backend stop`/`status`/`logs`
 find it again.
 
 `builtin.rs` is ORCHESTRATION: it resolves model and backend, `match`es on
@@ -142,7 +155,7 @@ unwrap_used = "warn"
 
 ## Dependencies
 
-Ten, deliberately: `clap` (builder API, not derive — the command tree is
+Eleven, deliberately: `clap` (builder API, not derive — the command tree is
 built at runtime from a directory scan), `serde`, `serde_json`, `toml`,
 `ureq` (blocking, rustls — chosen over `reqwest`, which drags in tokio),
 `jsonschema` with `default-features = false` (its defaults pull `reqwest`
@@ -154,7 +167,12 @@ back in via `resolve-http`), the three `npu update` brought in:
 process-runtime family needs process identity (`start_time`, `exe`) and
 signalling (`kill_with`) through a wholly SAFE API, which
 `unsafe_code = "forbid"` makes non-negotiable; the four unused default
-features would also drag `rayon` in via `multithread`.
+features would also drag `rayon` in via `multithread`, and `indicatif`
+with `default-features = false` — spinners and progress bars, wrapped by
+`progress.rs`, which is the only module allowed to draw: stderr only, only
+when stderr is a terminal and the level is above `error`, cleared on drop.
+It cost 136 400 bytes on the release binary (8 540 480 -> 8 676 880) and
+four crates (108 -> 112).
 
 Adding one is a measured decision: check the binary size and the crate count
 before and after, and record the numbers.

@@ -107,7 +107,7 @@ path = "/v3/chat/completions"
 | `base_url` | yes | joined with an operation's `path`; a trailing `/` is handled either way |
 | `port` | no | the listening port, declared once and read as `{{ backend.port }}` — see below |
 | `[operations.<name>]` | at least one | `method` and `path` |
-| `[runtime]` | no | how `npu serve` starts this backend — see below |
+| `[runtime]` | no | how `npu backend serve` starts this backend — see below |
 
 Unknown keys are rejected, with the file and line. A `type` other than `"openai-compatible"` and
 a `method` other than `POST` are both rejected at load time rather than silently ignored.
@@ -161,16 +161,16 @@ write the answer down in.
 > otherwise), and it requires `base_url` to read `{{ backend.port }}` (the allocated port would be
 > unreachable otherwise).
 
-The port changes on each `npu serve`. `npu status` prints the resolved URL, and a backend that is
+The port changes on each `npu backend serve`. `npu backend status` prints the resolved URL, and a backend that is
 not started reports `-` there rather than failing the report.
 
 ### When a fixed port is already taken
 
-`npu serve` checks before starting anything and stops with exit `3`, naming the backend and the
+`npu backend serve` checks before starting anything and stops with exit `3`, naming the backend and the
 port:
 
 ```console
-$ npu serve m
+$ npu backend serve m
 backend error: backend "probe": port 8001 is already in use by something else — change its "port" key, stop what is listening on it, or use port = "auto" to let Docker allocate one
 ```
 
@@ -183,8 +183,8 @@ identical and only one of them is about the port — a container holds its own p
 user to edit a `port` key that is perfectly correct is the wrong repair:
 
 ```console
-$ npu serve qwen3-8b
-backend error: backend "ovms" is already served by container "npu-ovms" — `npu status` to see it, `npu stop qwen3-8b` to remove it
+$ npu backend serve qwen3-8b
+backend error: backend "ovms" is already served by container "npu-ovms" — `npu backend status` to see it, `npu backend stop qwen3-8b` to remove it
 ```
 
 ### `[timeouts]` (optional)
@@ -208,7 +208,7 @@ A backend may declare how to start its own runtime, in a `[runtime]` table whose
 keys, and a key belonging to the other one is rejected by name — the table is tagged precisely so
 that `npu` never has to guess which shape it is looking at.
 
-`npu serve <model>` then runs it, and the family's prerequisite — Docker here — becomes an
+`npu backend serve <model>` then runs it, and the family's prerequisite — Docker here — becomes an
 **optional** one: nothing changes for a configuration without this table.
 
 ```toml
@@ -255,7 +255,7 @@ Every entry goes through the same templating as a prompt:
 - `{{ args.model }}` — the `model` field of the model being served. It is the only argument
   available here; any other name is rejected at load time, naming the file.
 - `{{ env.NAME }}` — an environment variable, required to be defined at `serve` time.
-- `{{ input }}` — rejected: `npu serve` reads no input.
+- `{{ input }}` — rejected: `npu backend serve` reads no input.
 
 Declaring a Docker runtime also constrains the backend's `id`, which becomes the container name: ASCII
 letters, digits, `_`, `.` and `-`, starting with a letter or a digit. An `id` outside that set is
@@ -264,7 +264,7 @@ rejected — with its file named — rather than mangled into something Docker a
 > [!WARNING]
 > Scope replacement is per **whole backend**, never field by field. A project scope that redefines
 > `base_url` for `ovms` replaces the user scope's `ovms` entirely, `[runtime]` included. Repeat
-> the table in the local file, or `npu serve` will report that the backend declares none.
+> the table in the local file, or `npu backend serve` will report that the backend declares none.
 
 For OpenVINO Model Server specifically: the `-gpu` image tag is the one to use for accelerators
 (there is no NPU-only image; that tag carries both plugins), with `--device /dev/dri` and
@@ -282,7 +282,7 @@ what lets several small models run at once.
 
 The other runtime family starts a server **directly on this machine**, with no container and no
 daemon: `llama.cpp`'s `llama-server`, an MLX server, a shell script of your own. Same table, same
-`npu serve` / `stop` / `status` / `logs`, different `type`.
+`npu backend serve` / `stop` / `status` / `logs`, different `type`.
 
 ```toml
 # .npu/backends/llamacpp.toml, continued
@@ -311,7 +311,7 @@ LLAMA_CACHE = "{{ env.HOME }}/.cache/llama.cpp"
 `arguments` is a list of separate entries, never one string to be split: a model path containing a
 space would otherwise become two arguments, and there is no shell here to blame it on. Entries go
 through the same templating as a Docker runtime's — `{{ args.model }}`, `{{ env.NAME }}`,
-`{{ backend.port }}` — with `{{ input }}` rejected, since `npu serve` reads no input.
+`{{ backend.port }}` — with `{{ input }}` rejected, since `npu backend serve` reads no input.
 
 `command` is templated too — `{{ args.model }}` and `{{ env.NAME }}`, so a server living under a
 path only the environment knows can be named — but **not** `{{ backend.port }}`: an executable
@@ -322,14 +322,14 @@ binary would tell its reader to install `{{ env.LLAMA_BIN }}`.
 
 The lookup requires an **executable** file. A regular file with no execute bit is skipped and the
 `PATH` scan continues, exactly as a shell does — so a non-executable leftover early on `PATH`
-cannot shadow the real server, nor make `npu doctor` green about a command `npu serve` then
+cannot shadow the real server, nor make `npu doctor` green about a command `npu backend serve` then
 refuses to spawn.
 
 `[runtime.env]` is an **overlay**, not a replacement: the child inherits `npu`'s own environment
 and these values are layered on top. A server needing `HOME`, `PATH` or a proxy setting therefore
 does not have to redeclare them to gain one variable.
 
-`startup_timeout_secs` is what `npu serve` waits, having spawned the server, for it to answer on
+`startup_timeout_secs` is what `npu backend serve` waits, having spawned the server, for it to answer on
 its `base_url` — so a `base_url` this family cannot parse into a host and a port is rejected at
 load time naming the file: a probe that can never succeed would burn the whole budget and then
 terminate a perfectly working server, blaming a timeout key that was correct. The budget's failure
@@ -360,7 +360,7 @@ outside `npu`.
 ### What `npu` remembers
 
 Docker is its own registry, so a Docker runtime needs nothing persisted. A process has no
-registry: `npu serve` therefore writes a small JSON record, plus a `.log` file it redirects the
+registry: `npu backend serve` therefore writes a small JSON record, plus a `.log` file it redirects the
 server's **two** streams into. `stop` deletes the record; `logs` reads the file. Both are named
 `<backend id>-<digest>`, the digest being the first eight hex characters of the SHA-256 of the
 backend **file** the runtime was declared in. They live in `$XDG_STATE_HOME/npu/`, or
@@ -371,7 +371,7 @@ depending on which shell exported what.
 
 That directory is **machine-global** while backend identifiers are per-scope, which is what the
 digest is for: two projects each declaring `llamacpp` in their own `./.npu` get two records, two
-logs and two servers, and neither one's `npu stop` or `npu logs` can reach the other's.
+logs and two servers, and neither one's `npu backend stop` or `npu backend logs` can reach the other's.
 
 The record **also** holds the backend file it was served from, and that is not a duplicate of the
 digest. Eight hex characters are 32 bits, so two backend files can meet on one name; the full path
@@ -381,7 +381,7 @@ and `stop` both refuse, naming both files. Once nothing is behind that pid the r
 nothing, and the next `serve` simply forgets it.
 
 The record holds the pid and the moment the system says that pid was born. That **pair** is the
-identity check, and it is what keeps `npu stop` from killing an innocent process: a pid alone can,
+identity check, and it is what keeps `npu backend stop` from killing an innocent process: a pid alone can,
 after a reboot or enough process churn, name somebody else's. A record whose pid was recycled is
 reported as `stale state` and forgotten — never signalled. The birth is an epoch **second**, which
 is the resolution of the check: two processes sharing a pid and born inside the same second are
@@ -396,21 +396,21 @@ would declare `npu`'s own child an impostor.
 
 Changing a served backend's `[runtime]` family — or removing the table — leaves that record
 unreachable: `stop`, `status` and `logs` dispatch on what the files say **today**, and a backend
-that now declares Docker is asked about a container. Run `npu stop` before changing the family.
+that now declares Docker is asked about a container. Run `npu backend stop` before changing the family.
 The record is plain JSON and holds the pid, so a forgotten one is still recoverable by hand.
 
 > [!WARNING]
-> The spawned server is a plain child of the shell `npu serve` ran in. It is **not** detached into
+> The spawned server is a plain child of the shell `npu backend serve` ran in. It is **not** detached into
 > its own session, so a terminal hang-up takes it down with everything else in that session. Run
-> `npu serve` from a session that outlives it (a service manager, `nohup`, a multiplexer) if the
+> `npu backend serve` from a session that outlives it (a service manager, `nohup`, a multiplexer) if the
 > server is meant to stay up.
 
 > [!WARNING]
 > `npu` signals the process it spawned, and only that one. A `command` whose process **is** the
 > server — a binary, or a launcher ending on `exec` — is stopped correctly. A launcher that forks
 > and waits instead (`sh -c "server | tee log"`, `conda run`, anything that does not `exec`) has
-> its wrapper signalled while the real server survives: `npu stop` reports success and deletes the
-> record, a failed `npu serve` terminates the wrapper and abandons the rest, and the orphan keeps
+> its wrapper signalled while the real server survives: `npu backend stop` reports success and deletes the
+> record, a failed `npu backend serve` terminates the wrapper and abandons the rest, and the orphan keeps
 > the port while every `npu` command reports the backend as never started. There is no process
 > group to signal instead without `unsafe`, so end your launcher on `exec`.
 
@@ -477,7 +477,7 @@ Three properties worth knowing:
   is a configuration error (exit `2`) naming the file — not a surprise on the day the recovery is
   actually needed.
 
-When both fail, the error names both models and both backends. `npu models` shows the `FALLBACK`
+When both fail, the error names both models and both backends. `npu config models` shows the `FALLBACK`
 column so the routing is never invisible.
 
 > [!IMPORTANT]
