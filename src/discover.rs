@@ -48,6 +48,158 @@ pub struct Query {
     pub engine: Option<Engine>,
     pub npu: bool,
     pub hf_token: Option<String>,
+    /// Applied in order, each key breaking the ties of the previous one;
+    /// empty keeps the Hub's order (downloads, descending).
+    pub sort: Vec<SortKey>,
+}
+
+/// A column of the report `--sort` can order by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Column {
+    Model,
+    Type,
+    Params,
+    Mem,
+    License,
+    Downloads,
+    Score,
+    Fit,
+    On,
+}
+
+impl Column {
+    pub const NAMES: &'static str = "model, type, params, mem, license, downloads, score, fit, on";
+
+    fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "model" => Self::Model,
+            "type" => Self::Type,
+            "params" => Self::Params,
+            "mem" => Self::Mem,
+            "license" => Self::License,
+            "downloads" => Self::Downloads,
+            "score" => Self::Score,
+            "fit" => Self::Fit,
+            "on" => Self::On,
+            _ => return None,
+        })
+    }
+
+    /// Numbers read best largest first, text alphabetically.
+    fn descending_by_default(self) -> bool {
+        matches!(
+            self,
+            Self::Params | Self::Mem | Self::Downloads | Self::Score
+        )
+    }
+}
+
+/// One `--sort` key: a column and a direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SortKey {
+    pub column: Column,
+    pub descending: bool,
+}
+
+/// Parses `--sort`: comma-separated `column[:asc|:desc]`, e.g.
+/// `score:desc,params:asc`. A column without a direction takes its natural
+/// one: descending for numbers, ascending for text.
+///
+/// # Errors
+///
+/// A message naming the unknown column or direction.
+pub fn parse_sort(spec: &str) -> Result<Vec<SortKey>, String> {
+    spec.split(',')
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(|key| {
+            let (name, direction) = key.split_once(':').unwrap_or((key, ""));
+            let column = Column::parse(&name.to_ascii_lowercase())
+                .ok_or_else(|| format!("unknown column \"{name}\" (columns: {})", Column::NAMES))?;
+            let descending = match direction.to_ascii_lowercase().as_str() {
+                "" => column.descending_by_default(),
+                "desc" => true,
+                "asc" => false,
+                other => {
+                    return Err(format!(
+                        "unknown direction \"{other}\" for \"{name}\" (asc or desc)"
+                    ));
+                }
+            };
+            Ok(SortKey { column, descending })
+        })
+        .collect()
+}
+
+/// A survivor's value in `column`, as a number or a text; `None` when the
+/// report shows `-`, which sorts last whatever the direction.
+fn sort_value(s: &Survivor, column: Column) -> Option<Result<f64, String>> {
+    #[allow(clippy::cast_precision_loss)]
+    // ordering only: a rounding never swaps two counts of this size
+    let number = |n: u64| n as f64;
+    let fit = s.fit.as_ref();
+    Some(match column {
+        Column::Model => Err(s.id.to_lowercase()),
+        Column::Type => Err(s.model_type.clone()).filter_dash()?,
+        Column::Params => Ok(number(s.parameters?)),
+        Column::Mem => Ok(fit
+            .map(|f| f.memory_gb)
+            .or(s.estimate.map(|b| number(b) / 1e9))?),
+        Column::License => Err(s.license.to_lowercase()).filter_dash()?,
+        Column::Downloads => Ok(number(s.downloads)),
+        Column::Score => Ok(fit?.score),
+        // Perfect before Good when ascending: the better fit is the smaller rank.
+        Column::Fit => Ok(match fit?.level.as_str() {
+            "Perfect" => 0.0,
+            "Good" => 1.0,
+            _ => 2.0,
+        }),
+        Column::On => Err(fit?.run_mode.clone()),
+    })
+}
+
+trait FilterDash {
+    fn filter_dash(self) -> Option<Result<f64, String>>;
+}
+
+impl FilterDash for Result<f64, String> {
+    fn filter_dash(self) -> Option<Result<f64, String>> {
+        match &self {
+            Err(text) if text == "-" => None,
+            _ => Some(self),
+        }
+    }
+}
+
+/// Stable, so rows equal on every key keep the Hub's (downloads) order.
+fn sort_survivors(found: &mut [Survivor], keys: &[SortKey]) {
+    use std::cmp::Ordering;
+    found.sort_by(|a, b| {
+        for key in keys {
+            let order = match (sort_value(a, key.column), sort_value(b, key.column)) {
+                (None, None) => Ordering::Equal,
+                (None, Some(_)) => Ordering::Greater,
+                (Some(_), None) => Ordering::Less,
+                (Some(x), Some(y)) => {
+                    let natural = match (x, y) {
+                        (Ok(x), Ok(y)) => x.total_cmp(&y),
+                        (Err(x), Err(y)) => x.cmp(&y),
+                        (Ok(_), Err(_)) => Ordering::Less,
+                        (Err(_), Ok(_)) => Ordering::Greater,
+                    };
+                    if key.descending {
+                        natural.reverse()
+                    } else {
+                        natural
+                    }
+                }
+            };
+            if order != Ordering::Equal {
+                return order;
+            }
+        }
+        Ordering::Equal
+    });
 }
 
 /// The inference engine a model must be packaged for.
@@ -565,6 +717,7 @@ pub fn discover(
     }
     let ceiling = world.total_ram / 100 * query.max_memory_percent;
     let mut found = survivors(&hub, query, ceiling, llmfit.as_ref(), openvino.as_ref());
+    sort_survivors(&mut found, &query.sort);
     found.truncate(query.limit);
     if found.is_empty() {
         logger.warn("no candidate passed the filters: try broader words or more --candidates");
@@ -651,6 +804,7 @@ class LlamaConfig(Base):
             max_memory_percent: 50,
             min_score: 60.0,
             engine: None,
+            sort: Vec::new(),
             npu: false,
             hf_token: None,
         }
@@ -829,6 +983,57 @@ class LlamaConfig(Base):
         assert_eq!(compact(12), "12");
         let styled = cell("ab", 5, true, crate::style::OK);
         assert!(styled.contains("   ab"));
+    }
+
+    fn survivor(id: &str, parameters: Option<u64>, score: Option<f64>) -> Survivor {
+        Survivor {
+            id: id.into(),
+            model_type: "qwen3".into(),
+            parameters,
+            estimate: None,
+            license: "mit".into(),
+            downloads: 0,
+            fit: score.map(|score| Fit {
+                score,
+                level: "Perfect".into(),
+                memory_gb: 1.0,
+                run_mode: "GPU".into(),
+                use_case: "-".into(),
+            }),
+        }
+    }
+
+    #[test]
+    fn sort_keys_parse_with_natural_or_explicit_directions() {
+        let keys = parse_sort("score, params:asc,model:DESC").unwrap_or_default();
+        let parsed: Vec<(Column, bool)> = keys.iter().map(|k| (k.column, k.descending)).collect();
+        assert_eq!(
+            parsed,
+            [
+                (Column::Score, true),
+                (Column::Params, false),
+                (Column::Model, true)
+            ]
+        );
+        assert!(parse_sort("speed").is_err());
+        assert!(parse_sort("score:up").is_err());
+    }
+
+    #[test]
+    fn several_keys_break_ties_in_order_and_missing_values_go_last() {
+        let mut found = vec![
+            survivor("c", Some(1), None),
+            survivor("a", Some(8), Some(70.0)),
+            survivor("b", Some(4), Some(70.0)),
+            survivor("d", None, Some(90.0)),
+        ];
+        sort_survivors(
+            &mut found,
+            &parse_sort("score,params:asc").unwrap_or_default(),
+        );
+        assert_eq!(ids(&found), ["d", "b", "a", "c"]);
+        sort_survivors(&mut found, &parse_sort("params:asc").unwrap_or_default());
+        assert_eq!(ids(&found), ["c", "b", "a", "d"]);
     }
 
     #[test]

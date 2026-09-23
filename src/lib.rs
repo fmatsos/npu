@@ -203,6 +203,10 @@ fn model_discover(
         ),
         engine,
         npu,
+        sort: leaf_matches
+            .get_one::<Vec<discover::SortKey>>("sort")
+            .cloned()
+            .unwrap_or_default(),
         hf_token: std::env::var("HF_TOKEN").ok().filter(|t| !t.is_empty()),
     };
     let mut system = sysinfo::System::new();
@@ -307,6 +311,16 @@ fn discover_command() -> clap::Command {
                 .default_value("60")
                 .value_parser(clap::value_parser!(u8).range(0..=100))
                 .help("Lowest llmfit score kept, out of 100"),
+        )
+        .arg(
+            clap::Arg::new("sort")
+                .long("sort")
+                .value_name("COLUMN[:asc|desc],...")
+                .value_parser(|v: &str| discover::parse_sort(v))
+                .help(
+                    "Order by one or more columns (model, type, params, mem, license, downloads, \
+                     score, fit, on); numbers default to desc, text to asc [default: downloads]",
+                ),
         )
         .arg(
             clap::Arg::new("backend")

@@ -408,15 +408,16 @@ Arguments:
   [QUERY]...  Words to search for (e.g. "qwen coder"); none lists the most downloaded
 
 Options:
-      --task <TASK>           Hugging Face task the model must serve [default: text-generation]
-  -v, --verbose <LEVEL>       Diagnostic verbosity on stderr; stdout always carries the result only [default: warn] [possible values: error, warn, info]
-  -n, --limit <N>             Most models listed [default: 20]
-      --candidates <N>        Hugging Face results examined before filtering [default: 100]
-      --max-memory <PERCENT>  Share of the total RAM one model's INT4 weights may take, in percent, for the models llmfit does not size [default: 50]
-      --min-score <SCORE>     Lowest llmfit score kept, out of 100 [default: 60]
-      --backend <ENGINE|ID>   Only models packaged for this engine (openvino, llamacpp, mlx), or for the engine a configured backend runs
-      --npu                   --backend openvino, on a host that has an Intel NPU
-  -h, --help                  Print help
+      --task <TASK>                   Hugging Face task the model must serve [default: text-generation]
+  -v, --verbose <LEVEL>               Diagnostic verbosity on stderr; stdout always carries the result only [default: warn] [possible values: error, warn, info]
+  -n, --limit <N>                     Most models listed [default: 20]
+      --candidates <N>                Hugging Face results examined before filtering [default: 100]
+      --max-memory <PERCENT>          Share of the total RAM one model's INT4 weights may take, in percent, for the models llmfit does not size [default: 50]
+      --min-score <SCORE>             Lowest llmfit score kept, out of 100 [default: 60]
+      --sort <COLUMN[:asc|desc],...>  Order by one or more columns (model, type, params, mem, license, downloads, score, fit, on); numbers default to desc, text to asc [default: downloads]
+      --backend <ENGINE|ID>           Only models packaged for this engine (openvino, llamacpp, mlx), or for the engine a configured backend runs
+      --npu                           --backend openvino, on a host that has an Intel NPU
+  -h, --help                          Print help
 ```
 
 By default, the only filter is that the model runs well on this machine. This is decided by
@@ -444,7 +445,17 @@ configuration error (`2`) naming it, and so is a name that is neither an engine 
 before any request with exit `3`. It cannot be combined with another `--backend`.
 
 A candidate that fails a filter is left out, never listed with a caveat. The report is the
-result: stdout, sorted by downloads. The `mem GB` column is llmfit's figure when it sized the
+result, on stdout, sorted by downloads unless `--sort` says otherwise. `--sort` takes one or more
+comma-separated `column[:asc|desc]` keys, applied in order, each breaking the ties of the previous
+one. A number column (`params`, `mem`, `downloads`, `score`) defaults to `desc`, and a text column
+to `asc`. `fit` ranks `Perfect` before `Good`. A value shown as `-` always sorts last, and rows
+equal on every key keep the downloads order. The sort runs over every model that passed the
+filters, before `-n` keeps the first ones:
+
+```sh
+npu model discover qwen3 --sort score              # best score first
+npu model discover qwen3 --sort fit,params:asc     # Perfect fits, smallest first
+``` The `mem GB` column is llmfit's figure when it sized the
 model, and `~` marks the INT4 estimate otherwise. The `score`, `fit`, `on` and `use case` columns
 appear only with llmfit. On a terminal the report is coloured: model ids stand out, a `~` estimate
 and a non-permissive licence are yellow, and a `Perfect` fit and a score of 75 or more are green.
