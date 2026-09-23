@@ -1010,7 +1010,7 @@ pub fn run() -> Result<i32> {
     // Needs no configuration: it looks at the host and at Hugging Face.
     if route == ["model", "discover"] {
         let config = loaded.as_ref().map(|(config, _)| config);
-        println!("{}", model_discover(leaf_matches, config, logger)?);
+        anstream::println!("{}", model_discover(leaf_matches, config, logger)?);
         return Ok(0);
     }
 

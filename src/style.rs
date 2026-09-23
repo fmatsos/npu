@@ -5,7 +5,8 @@
 //! `CLICOLOR_FORCE`: through a pipe, stdout and stderr are byte for byte
 //! what they were without colours, which is what keeps the stdout contract.
 
-use clap::builder::styling::{AnsiColor, Style};
+use clap::builder::styling::AnsiColor;
+pub use clap::builder::styling::Style;
 
 pub const ERROR: Style = AnsiColor::Red.on_default().bold();
 pub const WARN: Style = AnsiColor::Yellow.on_default().bold();
@@ -18,6 +19,8 @@ pub const LITERAL: Style = AnsiColor::Cyan.on_default().bold();
 /// mark carries a hue.
 pub const ANSWER_MARK: Style = AnsiColor::Cyan.on_default().bold();
 pub const ANSWER_HEADER: Style = Style::new().bold();
+/// A figure `npu` estimated rather than measured, or a point to check.
+pub const ESTIMATE: Style = AnsiColor::Yellow.on_default();
 pub const PLACEHOLDER: Style = AnsiColor::Cyan.on_default();
 
 /// `text` wrapped in `style`, for a stream written through `anstream`.

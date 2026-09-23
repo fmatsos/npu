@@ -386,49 +386,130 @@ fn billions(parameters: u64) -> String {
     format!("{}.{}B", tenths / 10, tenths % 10)
 }
 
+/// `12_450_427` -> `"12.5M"`, `785_474` -> `"785k"`.
+fn compact(count: u64) -> String {
+    match count {
+        1_000_000.. => format!("{}.{}M", count / 1_000_000, count / 100_000 % 10),
+        1_000.. => format!("{}k", count / 1_000),
+        _ => count.to_string(),
+    }
+}
+
+/// `text` padded to `width` (right-aligned when `right`), THEN styled: the
+/// escape sequences never count toward the width, so the columns line up
+/// with and without colours.
+fn cell(text: &str, width: usize, right: bool, style: crate::style::Style) -> String {
+    let padded = if right {
+        format!("{text:>width$}")
+    } else {
+        format!("{text:width$}")
+    };
+    crate::style::paint(style, &padded)
+}
+
+fn is_permissive(license: &str) -> bool {
+    ["apache", "mit", "bsd", "cc0", "unlicense"]
+        .iter()
+        .any(|l| license.to_ascii_lowercase().starts_with(l))
+}
+
+/// The report, coloured for a terminal: `anstream` strips every escape
+/// sequence when stdout is not one, leaving the plain aligned table.
 fn format_report(found: &[Survivor], with_llmfit: bool) -> String {
+    use crate::style::{self, Style};
+    let plain = Style::new();
     let width = found
         .iter()
         .map(|s| s.id.chars().count())
         .max()
         .unwrap_or(0)
         .max(5);
-    let mut report = format!(
-        "{:width$} {:14} {:>7} {:>7} {:14} {:>11}",
-        "model", "type", "params", "mem GB", "license", "downloads"
-    );
+    let header = |text: &str, w: usize, right: bool| cell(text, w, right, style::HEADER);
+    let mut report = [
+        header("model", width, false),
+        header("type", 14, false),
+        header("params", 7, true),
+        header("mem GB", 7, true),
+        header("license", 14, false),
+        header("downloads", 9, true),
+    ]
+    .join(" ");
     if with_llmfit {
-        let _ = write!(report, " {:>6} {:8} {:4}  use case", "score", "fit", "on");
+        let _ = write!(
+            report,
+            " {} {} {}  {}",
+            header("score", 5, true),
+            header("fit", 7, false),
+            header("on", 3, false),
+            header("use case", 0, false)
+        );
     }
     for s in found {
-        // llmfit's memory when it knows the model, the INT4 estimate otherwise.
+        // llmfit's memory when it knows the model, the INT4 estimate (`~`,
+        // in the warning colour) otherwise.
         let memory = match (&s.fit, s.estimate) {
-            (Some(f), _) => format!("{:.1}", f.memory_gb),
-            (None, Some(b)) => {
-                format!("~{}.{}", b / 1_000_000_000, b / 100_000_000 % 10)
-            }
-            (None, None) => "-".to_string(),
+            (Some(f), _) => cell(&format!("{:.1}", f.memory_gb), 7, true, plain),
+            (None, Some(b)) => cell(
+                &format!("~{}.{}", b / 1_000_000_000, b / 100_000_000 % 10),
+                7,
+                true,
+                style::ESTIMATE,
+            ),
+            (None, None) => cell("-", 7, true, plain),
+        };
+        let license = if is_permissive(&s.license) {
+            plain
+        } else {
+            style::ESTIMATE
         };
         let _ = write!(
             report,
-            "\n{:width$} {:14} {:>7} {:>7} {:14} {:>11}",
-            s.id,
-            s.model_type,
-            s.parameters.map_or_else(|| "-".to_string(), billions),
+            "\n{} {} {} {} {} {}",
+            cell(&s.id, width, false, style::LITERAL),
+            cell(&s.model_type, 14, false, plain),
+            cell(
+                &s.parameters.map_or_else(|| "-".to_string(), billions),
+                7,
+                true,
+                plain
+            ),
             memory,
-            s.license,
-            s.downloads
+            cell(&s.license, 14, false, license),
+            cell(&compact(s.downloads), 9, true, plain),
         );
         if with_llmfit {
             match &s.fit {
                 Some(f) => {
+                    let level = if f.level == "Perfect" {
+                        style::OK
+                    } else {
+                        style::ESTIMATE
+                    };
                     let _ = write!(
                         report,
-                        " {:>6.1} {:8} {:4}  {}",
-                        f.score, f.level, f.run_mode, f.use_case
+                        " {} {} {}  {}",
+                        cell(
+                            &format!("{:.1}", f.score),
+                            5,
+                            true,
+                            // ponytail: 75 is llmfit's upper quartile on this
+                            // host; a relative threshold if it ever drifts.
+                            if f.score >= 75.0 { style::OK } else { plain },
+                        ),
+                        cell(&f.level, 7, false, level),
+                        cell(&f.run_mode, 3, false, plain),
+                        f.use_case
                     );
                 }
-                None => report.push_str("      - -        -     -"),
+                None => {
+                    let _ = write!(
+                        report,
+                        " {} {} {}  -",
+                        cell("-", 5, true, plain),
+                        cell("-", 7, false, plain),
+                        cell("-", 3, false, plain)
+                    );
+                }
             }
         }
     }
@@ -739,6 +820,15 @@ class LlamaConfig(Base):
         )
         .err();
         assert!(matches!(err, Some(crate::Error::Backend(_))));
+    }
+
+    #[test]
+    fn counts_read_compactly_and_colours_never_shift_columns() {
+        assert_eq!(compact(12_450_427), "12.4M");
+        assert_eq!(compact(785_474), "785k");
+        assert_eq!(compact(12), "12");
+        let styled = cell("ab", 5, true, crate::style::OK);
+        assert!(styled.contains("   ab"));
     }
 
     #[test]

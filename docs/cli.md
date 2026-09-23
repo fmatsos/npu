@@ -446,15 +446,17 @@ before any request with exit `3`. It cannot be combined with another `--backend`
 A candidate that fails a filter is left out, never listed with a caveat. The report is the
 result: stdout, sorted by downloads. The `mem GB` column is llmfit's figure when it sized the
 model, and `~` marks the INT4 estimate otherwise. The `score`, `fit`, `on` and `use case` columns
-appear only with llmfit.
+appear only with llmfit. On a terminal the report is coloured: model ids stand out, a `~` estimate
+and a non-permissive licence are yellow, and a `Perfect` fit and a score of 75 or more are green.
+Through a pipe the table is plain.
 
 ```console
 $ npu model discover qwen3 instruct -n 4
-model                                          type            params  mem GB license          downloads  score fit      on    use case
-Qwen/Qwen3-4B-Instruct-2507                    qwen3             4.0B     5.8 apache-2.0         3963193   72.3 Perfect  GPU   Instruction following, chat
-Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8          qwen3_moe        30.5B    15.6 apache-2.0         1150065   80.8 Perfect  GPU   Code generation and completion
-QuantTrio/Qwen3-VL-30B-A3B-Instruct-AWQ        qwen3_vl_moe     31.1B   ~18.6 apache-2.0         1107291      - -        -     -
-cyankiwi/Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit qwen3_moe         5.3B    ~3.1 apache-2.0          970477      - -        -     -
+model                                     type            params  mem GB license        downloads score fit     on   use case
+unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF -                    -    15.6 apache-2.0         12.4M  80.8 Perfect GPU  Code generation and completion
+Qwen/Qwen3-4B-Instruct-2507               qwen3             4.0B     5.8 apache-2.0          3.9M  72.3 Perfect GPU  Instruction following, chat
+Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8     qwen3_moe        30.5B    15.6 apache-2.0          1.1M  80.8 Perfect GPU  Code generation and completion
+QuantTrio/Qwen3-VL-30B-A3B-Instruct-AWQ   qwen3_vl_moe     31.1B   ~18.6 apache-2.0          1.1M     - -       -    -
 ```
 
 A Hub or registry that cannot be reached fails with exit `3`, naming the URL. This list answers
