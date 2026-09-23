@@ -13,8 +13,11 @@ pub const INFO: Style = AnsiColor::Cyan.on_default();
 pub const OK: Style = AnsiColor::Green.on_default().bold();
 pub const HEADER: Style = AnsiColor::Green.on_default().bold();
 pub const LITERAL: Style = AnsiColor::Cyan.on_default().bold();
-pub const ANSWER_MARK: Style = AnsiColor::Magenta.on_default().bold();
-pub const ANSWER_HEADER: Style = AnsiColor::Magenta.on_default().dimmed();
+/// The answer's header: bold in the terminal's OWN foreground, the one
+/// colour guaranteed readable on a dark and a light theme alike; only the
+/// mark carries a hue.
+pub const ANSWER_MARK: Style = AnsiColor::Cyan.on_default().bold();
+pub const ANSWER_HEADER: Style = Style::new().bold();
 pub const PLACEHOLDER: Style = AnsiColor::Cyan.on_default();
 
 /// `text` wrapped in `style`, for a stream written through `anstream`.
