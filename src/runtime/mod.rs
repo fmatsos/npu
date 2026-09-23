@@ -15,6 +15,21 @@
 use std::time::Duration;
 
 pub mod docker;
+
+/// Exit code of `exe args…`, both streams discarded; `None` when it could not
+/// be started or was killed by a signal.
+#[must_use]
+pub fn exit_code_of(exe: &std::path::Path, args: &[&str]) -> Option<i32> {
+    std::process::Command::new(exe)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?
+        .code()
+}
+
 pub mod process;
 pub mod state;
 

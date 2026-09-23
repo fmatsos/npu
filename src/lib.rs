@@ -517,7 +517,7 @@ pub fn run() -> Result<i32> {
     let loaded: Result<(config::Config, Vec<command::CommandSpec>)> = config::load_scopes(&roots)
         .and_then(|config| command::discover_scopes(&roots).map(|specs| (config, specs)));
 
-    if let Err(err) = &loaded {
+    if let (Err(err), false) = (&loaded, skips_config()) {
         // MUST precede `cli.get_matches()`: see this function's doc. Never
         // on stdout (contract rule: stdout is reserved for the result) —
         // this line is an ENGINE diagnostic, not a command result.
@@ -571,8 +571,7 @@ pub fn run() -> Result<i32> {
     }
 
     if builtin_name == Some("update") {
-        println!("{}", updater::update()?);
-        return Ok(0);
+        return update(logger);
     }
 
     // Any OTHER branch (business command, `models`, the lifecycle commands,
@@ -1174,4 +1173,80 @@ mod tests {
             "a missing required argument must be rejected by clap"
         );
     }
+}
+
+/// `update` and `version` never read the configuration: warning about it
+/// there would blame the user's files for an operation they cannot break.
+fn skips_config() -> bool {
+    matches!(
+        first_positional(std::env::args().skip(1)).as_deref(),
+        Some("update" | "version")
+    )
+}
+
+/// First argument that is neither a flag nor the value of `--verbose`/`-v`,
+/// read from the RAW command line (cf. [`log::level_from_args`]).
+fn first_positional<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
+    let mut expecting_value = false;
+    for arg in args {
+        if expecting_value {
+            expecting_value = false;
+        } else if arg == "--verbose" || arg == "-v" {
+            expecting_value = true;
+        } else if !arg.starts_with('-') {
+            return Some(arg);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod first_positional_tests {
+    use super::first_positional;
+
+    fn first(args: &[&str]) -> Option<String> {
+        first_positional(args.iter().map(ToString::to_string))
+    }
+
+    #[test]
+    fn skips_flags_and_the_verbose_value() {
+        assert_eq!(
+            first(&["--verbose", "info", "update"]).as_deref(),
+            Some("update")
+        );
+        assert_eq!(
+            first(&["-v", "error", "version"]).as_deref(),
+            Some("version")
+        );
+        assert_eq!(
+            first(&["--verbose=info", "update"]).as_deref(),
+            Some("update")
+        );
+        assert_eq!(first(&["--help"]), None);
+    }
+}
+
+/// Runs `npu update`, then asks the NEW binary whether it accepts the
+/// configuration and, if not, points the user at the changelog and the docs.
+fn update(logger: log::Logger) -> Result<i32> {
+    let outcome = updater::update()?;
+    println!("{outcome}");
+    if let updater::Outcome::Updated { current, .. } = &outcome {
+        // The configuration is judged by the binary just installed, not by
+        // this one: a key added in the new release must not look invalid,
+        // and a key it dropped must not look valid. Only a configuration
+        // error (`2`) is reported; the update itself has already succeeded.
+        let rejected = std::env::current_exe()
+            .ok()
+            .and_then(|exe| runtime::exit_code_of(&exe, &["--verbose", "error", "models"]))
+            == Some(Error::Config(String::new()).exit_code());
+        if rejected {
+            logger.warn(&format!(
+                "your configuration is not valid for npu {current}; see the changelog \
+                 (https://github.com/fmatsos/npu/blob/main/CHANGELOG.md) and the documentation \
+                 (https://github.com/fmatsos/npu/tree/main/docs), then run \"npu doctor\""
+            ));
+        }
+    }
+    Ok(0)
 }
