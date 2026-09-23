@@ -4,6 +4,47 @@ Every notable change to `npu`, newest first. Versions follow
 [semantic versioning](https://semver.org); pre-1.0, a breaking change bumps
 the minor.
 
+## [0.4.0] - 2026-09-23
+
+### Added
+
+- `npu describe` describes built-ins as well as configured commands, and takes the path as words
+  (`npu describe backend serve`, `npu describe git review`; `git/review` still works). Every
+  description carries `kind` (`builtin` or `command`); a built-in lists its arguments,
+  subcommands and whether it runs with a broken configuration — which `describe` itself does for
+  built-ins; a configured command adds its resolved `backend`, its `fallback` and its `source`
+  (the file that won and its scope). No existing field changes
+  ([`770867a`](https://github.com/fmatsos/npu/commit/770867add1cc492e8c350d2ad0e9f803073ce9c5))
+- On a terminal, a spinner while a model is waited on (relabelled when the fallback takes over)
+  and while a process backend starts, and a progress bar while `npu update` downloads. Drawn on
+  stderr only, only when stderr is a terminal and `--verbose` is above `error`
+  ([`fd18b97`](https://github.com/fmatsos/npu/commit/fd18b97924d086fd4d5b0948192cced9dd836d22))
+- Colours on a terminal: help and usage errors, the `warn`/`error`/`info` labels, the final error
+  line and `doctor`'s check marks. Through a pipe, or with `NO_COLOR`, output is byte for byte what
+  it was without them
+  ([`c2c04e9`](https://github.com/fmatsos/npu/commit/c2c04e91104e57cbd1897a07665b8c7ce2aec39d))
+
+### Changed
+
+- **Breaking**: the built-ins are grouped. Update scripts as follows:
+
+  | Before | Now |
+  | --- | --- |
+  | `npu serve`, `stop`, `status`, `logs` | `npu backend serve`, `stop`, `status`, `logs` |
+  | `npu models` | `npu config models` |
+  | `npu version` | `npu --version`, which prints `npu X.Y.Z` |
+
+  `npu doctor` is unchanged and also available as `npu config check`. The old names are no longer
+  recognised (exit `2`, nothing on stdout). The reserved command names shrink to `backend`,
+  `config`, `doctor`, `describe`, `update` and `help`: a command file may now be named `serve`,
+  `stop`, `status`, `logs`, `models` or `version`
+  ([`83130e3`](https://github.com/fmatsos/npu/commit/83130e36f3deb907ec865378cdf218ecb4f713aa))
+- `npu --help` lists the configured commands and the built-ins in two separate sections,
+  `Commands:` and `Built-ins:`; `npu help <command>` is listed among the built-ins
+  ([`c556e6e`](https://github.com/fmatsos/npu/commit/c556e6e2b066030d2b3451890aafa71dcdb46684)) ([`c2c04e9`](https://github.com/fmatsos/npu/commit/c2c04e91104e57cbd1897a07665b8c7ce2aec39d))
+
+**Full changelog**: [`v0.3.1...v0.4.0`](https://github.com/fmatsos/npu/compare/v0.3.1...v0.4.0)
+
 ## [0.3.1] - 2026-09-23
 
 ### Fixed
