@@ -1257,6 +1257,7 @@ mod tests {
             model: format!("{id}-underlying"),
             fallback: None,
             generation: crate::config::Generation::default(),
+            source: std::path::PathBuf::new(),
         }
     }
 

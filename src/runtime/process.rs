@@ -1148,6 +1148,7 @@ mod tests {
             model: underlying.to_string(),
             fallback: None,
             generation: crate::config::Generation::default(),
+            source: std::path::PathBuf::new(),
         }
     }
 

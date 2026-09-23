@@ -17,6 +17,7 @@ pub mod prompt;
 pub mod runtime;
 pub mod scope;
 pub mod style;
+pub mod tune;
 pub mod updater;
 
 pub use error::{Error, Result};
@@ -175,7 +176,7 @@ fn add_builtins(cli: clap::Command) -> clap::Command {
     // English.
     let model_arg = |help: &'static str| clap::Arg::new("MODEL").required(true).help(help);
     let backend = clap::Command::new("backend")
-        .about("Manage the runtime of a model's backend: serve, stop, status, logs")
+        .about("Manage the runtime of a model's backend: serve, stop, status, logs, tune")
         .subcommand_required(true)
         .arg_required_else_help(true)
         .subcommand(
@@ -206,6 +207,50 @@ fn add_builtins(cli: clap::Command) -> clap::Command {
                         .short('f')
                         .action(clap::ArgAction::SetTrue)
                         .help("Keep streaming as new lines arrive"),
+                ),
+        )
+        .subcommand(
+            clap::Command::new("tune")
+                .about(
+                    "Size the static context of every NPU-compiled model from the model \
+                     and the host's RAM, and write it (GPU twins are outside the budget)",
+                )
+                .arg(
+                    clap::Arg::new("max-models")
+                        .long("max-models")
+                        .value_name("N|all")
+                        .default_value("all")
+                        .value_parser(|v: &str| -> std::result::Result<usize, String> {
+                            if v == "all" {
+                                return Ok(0);
+                            }
+                            match v.parse::<usize>() {
+                                Ok(n) if n >= 1 => Ok(n),
+                                _ => Err("expected \"all\" or a number of models >= 1".into()),
+                            }
+                        })
+                        .help("How many NPU models run at the same time"),
+                )
+                .arg(
+                    clap::Arg::new("max-memory")
+                        .long("max-memory")
+                        .value_name("PERCENT")
+                        .default_value("50")
+                        .value_parser(clap::value_parser!(u64).range(1..=100))
+                        .help("Share of the total RAM those models get together, in percent"),
+                )
+                .arg(
+                    clap::Arg::new("models-dir")
+                        .long("models-dir")
+                        .value_name("DIR")
+                        .value_parser(clap::value_parser!(std::path::PathBuf))
+                        .help("Directory holding the exports [default: $HOME/models]"),
+                )
+                .arg(
+                    clap::Arg::new("dry-run")
+                        .long("dry-run")
+                        .action(clap::ArgAction::SetTrue)
+                        .help("Print the plan without writing anything"),
                 ),
         );
     let config = clap::Command::new("config")
@@ -240,6 +285,45 @@ fn add_builtins(cli: clap::Command) -> clap::Command {
                         .help("Command whose help is printed (e.g. \"backend serve\")"),
                 ),
         )
+}
+
+/// `npu backend tune`: reads its flags and the host's RAM, then delegates to
+/// [`tune::tune`], whose plan is the result.
+fn backend_tune(
+    config: &config::Config,
+    leaf_matches: &clap::ArgMatches,
+    env: &dyn Fn(&str) -> Option<String>,
+    logger: log::Logger,
+) -> Result<String> {
+    let models_dir = match leaf_matches.get_one::<std::path::PathBuf>("models-dir") {
+        Some(dir) => dir.clone(),
+        None => std::path::PathBuf::from(
+            env("HOME")
+                .ok_or_else(|| Error::Config("HOME is not set: pass --models-dir".to_string()))?,
+        )
+        .join("models"),
+    };
+    let mut system = sysinfo::System::new();
+    system.refresh_memory();
+    let limits = tune::Limits {
+        max_models: leaf_matches
+            .get_one::<usize>("max-models")
+            .copied()
+            .filter(|&n| n > 0),
+        max_memory_percent: leaf_matches
+            .get_one::<u64>("max-memory")
+            .copied()
+            .unwrap_or(50),
+    };
+    let report = tune::tune(
+        config,
+        &models_dir,
+        system.total_memory(),
+        limits,
+        leaf_matches.get_flag("dry-run"),
+        logger,
+    )?;
+    Ok(report)
 }
 
 /// Built-ins that run with a configuration that failed to load: the
@@ -796,6 +880,11 @@ pub fn run() -> Result<i32> {
         return Ok(0);
     }
 
+    if route == ["backend", "tune"] {
+        println!("{}", backend_tune(&config, leaf_matches, &env, logger)?);
+        return Ok(0);
+    }
+
     if route == ["describe"] {
         let key = describe_words(leaf_matches).join("/");
         let spec = find_command(&specs, &key)?;
@@ -891,6 +980,7 @@ mod tests {
             model: format!("{id}-underlying"),
             fallback: fallback.map(ToString::to_string),
             generation: config::Generation::default(),
+            source: std::path::PathBuf::new(),
         }
     }
 

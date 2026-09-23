@@ -18,6 +18,7 @@ never written to a stream that is not a terminal.
 - [`npu backend stop`](#npu-backend-stop)
 - [`npu backend status`](#npu-backend-status)
 - [`npu backend logs`](#npu-backend-logs)
+- [`npu backend tune`](#npu-backend-tune)
 - [`npu describe`](#npu-describe)
 - [`npu --version`](#npu-version)
 - [`npu update`](#npu-update)
@@ -313,6 +314,57 @@ The logs *are* this command's result. Exit codes are `npu backend serve`'s.
 
 ---
 
+## `npu backend tune`
+
+Sizes the static context of every NPU-compiled model from the model and the host, and writes it.
+An OpenVINO NPU graph is compiled for a fixed prompt length plus a fixed answer length: a longer
+prompt is refused, a longer answer is cut. `tune` picks both instead of leaving OVMS's defaults
+(1024 + 128 tokens).
+
+```console
+$ npu backend tune --help
+Size the static context of every NPU-compiled model from the model and the host's RAM, and write it (GPU twins are outside the budget)
+
+Usage: npu backend tune [OPTIONS]
+
+Options:
+      --max-models <N|all>    How many NPU models run at the same time [default: all]
+  -v, --verbose <LEVEL>       Diagnostic verbosity on stderr; stdout always carries the result only [default: warn] [possible values: error, warn, info]
+      --max-memory <PERCENT>  Share of the total RAM those models get together, in percent [default: 50]
+      --models-dir <DIR>      Directory holding the exports [default: $HOME/models]
+      --dry-run               Print the plan without writing anything
+  -h, --help                  Print help
+```
+
+A model is tuned when `<models-dir>/<model>/graph.pbtxt` declares `device: "NPU"`. Its share is
+`--max-memory` percent of the total RAM, minus the weights of the `--max-models` heaviest NPU
+models, divided by `--max-models`. Within that share, the context grows by 1024 tokens up to the
+model's `max_position_embeddings`, and a quarter of it goes to the answer. The memory estimate
+counts the fp16 KV cache and the graph's static buffers, calibrated on a Meteor Lake NPU so that it
+never under-estimates. It prints the plan, which is its result:
+
+```console
+$ npu backend tune
+RAM 65.4 GB x 50% - weights 11.5 GB = 7.0 GB per model (3 of 3 NPU models at once)
+
+model                            model max  KV/token  prompt  answer est. memory
+qwen2.5-coder-7b-instruct            32768      56KB    7680    2560      11.4GB
+qwen3-4b-instruct                   262144     144KB    6912    2304       8.8GB
+qwen3-8b                             40960     144KB    4608    1536      11.3GB
+```
+
+It writes `MAX_PROMPT_LEN` and `MIN_RESPONSE_LEN` at the root of `plugin_config` in each
+`graph.pbtxt`. It also sets `[generation].max_tokens`, to the answer length, in the model file and
+in its `fallback`'s. Nothing is written until every file has been computed. A file is replaced,
+not rewritten, so a `graph.pbtxt` a container created as another user can still be updated. The
+next `npu backend serve` recompiles the graph. GPU twins are **outside the budget**: their context
+is dynamic, but on unified memory a served twin adds its own memory on top of `--max-memory`.
+
+Re-run it after every export, re-export or `--configure`, which reset `graph.pbtxt` to the
+defaults. Also re-run it after adding a model, since each model's share then shrinks. No NPU
+export found is a configuration error (`2`) naming the directory. So is a missing or malformed
+`config.json`, `openvino_model.bin` or `plugin_config`, naming the file.
+
 ## `npu describe`
 
 Prints a JSON description of a command — a configured one or a built-in — useful for humans, and
@@ -479,7 +531,7 @@ Commands:
   none: the configuration failed to load; run "npu doctor"
 
 Built-ins:
-  backend   Manage the runtime of a model's backend: serve, stop, status, logs
+  backend   Manage the runtime of a model's backend: serve, stop, status, logs, tune
   config    Inspect the configuration: check, models
   doctor    Check the runtime environment: configuration, backend reachability, declared output schemas
   describe  Describe a command, built-in or configured, as JSON

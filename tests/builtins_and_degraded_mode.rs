@@ -746,3 +746,89 @@ fn no_colour_reaches_a_pipe() {
         );
     }
 }
+
+// -- `backend tune` ------------------------------------------------------------
+
+/// Writes an NPU export of `qwen-fast-underlying` under `models_dir`: the
+/// three files `backend tune` reads.
+fn write_npu_export(models_dir: &Path) {
+    write(
+        models_dir,
+        "qwen-fast-underlying/graph.pbtxt",
+        "device: \"NPU\",\nplugin_config: '{\"DEVICE_PROPERTIES\":{}}',\n",
+    );
+    write(
+        models_dir,
+        "qwen-fast-underlying/config.json",
+        r#"{"num_hidden_layers": 36, "num_key_value_heads": 8, "num_attention_heads": 32,
+            "hidden_size": 2560, "head_dim": 128, "max_position_embeddings": 40960}"#,
+    );
+    write(models_dir, "qwen-fast-underlying/openvino_model.bin", "w");
+}
+
+#[test]
+fn tune_without_an_npu_export_exits_two_naming_the_directory_with_empty_stdout() {
+    let xdg = fixture_dir("tune-none-xdg");
+    let cwd = fixture_dir("tune-none-cwd");
+    write_healthy_scope(&xdg, "http://127.0.0.1:1");
+    let models = cwd.join("no-models-here");
+
+    let dir = models.to_string_lossy().into_owned();
+    let output = run_npu(&cwd, &xdg, &["backend", "tune", "--models-dir", &dir]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    assert!(output.stdout.is_empty(), "stdout: {}", stdout_of(&output));
+    assert!(stderr_of(&output).contains("no-models-here"));
+}
+
+#[test]
+fn tune_writes_the_graph_and_max_tokens_unless_dry_run() {
+    let xdg = fixture_dir("tune-xdg");
+    let cwd = fixture_dir("tune-cwd");
+    write_healthy_scope(&xdg, "http://127.0.0.1:1");
+    let models = cwd.join("models");
+    write_npu_export(&models);
+    let dir = models.to_string_lossy().into_owned();
+    let graph = models.join("qwen-fast-underlying/graph.pbtxt");
+    let model_file = xdg.join("npu/models/qwen-fast.toml");
+    let before = std::fs::read_to_string(&graph).expect("graph");
+
+    let dry = run_npu(
+        &cwd,
+        &xdg,
+        &["backend", "tune", "--models-dir", &dir, "--dry-run"],
+    );
+    assert_eq!(dry.status.code(), Some(0), "stderr: {}", stderr_of(&dry));
+    assert!(stdout_of(&dry).contains("qwen-fast"));
+    assert_eq!(std::fs::read_to_string(&graph).expect("graph"), before);
+
+    let output = run_npu(
+        &cwd,
+        &xdg,
+        &[
+            "backend",
+            "tune",
+            "--models-dir",
+            &dir,
+            "--max-memory",
+            "10",
+            "--max-models",
+            "1",
+        ],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr_of(&output)
+    );
+    let tuned = std::fs::read_to_string(&graph).expect("graph");
+    assert!(tuned.contains("MAX_PROMPT_LEN") && tuned.contains("MIN_RESPONSE_LEN"));
+    let model = std::fs::read_to_string(&model_file).expect("model");
+    assert!(model.contains("[generation]") && model.contains("max_tokens = "));
+}

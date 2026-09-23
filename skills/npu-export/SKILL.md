@@ -231,21 +231,22 @@ Two coupling facts worth stating when reporting:
 `--configure` compiles the NPU graph for OVMS's DEFAULT static context: 1024 prompt tokens plus
 128 answer tokens. A longer prompt is refused (the `fallback` absorbs it); a longer ANSWER is cut
 mid-way — no fallback helps, and a JSON answer then fails with exit `4`. Never leave the defaults,
-and never pick numbers by hand: run the script shipped with this skill, after the model files
-exist:
+and never pick numbers by hand: run `npu backend tune` once the model files exist:
 
 ```sh
-python3 .claude/skills/npu-export/npu-context.py           # print the plan
-python3 .claude/skills/npu-export/npu-context.py --apply   # write it
+npu backend tune --dry-run   # print the plan
+npu backend tune             # write it
 ```
 
-For every model file whose export holds an NPU graph, it derives the context from:
+It derives the context of every model file whose export holds an NPU graph from:
 
-- the model: `max_position_embeddings` and the fp16 KV cache cost per token, from `config.json`;
-- the host: `--ram-share` (default `0.5`) of the total RAM, minus the weights of every NPU model,
-  split evenly between them — so all of them can be served at once.
+- the model: `max_position_embeddings` and the per-token memory cost, from `config.json`;
+- the host: `--max-memory` percent (default `50`) of the total RAM, minus the weights of the
+  `--max-models` heaviest NPU models (default `all`), split evenly between them — so that many
+  of them can be served at once. Ask the user how many models they run together and how much RAM
+  they grant before picking anything other than the defaults.
 
-`--apply` writes `MAX_PROMPT_LEN` and `MIN_RESPONSE_LEN` **at the root** of `plugin_config` in
+It writes `MAX_PROMPT_LEN` and `MIN_RESPONSE_LEN` **at the root** of `plugin_config` in
 `graph.pbtxt` (under `DEVICE_PROPERTIES.NPU` they are silently ignored), and sets `max_tokens` of
 the model file and of its GPU twin to the answer length, so a request never asks for more than
 the graph can produce. Re-run it after every export, re-export or `--configure`: those rewrite
@@ -253,8 +254,8 @@ the graph can produce. Re-run it after every export, re-export or `--configure`:
 
 The real memory of an NPU graph is several times its theoretical KV cache (×4 up to 16K tokens,
 ×6 at 32K, measured on a Meteor Lake NPU), and its compile time grows with it (78 s at 8K, 408 s
-at 32K for Qwen3-4B). The script's `OVERHEAD_*` constants hold those measurements: recalibrate
-them on another NPU or OVMS version rather than trusting them blindly.
+at 32K for Qwen3-4B). The calibration lives in `src/tune.rs`: on another NPU or OVMS version,
+measure and recalibrate it rather than trusting it blindly.
 
 ## 5. Report
 
@@ -266,7 +267,7 @@ State plainly:
   if permissions had to be fixed, that they were;
 - whether the two model files were written, in which scope, and that `<id>` declares
   `fallback = "<id>-gpu"`;
-- the context the script chose (prompt and answer lengths) and the resulting `max_tokens`;
+- the context `npu backend tune` chose (prompt and answer lengths) and the resulting `max_tokens`;
 - the next step: `npu backend serve <id>` **and** `npu backend serve <id>-gpu` (two containers, two ports), then
   `npu doctor` to confirm both backends resolve, `npu config models` to see the `FALLBACK` column, then a
   real request through the command that will use it.

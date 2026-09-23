@@ -458,6 +458,7 @@ mod tests {
             model: "test-model".to_string(),
             fallback: None,
             generation: Generation::default(),
+            source: std::path::PathBuf::new(),
         };
 
         let result = chat(

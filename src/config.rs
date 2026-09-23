@@ -528,6 +528,10 @@ pub struct Model {
     pub fallback: Option<String>,
     #[serde(default)]
     pub generation: Generation,
+    /// The file this model was loaded from, after the scope merge: what
+    /// `npu backend tune` rewrites.
+    #[serde(skip)]
+    pub source: PathBuf,
 }
 
 /// Only backend type supported so far.
@@ -1014,6 +1018,9 @@ pub fn load_scopes(roots: &[PathBuf]) -> crate::Result<Config> {
     // scope and satisfied by a model from a more local scope stays valid.
     for (model, source) in models.values() {
         validate_fallback(model, &models, source)?;
+    }
+    for (model, source) in models.values_mut() {
+        model.source.clone_from(source);
     }
 
     let backends = backends.into_iter().map(|(id, (b, _))| (id, b)).collect();
