@@ -12,7 +12,8 @@ fn main() {
         Ok(0) => {}
         Ok(code) => std::process::exit(code),
         Err(err) => {
-            eprintln!("{err}");
+            // `anstream` strips the colour when stderr is not a terminal.
+            anstream::eprintln!("{}", npu::style::paint(npu::style::ERROR, &err.to_string()));
             std::process::exit(err.exit_code());
         }
     }

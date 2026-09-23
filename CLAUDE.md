@@ -80,7 +80,14 @@ user's commands: do not add a top-level built-in, grow a group instead.
 `npu --help` shows the configured commands and the built-ins in two
 sections through a `help_template` (`lib.rs::sectioned_help`): `clap` has
 no per-subcommand heading, so the built-ins are HIDDEN from its list and
-rendered by hand — they parse as before. The `help` subcommand is disabled.
+rendered by hand — they parse as before. `clap`'s generated `help`
+subcommand is disabled and replaced by a `help` built-in of ours
+(`lib.rs::help`, which re-parses `<path> --help`), listed with the others.
+
+Colours live in `style.rs`, and every styled byte goes out through
+`anstream`, which strips them when the stream is not a terminal and honours
+`NO_COLOR`: a pipe receives exactly the bytes it did before colours existed.
+Never `println!` a styled string — `anstream::println!` or nothing.
 
 `describe` resolves built-ins first, from the `clap` tree `add_builtins`
 builds — the single declaration of a built-in, so its description cannot
@@ -155,7 +162,7 @@ unwrap_used = "warn"
 
 ## Dependencies
 
-Eleven, deliberately: `clap` (builder API, not derive — the command tree is
+Twelve, deliberately: `clap` (builder API, not derive — the command tree is
 built at runtime from a directory scan), `serde`, `serde_json`, `toml`,
 `ureq` (blocking, rustls — chosen over `reqwest`, which drags in tokio),
 `jsonschema` with `default-features = false` (its defaults pull `reqwest`
@@ -172,7 +179,10 @@ with `default-features = false` — spinners and progress bars, wrapped by
 `progress.rs`, which is the only module allowed to draw: stderr only, only
 when stderr is a terminal and the level is above `error`, cleared on drop.
 It cost 136 400 bytes on the release binary (8 540 480 -> 8 676 880) and
-four crates (108 -> 112).
+four crates (108 -> 112); and `anstream`, the stream `clap`'s `color`
+feature already pulls in, used directly so that our own colours are
+stripped by the same rule as `clap`'s. The feature and `anstream` together
+cost 90 312 bytes (8 676 880 -> 8 767 192) and six crates (112 -> 118).
 
 Adding one is a measured decision: check the binary size and the crate count
 before and after, and record the numbers.

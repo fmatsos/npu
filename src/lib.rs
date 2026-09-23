@@ -16,6 +16,7 @@ pub mod progress;
 pub mod prompt;
 pub mod runtime;
 pub mod scope;
+pub mod style;
 pub mod updater;
 
 pub use error::{Error, Result};
@@ -146,6 +147,7 @@ fn verbose_arg() -> clap::Arg {
 fn build_cli(specs: &[command::CommandSpec]) -> clap::Command {
     let tree = build_command_tree(specs);
     let mut root = clap::Command::new("npu")
+        .styles(style::clap_styles())
         .arg_required_else_help(true)
         .arg(verbose_arg());
     for (name, node) in &tree.children {
@@ -229,6 +231,15 @@ fn add_builtins(cli: clap::Command) -> clap::Command {
             clap::Command::new("update")
                 .about("Download and install the latest npu release from GitHub"),
         )
+        .subcommand(
+            clap::Command::new("help")
+                .about("Print this message or the help of the given command")
+                .arg(
+                    clap::Arg::new("COMMAND")
+                        .num_args(0..)
+                        .help("Command whose help is printed (e.g. \"backend serve\")"),
+                ),
+        )
 }
 
 /// Built-ins that run with a configuration that failed to load: the
@@ -281,10 +292,10 @@ fn describe_builtin(words: &[String]) -> Result<Option<String>> {
 ///
 /// `clap` has no per-subcommand heading: the built-ins are HIDDEN from its
 /// `{subcommands}` list — hidden, not removed, they parse exactly as
-/// before — and rendered by hand in the template. Plain text, like the rest
-/// of the help: `clap` is built without its `color` feature. The `help`
-/// subcommand is disabled rather than left among the configured commands;
-/// `-h`/`--help` remain on every command.
+/// before — and rendered by hand in the template, in `clap`'s own palette
+/// (`style.rs`), which `clap` strips when stdout is not a terminal. The `help`
+/// subcommand `clap` would generate is disabled: `npu help` is a built-in
+/// of ours, listed with the others (cf. [`help`]).
 fn sectioned_help(cli: clap::Command, load_failed: bool) -> clap::Command {
     let names: Vec<String> = add_builtins(clap::Command::new("npu"))
         .get_subcommands()
@@ -296,14 +307,15 @@ fn sectioned_help(cli: clap::Command, load_failed: bool) -> clap::Command {
         .count();
     let width = names.iter().map(String::len).max().unwrap_or(0);
 
+    let heading = |text: &str| style::paint(style::HEADER.underline(), text);
     let commands = if configured > 0 {
-        "Commands:\n{subcommands}"
+        "{subcommands}".to_string()
     } else if load_failed {
-        "Commands:\n  none: the configuration failed to load; run \"npu doctor\""
+        "  none: the configuration failed to load; run \"npu doctor\"".to_string()
     } else {
-        "Commands:\n  none configured yet"
+        "  none configured yet".to_string()
     };
-    let mut builtins = String::from("Built-ins:");
+    let mut builtins = String::new();
     let mut cli = cli.disable_help_subcommand(true);
     for name in &names {
         let about = cli
@@ -311,12 +323,19 @@ fn sectioned_help(cli: clap::Command, load_failed: bool) -> clap::Command {
             .and_then(clap::Command::get_about)
             .map(ToString::to_string)
             .unwrap_or_default();
-        builtins = format!("{builtins}\n  {name:width$}  {about}");
+        let padded = format!("{name:width$}");
+        builtins = format!(
+            "{builtins}\n  {}  {about}",
+            style::paint(style::LITERAL, &padded)
+        );
         cli = cli.mut_subcommand(name, |sub| sub.hide(true));
     }
     cli.help_template(format!(
-        "{{about-with-newline}}{{usage-heading}} {{usage}}\n\n{commands}\n\n{builtins}\n\n\
-         Options:\n{{options}}{{after-help}}"
+        "{{about-with-newline}}{{usage-heading}} {{usage}}\n\n{}\n{commands}\n\n{}{builtins}\n\n\
+         {}\n{{options}}{{after-help}}",
+        heading("Commands:"),
+        heading("Built-ins:"),
+        heading("Options:"),
     ))
 }
 
@@ -633,40 +652,24 @@ pub fn run() -> Result<i32> {
         Err(_) => &[],
     };
     let cli = sectioned_help(add_builtins(build_cli(specs_for_cli)), loaded.is_err());
+    // Kept for `npu help`, which re-parses `<path> --help` through it.
+    let help_cli = cli.clone();
     let matches = cli.get_matches();
 
     let (path, leaf_matches) = selected_path(&matches);
     let route: Vec<&str> = path.iter().map(String::as_str).collect();
 
     if matches!(route.as_slice(), ["doctor"] | ["config", "check"]) {
-        // `doctor` ALWAYS runs, whether loading succeeded or failed: this
-        // is precisely its point in degraded mode (point 3 of the shared
-        // contract). `probe` is the REAL probe (`builtin::tcp_probe`),
-        // never a stub — `builtin.rs`'s tests inject their own directly on
-        // `builtin::doctor`, this function here only wires in the real
-        // probe.
-        let (config_ref, specs_ref, load_error_ref) = match &loaded {
-            Ok((config, specs)) => (Some(config), Some(specs.as_slice()), None),
-            Err(err) => (None, None, Some(err)),
-        };
-        let checks = builtin::doctor(
-            config_ref,
-            specs_ref,
-            load_error_ref,
-            &builtin::Probes {
-                backend: &builtin::tcp_probe,
-                container: &runtime::docker::probe,
-                command: &runtime::process::command_probe,
-                runner: &runtime::docker::runner,
-            },
-        );
-        println!("{}", builtin::format_doctor(&checks));
-        return Ok(builtin::doctor_exit_code(&checks));
+        return Ok(doctor(&loaded));
     }
 
     // These two built-ins depend only on the binary itself and GitHub
     // Releases. Like `doctor`, they remain available in degraded mode: a
     // malformed AI configuration is unrelated to reading or updating npu.
+    if route == ["help"] {
+        return help(help_cli, leaf_matches);
+    }
+
     if route == ["update"] {
         return update(logger);
     }
@@ -1326,6 +1329,53 @@ mod first_word_tests {
             Some("--version")
         );
         assert_eq!(first(&["--verbose", "warn"]), None);
+    }
+}
+
+/// Runs `doctor` (or `config check`), whatever state loading ended in,
+/// prints its report and returns its exit code.
+fn doctor(loaded: &Result<(config::Config, Vec<command::CommandSpec>)>) -> i32 {
+    // `doctor` ALWAYS runs, whether loading succeeded or failed: this
+    // is precisely its point in degraded mode (point 3 of the shared
+    // contract). `probe` is the REAL probe (`builtin::tcp_probe`),
+    // never a stub — `builtin.rs`'s tests inject their own directly on
+    // `builtin::doctor`, this function here only wires in the real
+    // probe.
+    let (config_ref, specs_ref, load_error_ref) = match loaded {
+        Ok((config, specs)) => (Some(config), Some(specs.as_slice()), None),
+        Err(err) => (None, None, Some(err)),
+    };
+    let checks = builtin::doctor(
+        config_ref,
+        specs_ref,
+        load_error_ref,
+        &builtin::Probes {
+            backend: &builtin::tcp_probe,
+            container: &runtime::docker::probe,
+            command: &runtime::process::command_probe,
+            runner: &runtime::docker::runner,
+        },
+    );
+    anstream::println!("{}", builtin::format_doctor(&checks));
+    builtin::doctor_exit_code(&checks)
+}
+
+/// `npu help <path…>` is `npu <path…> --help`: `clap` renders it, and an
+/// unknown path is `clap`'s own usage error, exit `2`, nothing on stdout.
+fn help(cli: clap::Command, leaf_matches: &clap::ArgMatches) -> Result<i32> {
+    let path = leaf_matches
+        .get_many::<String>("COMMAND")
+        .into_iter()
+        .flatten();
+    let args = std::iter::once("npu".to_string())
+        .chain(path.cloned())
+        .chain(std::iter::once("--help".to_string()));
+    match cli.try_get_matches_from(args) {
+        Err(err) => {
+            err.print()?;
+            Ok(err.exit_code())
+        }
+        Ok(_) => Ok(0),
     }
 }
 

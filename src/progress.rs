@@ -53,6 +53,9 @@ impl Indicator {
     pub fn spinner(message: &str) -> Self {
         Self::start(|| {
             let progress = ProgressBar::new_spinner();
+            if let Ok(style) = ProgressStyle::with_template("{spinner:.cyan} {msg}") {
+                progress.set_style(style);
+            }
             progress.set_message(message.to_string());
             progress
         })
@@ -66,9 +69,9 @@ impl Indicator {
             let (progress, template) = match total {
                 Some(total) => (
                     ProgressBar::new(total),
-                    "{spinner} {msg} [{bar:30}] {bytes}/{total_bytes}",
+                    "{spinner:.cyan} {msg} [{bar:30.green}] {bytes}/{total_bytes}",
                 ),
-                None => (ProgressBar::new_spinner(), "{spinner} {msg} {bytes}"),
+                None => (ProgressBar::new_spinner(), "{spinner:.cyan} {msg} {bytes}"),
             };
             if let Ok(style) = ProgressStyle::with_template(template) {
                 progress.set_style(style.progress_chars("=> "));

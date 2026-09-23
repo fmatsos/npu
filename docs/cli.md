@@ -1,12 +1,16 @@
 # Built-in commands
 
-`npu` ships its built-in commands under five names: two groups, `backend` (the runtime lifecycle)
-and `config` (inspection), plus `doctor`, `describe` and `update`. They are not AI commands, and
-these five names — along with `help` — are reserved: a command file whose first path segment is
-one of them is rejected at load time, naming the file. Any other name, `status` or `logs`
-included, is yours.
+`npu` ships its built-in commands under six names: two groups, `backend` (the runtime lifecycle)
+and `config` (inspection), plus `doctor`, `describe`, `update` and `help`. They are not AI commands,
+and these six names are reserved: a command file whose first path segment is one of them is
+rejected at load time, naming the file. Any other name, `status` or `logs` included, is yours.
 
-`npu --help` lists your commands under `Commands:` and the built-ins under `Built-ins:`.
+`npu --help` lists your commands under `Commands:` and the built-ins under `Built-ins:`, `help`
+included: `npu help backend serve` is `npu backend serve --help`.
+
+On a terminal, help, reports and diagnostics are coloured. Through a pipe — or with `NO_COLOR`
+set — every byte is the same as without colours: the escape sequences are stripped on the way out,
+never written to a stream that is not a terminal.
 
 - [`npu doctor`](#npu-doctor) (also `npu config check`)
 - [`npu config models`](#npu-config-models)
@@ -480,6 +484,7 @@ Built-ins:
   doctor    Check the runtime environment: configuration, backend reachability, declared output schemas
   describe  Describe a command, built-in or configured, as JSON
   update    Download and install the latest npu release from GitHub
+  help      Print this message or the help of the given command
 
 Options:
   -v, --verbose <LEVEL>  Diagnostic verbosity on stderr; stdout always carries the result only [default: warn] [possible values: error, warn, info]

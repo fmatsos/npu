@@ -431,8 +431,16 @@ pub fn format_doctor(checks: &[Check]) -> String {
     checks
         .iter()
         .map(|check| match &check.status {
-            Status::Ok => format!("✓ {}", check.label),
-            Status::Failed(message) => format!("✗ {}: {message}", check.label),
+            Status::Ok => format!(
+                "{} {}",
+                crate::style::paint(crate::style::OK, "✓"),
+                check.label
+            ),
+            Status::Failed(message) => format!(
+                "{} {}: {message}",
+                crate::style::paint(crate::style::ERROR, "✗"),
+                check.label
+            ),
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -1607,7 +1615,9 @@ mod tests {
             },
         ];
 
-        assert_eq!(format_doctor(&checks), "✓ a\n✗ b: boom");
+        // What a pipe receives: `anstream` strips the colours on the way out.
+        let plain = anstream::adapter::strip_str(&format_doctor(&checks)).to_string();
+        assert_eq!(plain, "✓ a\n✗ b: boom");
     }
 
     // -- format_models -------------------------------------------------------------

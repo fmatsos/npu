@@ -707,3 +707,42 @@ fn no_indicator_reaches_a_non_terminal_stderr() {
         stderr_of(&output)
     );
 }
+
+/// `npu help <path…>` is `npu <path…> --help`; an unknown path is a usage
+/// error with nothing on stdout. It works with a broken configuration too.
+#[test]
+fn help_prints_the_help_of_a_path_even_in_degraded_mode() {
+    let xdg = fixture_dir("help-builtin-xdg");
+    let cwd = fixture_dir("help-builtin-cwd");
+    write_broken_scope(&xdg);
+
+    let direct = run_npu(&cwd, &xdg, &["backend", "serve", "--help"]);
+    let via_help = run_npu(&cwd, &xdg, &["help", "backend", "serve"]);
+    assert!(
+        via_help.status.success(),
+        "stderr: {}",
+        stderr_of(&via_help)
+    );
+    assert_eq!(stdout_of(&via_help), stdout_of(&direct));
+
+    let unknown = run_npu(&cwd, &xdg, &["help", "nope"]);
+    assert_eq!(unknown.status.code(), Some(2));
+    assert!(unknown.stdout.is_empty());
+}
+
+/// Colours are for a terminal: through a pipe neither stream carries an
+/// escape sequence, on a report, a help page or a failure alike.
+#[test]
+fn no_colour_reaches_a_pipe() {
+    let xdg = fixture_dir("no-colour-xdg");
+    let cwd = fixture_dir("no-colour-cwd");
+    write_healthy_scope(&xdg, &closed_port_base_url());
+
+    for args in [&["doctor"][..], &["--help"], &["describe", "nope"]] {
+        let output = run_npu(&cwd, &xdg, args);
+        assert!(
+            !output.stdout.contains(&0x1b) && !output.stderr.contains(&0x1b),
+            "npu {args:?} wrote an escape sequence"
+        );
+    }
+}

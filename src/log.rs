@@ -139,7 +139,13 @@ impl Logger {
 
     fn log(self, level: Level, message: &str) {
         if self.enabled(level) {
-            crate::progress::suspend(|| eprintln!("npu: {}: {message}", level.label()));
+            let style = match level {
+                Level::Error => crate::style::ERROR,
+                Level::Warn => crate::style::WARN,
+                Level::Info => crate::style::INFO,
+            };
+            let label = crate::style::paint(style, level.label());
+            crate::progress::suspend(|| anstream::eprintln!("npu: {label}: {message}"));
         }
     }
 
