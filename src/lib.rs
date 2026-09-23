@@ -534,7 +534,7 @@ fn chat_with_fallback(
     prompt: &str,
     schema: Option<&serde_json::Value>,
     logger: log::Logger,
-) -> Result<String> {
+) -> Result<(String, String)> {
     // Resolving the URL is part of reaching the backend, not a step before
     // it: a `port = "auto"` backend whose container is down fails here, and
     // that is exactly a case the fallback exists to absorb. Resolving
@@ -548,7 +548,7 @@ fn chat_with_fallback(
     };
 
     let primary = match call(backend, model) {
-        Ok(output) => return Ok(output),
+        Ok(output) => return Ok((output, model.id.clone())),
         Err(Error::Backend(message)) => message,
         Err(other) => return Err(other),
     };
@@ -571,14 +571,16 @@ fn chat_with_fallback(
     let (fallback_model, fallback_backend) = config.resolve(fallback_id)?;
     spinner.set_message(&format!("waiting for fallback model \"{fallback_id}\""));
 
-    call(fallback_backend, fallback_model).map_err(|err| match err {
-        Error::Backend(second) => Error::Backend(format!(
-            "model \"{}\" failed ({primary}), and its fallback \"{fallback_id}\" failed too: \
+    call(fallback_backend, fallback_model)
+        .map(|output| (output, fallback_id.to_string()))
+        .map_err(|err| match err {
+            Error::Backend(second) => Error::Backend(format!(
+                "model \"{}\" failed ({primary}), and its fallback \"{fallback_id}\" failed too: \
              {second}",
-            model.id
-        )),
-        other => other,
-    })
+                model.id
+            )),
+            other => other,
+        })
 }
 
 /// Executes the pipeline of an already-resolved BUSINESS command (`spec`),
@@ -690,7 +692,7 @@ fn execute_business_command(
     // doc). No reformulation or retry here: an invalid output is an
     // execution failure, not something to recover from (§15, out of scope
     // for this phase).
-    let raw_output = chat_with_fallback(
+    let (raw_output, answered_by) = chat_with_fallback(
         config,
         model,
         backend,
@@ -705,9 +707,26 @@ fn execute_business_command(
         output.chars().count()
     ));
 
-    println!("{output}");
+    if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        anstream::print!("{}", framed_answer(&output, &answered_by));
+    } else {
+        println!("{output}");
+    }
 
     Ok(())
+}
+
+/// The answer as a terminal shows it: set apart from the command line by a
+/// blank line and a header naming the model that actually answered (the
+/// fallback, when it took over), and closed by a blank line. Only ever
+/// written to a TERMINAL: a pipe or a file receives the answer alone, byte
+/// for byte, so no program ever parses this frame.
+fn framed_answer(output: &str, answered_by: &str) -> String {
+    format!(
+        "\n{} {}\n{output}\n\n",
+        style::paint(style::ANSWER_MARK, "●"),
+        style::paint(style::ANSWER_HEADER, answered_by)
+    )
 }
 
 /// Entry point of the library, called by `main`.
@@ -936,6 +955,14 @@ mod tests {
     use super::*;
     use command::{CommandSpec, InputMode};
 
+    #[test]
+    fn a_framed_answer_keeps_the_answer_verbatim_and_names_who_answered() {
+        let framed = framed_answer("line 1\nline 2", "qwen-gpu");
+        assert!(framed.contains("\nline 1\nline 2\n"));
+        assert!(framed.contains("qwen-gpu"));
+        assert!(framed.starts_with('\n'));
+    }
+
     /// Serves ONE chat completion with the given status and body, then
     /// closes. Same technique as `backend.rs`'s end-to-end test: no HTTP
     /// dependency, just `std::net`.
@@ -1043,7 +1070,7 @@ mod tests {
             .insert("big".to_string(), model_on("big", "gpu", None));
 
         let (model, backend) = config.resolve("small").expect("the fixture must resolve");
-        let output = chat_with_fallback(
+        let (output, answered_by) = chat_with_fallback(
             &config,
             model,
             backend,
@@ -1054,6 +1081,7 @@ mod tests {
         .expect("the fallback must answer");
 
         assert_eq!(output, "from the fallback");
+        assert_eq!(answered_by, "big");
         primary_server.join().expect("primary stub thread");
         fallback_server.join().expect("fallback stub thread");
     }

@@ -13,6 +13,8 @@ pub const INFO: Style = AnsiColor::Cyan.on_default();
 pub const OK: Style = AnsiColor::Green.on_default().bold();
 pub const HEADER: Style = AnsiColor::Green.on_default().bold();
 pub const LITERAL: Style = AnsiColor::Cyan.on_default().bold();
+pub const ANSWER_MARK: Style = AnsiColor::Magenta.on_default().bold();
+pub const ANSWER_HEADER: Style = AnsiColor::Magenta.on_default().dimmed();
 pub const PLACEHOLDER: Style = AnsiColor::Cyan.on_default();
 
 /// `text` wrapped in `style`, for a stream written through `anstream`.

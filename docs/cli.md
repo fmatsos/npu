@@ -12,6 +12,10 @@ On a terminal, help, reports and diagnostics are coloured. Through a pipe — or
 set — every byte is the same as without colours: the escape sequences are stripped on the way out,
 never written to a stream that is not a terminal.
 
+A command's answer, on a terminal, is framed: a blank line, a `●` header naming the model that
+actually answered (the fallback, when it took over), the answer, and a blank line. A pipe or a
+file receives the answer alone, byte for byte.
+
 - [`npu doctor`](#npu-doctor) (also `npu config check`)
 - [`npu config models`](#npu-config-models)
 - [`npu backend serve`](#npu-backend-serve)
