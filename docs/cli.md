@@ -437,7 +437,7 @@ configuration error (`2`) naming it, and so is a name that is neither an engine 
 | `--backend` | Keeps only |
 | --- | --- |
 | `openvino` | An architecture `optimum-intel` exports for `--task`, read at run time from its own registry (`model_configs.py` on `main`), never frozen in the binary. The original weights, not an already-quantized repository (AWQ, GPTQ, FP8, etc.): `optimum-cli export --weight-format int4` starts from those. Open weights, unless `HF_TOKEN` is set (it is then sent to the Hub). |
-| `llamacpp` | GGUF repositories, searched by their Hub tag and sized from the parameter count in their GGUF header. |
+| `llamacpp` | GGUF repositories, searched by their Hub tag and sized from the parameter count in their GGUF header. A GGUF repository llmfit lists among a model's `gguf_sources` gets that model's score and fit. |
 | `mlx` | MLX repositories, searched by their Hub tag. They are already quantized: the size is read from the bit width in the name (`-4bit`, `-8bit`), 4 bits when it gives none. |
 
 `--npu` is `--backend openvino` on a host with an Intel NPU. With no `/dev/accel/accel*`, it fails

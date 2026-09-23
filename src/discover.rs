@@ -262,10 +262,12 @@ fn survivors(
             {
                 return None;
             }
+
+            let gguf = m.get("gguf").filter(|g| g.is_object());
             let model_type = m
                 .pointer("/config/model_type")
+                .or_else(|| gguf.and_then(|g| g.get("architecture")))
                 .and_then(serde_json::Value::as_str);
-            let gguf = m.get("gguf").filter(|g| g.is_object());
             let parameters = m
                 .pointer("/safetensors/total")
                 .or_else(|| gguf.and_then(|g| g.get("total")))
@@ -325,7 +327,10 @@ fn survivors(
         .collect()
 }
 
-/// `llmfit fit --json`, indexed by lowercased Hugging Face id.
+/// `llmfit fit --json`, indexed by lowercased Hugging Face id — the model's
+/// own, and each GGUF repository llmfit lists in its `gguf_sources`, so a
+/// third-party GGUF of a model llmfit knows gets that model's verdict. A
+/// model's own entry wins over a GGUF alias of another one.
 fn llmfit_index(json: &str) -> HashMap<String, Fit> {
     let parsed: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
     let text = |m: &serde_json::Value, key: &str| {
@@ -334,28 +339,45 @@ fn llmfit_index(json: &str) -> HashMap<String, Fit> {
             .unwrap_or("-")
             .to_string()
     };
-    parsed
+    let mut own = HashMap::new();
+    let mut aliases = HashMap::new();
+    for m in parsed
         .get("models")
         .and_then(serde_json::Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|m| {
-            let name = m.get("name")?.as_str()?.to_lowercase();
-            Some((
-                name,
-                Fit {
-                    score: m.get("score")?.as_f64()?,
-                    level: text(m, "fit_level"),
-                    memory_gb: m
-                        .get("memory_required_gb")
-                        .and_then(serde_json::Value::as_f64)
-                        .unwrap_or(0.0),
-                    run_mode: text(m, "run_mode"),
-                    use_case: text(m, "use_case"),
-                },
-            ))
-        })
-        .collect()
+    {
+        let (Some(name), Some(score)) = (
+            m.get("name").and_then(serde_json::Value::as_str),
+            m.get("score").and_then(serde_json::Value::as_f64),
+        ) else {
+            continue;
+        };
+        let fit = Fit {
+            score,
+            level: text(m, "fit_level"),
+            memory_gb: m
+                .get("memory_required_gb")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0),
+            run_mode: text(m, "run_mode"),
+            use_case: text(m, "use_case"),
+        };
+        for repo in m
+            .get("gguf_sources")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|g| g.get("repo").and_then(serde_json::Value::as_str))
+        {
+            aliases
+                .entry(repo.to_lowercase())
+                .or_insert_with(|| fit.clone());
+        }
+        own.insert(name.to_lowercase(), fit);
+    }
+    aliases.extend(own);
+    aliases
 }
 
 /// `8_190_735_360` -> `"8.2B"`.
@@ -677,6 +699,22 @@ class LlamaConfig(Base):
             Some((80.5, "Good"))
         );
         assert!(llmfit_index("not json").is_empty());
+    }
+
+    #[test]
+    fn a_gguf_source_gets_the_verdict_of_the_model_it_packages() {
+        let index = llmfit_index(
+            r#"{"models":[
+                {"name":"Qwen/Qwen3-8B","score":70.0,"fit_level":"Perfect",
+                 "gguf_sources":[{"provider":"unsloth","repo":"unsloth/Qwen3-8B-GGUF"},
+                                 {"provider":"x","repo":"Qwen/Qwen3-4B"}]},
+                {"name":"Qwen/Qwen3-4B","score":72.0,"fit_level":"Good"}]}"#,
+        );
+        assert_eq!(
+            index.get("unsloth/qwen3-8b-gguf").map(|f| f.score),
+            Some(70.0)
+        );
+        assert_eq!(index.get("qwen/qwen3-4b").map(|f| f.score), Some(72.0));
     }
 
     #[test]
