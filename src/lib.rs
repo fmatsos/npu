@@ -420,6 +420,7 @@ fn chat_with_fallback(
     model: &config::Model,
     backend: &config::Backend,
     prompt: &str,
+    schema: Option<&serde_json::Value>,
     logger: log::Logger,
 ) -> Result<String> {
     // Resolving the URL is part of reaching the backend, not a step before
@@ -431,7 +432,7 @@ fn chat_with_fallback(
     let spinner = progress::Indicator::spinner(&format!("waiting for model \"{}\"", model.id));
     let call = |backend: &config::Backend, model: &config::Model| {
         runtime::resolve_base_url(backend, &runtime::docker::runner)
-            .and_then(|base_url| backend::chat(backend, model, &base_url, prompt, logger))
+            .and_then(|base_url| backend::chat(backend, model, &base_url, prompt, schema, logger))
     };
 
     let primary = match call(backend, model) {
@@ -522,7 +523,23 @@ fn execute_business_command(
     // on the `prompt.rs` side.
     let env = |name: &str| std::env::var(name).ok();
 
-    prompt::preflight(&spec.prompt, &args, &env)?;
+    // Schemas are configuration, knowable without the input: read here,
+    // before `input::resolve`, for the same reason as `preflight` (see
+    // this function's doc). Only the invoked command's schemas are read.
+    let output_schema = match (&spec.output.format, &spec.output.schema) {
+        (output::Format::Json, Some(path)) => Some(output::read_schema(path, &spec.file)?),
+        _ => None,
+    };
+    let schemas = spec
+        .schemas
+        .iter()
+        .map(|(id, path)| {
+            let document = output::read_schema(path, &spec.file)?;
+            Ok((id.clone(), document.to_string()))
+        })
+        .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
+
+    prompt::preflight(&spec.prompt, &args, &env, &schemas)?;
 
     // The `FILE` argument is only declared (cf. `build_clap_node`) for the
     // modes that accept a file: reproducing the same condition here avoids
@@ -544,7 +561,7 @@ fn execute_business_command(
         }
     ));
 
-    let prompt = prompt::render(&spec.prompt, &input_text, &args, &env)?;
+    let prompt = prompt::render(&spec.prompt, &input_text, &args, &env, &schemas)?;
     logger.info(&format!(
         "prompt rendered: {} characters",
         prompt.chars().count()
@@ -559,7 +576,14 @@ fn execute_business_command(
     // doc). No reformulation or retry here: an invalid output is an
     // execution failure, not something to recover from (§15, out of scope
     // for this phase).
-    let raw_output = chat_with_fallback(config, model, backend, &prompt, logger)?;
+    let raw_output = chat_with_fallback(
+        config,
+        model,
+        backend,
+        &prompt,
+        output_schema.as_ref(),
+        logger,
+    )?;
     let output = output::finalize(&spec.output, &raw_output, &spec.file)?;
     logger.info(&format!(
         "output contract honoured ({}): {} characters written to stdout",
@@ -854,6 +878,7 @@ mod tests {
             runtime: None,
             docker: None,
             timeouts: None,
+            structured_output: false,
             source: std::path::PathBuf::new(),
         }
     }
@@ -903,6 +928,7 @@ mod tests {
             model,
             backend,
             "hello",
+            None,
             log::Logger::new(log::Level::Error),
         )
         .expect("the fallback must answer");
@@ -939,6 +965,7 @@ mod tests {
             model,
             backend,
             "hello",
+            None,
             log::Logger::new(log::Level::Error),
         )
         .expect_err("both backends failing must fail");
@@ -970,6 +997,7 @@ mod tests {
             model,
             backend,
             "hello",
+            None,
             log::Logger::new(log::Level::Error),
         )
         .expect_err("a backend failure without fallback must stay a failure");
@@ -1000,6 +1028,7 @@ mod tests {
             // contract — `OutputSpec::default()` (text format, no schema,
             // no limit) is neutral for them.
             output: output::OutputSpec::default(),
+            schemas: std::collections::BTreeMap::new(),
             // Neutral for the same reasons as `output` above: these tests
             // never bear on the output contract nor on naming the command
             // file in a schema error.

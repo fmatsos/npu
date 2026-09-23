@@ -40,7 +40,7 @@ schema = "schemas/classification.json"
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `format` | `"text"` \| `"json"` | `"text"` | |
-| `schema` | path | none | JSON only; relative to the **scope root** |
+| `schema` | name or path | none | JSON only; see [Schema paths](#schema-paths) |
 | `max_lines` | integer | none | text only |
 
 Rejected at load time, naming the command file:
@@ -54,13 +54,53 @@ well-formed JSON.
 
 ### Schema paths
 
-`schema = "schemas/classification.json"` resolves against the **scope root** of the command file,
-not against the current directory and not against the command file itself — `schemas/` is a
-sibling of `commands/`. A command coming from `/etc/npu` therefore looks in `/etc/npu/schemas/`.
-The depth of the command path makes no difference: `commands/git/review.md` still resolves
-against the scope root. An absolute path is used as-is.
+A schema is declared in one of three forms:
 
-The schema is loaded and compiled **only when the command actually runs**. A schema that is
+| Form | Example | Resolves to |
+| --- | --- | --- |
+| bare name | `schema = "classification"` | `<scope root>/schemas/classification.json` |
+| relative path | `schema = "schemas/classification.json"` | `<scope root>/schemas/classification.json` |
+| absolute path | `schema = "/srv/schemas/ticket.json"` | itself |
+
+A value without a `/` and without a `.json` suffix is a name; anything else is a path. A relative
+path resolves against the **scope root** of the command file, not against the current directory
+and not against the command file itself — `schemas/` is a sibling of `commands/`. A command coming
+from `/etc/npu` therefore looks in `/etc/npu/schemas/`. The depth of the command path makes no
+difference: `commands/git/review.md` still resolves against the scope root.
+
+### Sending the schema to the model
+
+When the command's backend declares `structured_output = true` (see
+[Configuration](configuration.md#structured_output-optional)), the output schema is sent with the
+request as an OpenAI `response_format` of type `json_schema`: a server that supports it constrains
+the model's answer to the schema, so the prompt does not need to describe the expected shape. The
+answer is validated against the schema afterwards either way.
+
+### Schemas in the prompt
+
+A command can also paste schemas into its prompt. Declare them in a `[schemas]` table, one id per
+schema, in any of the three forms above, and reference them with `{{ schemas.<id> }}`:
+
+```toml
+[schemas]
+ticket = "ticket"
+
+[output]
+format = "json"
+schema = "ticket"
+```
+
+```markdown
+Answer with a JSON object matching this schema:
+
+{{ schemas.ticket }}
+```
+
+A placeholder naming an id missing from `[schemas]` is rejected at load time, naming the command
+file. The placeholder renders the schema document as compact JSON.
+
+Schemas are loaded **only when the command actually runs** — before its input is read and
+before the backend is contacted. A schema that is
 missing or malformed on a command nobody invokes does not break the rest of the CLI. Checking all
 of them is what [`npu doctor`](cli.md#npu-doctor) is for.
 

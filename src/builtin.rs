@@ -357,22 +357,37 @@ fn check_commands_model(
 ///
 /// A command without `[output].schema` (text format, or JSON without a
 /// schema — both explicitly allowed by `command::convert_output`)
-/// produces no [`Check`] here: there is nothing to check.
+/// produces no output-schema [`Check`]: there is nothing to check. Each
+/// entry of its `[schemas]` table gets one check of its own, compiled the
+/// same way: a schema pasted into a prompt must be one too.
 fn check_commands_output_schema(commands: &[crate::command::CommandSpec]) -> Vec<Check> {
+    let check = |label: String, schema_path: &std::path::Path, file: &std::path::Path| Check {
+        kind: CheckKind::Config,
+        label,
+        status: match crate::output::compile_schema(schema_path, file) {
+            Ok(_validator) => Status::Ok,
+            Err(err) => Status::Failed(err.to_string()),
+        },
+    };
     sorted_commands(commands)
         .into_iter()
-        .filter_map(|spec| {
-            let schema_path = spec.output.schema.as_deref()?;
+        .flat_map(|spec| {
             let path = spec.path.join("/");
-            let status = match crate::output::compile_schema(schema_path, &spec.file) {
-                Ok(_validator) => Status::Ok,
-                Err(err) => Status::Failed(err.to_string()),
-            };
-            Some(Check {
-                kind: CheckKind::Config,
-                label: format!("command \"{path}\": output schema"),
-                status,
-            })
+            let output = spec.output.schema.as_deref().map(|schema_path| {
+                check(
+                    format!("command \"{path}\": output schema"),
+                    schema_path,
+                    &spec.file,
+                )
+            });
+            let declared = spec.schemas.iter().map(move |(id, schema_path)| {
+                check(
+                    format!("command \"{}\": schema \"{id}\"", spec.path.join("/")),
+                    schema_path,
+                    &spec.file,
+                )
+            });
+            output.into_iter().chain(declared).collect::<Vec<_>>()
         })
         .collect()
 }
@@ -1139,6 +1154,7 @@ mod tests {
             runtime: None,
             docker: None,
             timeouts: None,
+            structured_output: false,
             source: std::path::PathBuf::new(),
         }
     }
@@ -1253,6 +1269,7 @@ mod tests {
             prompt: "{{ input }}".to_string(),
             args: std::collections::BTreeMap::new(),
             output: crate::output::OutputSpec::default(),
+            schemas: std::collections::BTreeMap::new(),
             file: std::path::PathBuf::new(),
         }
     }
@@ -1702,6 +1719,7 @@ mod tests {
                 schema: Some(std::path::PathBuf::from("schemas/translation.json")),
                 max_lines: None,
             },
+            schemas: std::collections::BTreeMap::new(),
             file: std::path::PathBuf::from(".npu/commands/translate.md"),
         }
     }

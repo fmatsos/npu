@@ -1,7 +1,8 @@
 //! Prompt interpolation.
 //!
-//! Recognized placeholders: `{{ input }}`, `{{ args.<name> }}`, `{{ env.NAME }}`.
-//! A CLOSED placeholder (`{{ ... }}`) whose name matches none of these three
+//! Recognized placeholders: `{{ input }}`, `{{ args.<name> }}`, `{{ env.NAME }}`,
+//! `{{ schemas.<id> }}`.
+//! A CLOSED placeholder (`{{ ... }}`) whose name matches none of these four
 //! forms is a configuration error, never copied through as-is: a
 //! misspelled `{{ args.langauge }}` must fail loudly rather than being
 //! sent to the model as literal text (cf. L3 review of phases 1 and
@@ -21,10 +22,13 @@ pub enum Placeholder {
     Input,
     Arg(String),
     Env(String),
+    /// A schema declared in the command's `[schemas]` table, substituted
+    /// with the schema document itself.
+    Schema(String),
 }
 
 /// Recognized placeholder forms, for error messages.
-const ACCEPTED_FORMS: &str = "\"input\", \"args.<name>\" or \"env.<NAME>\"";
+const ACCEPTED_FORMS: &str = "\"input\", \"args.<name>\", \"env.<NAME>\" or \"schemas.<id>\"";
 
 /// A template fragment after a first scanning pass.
 ///
@@ -134,6 +138,11 @@ fn parse_placeholder(raw: &str) -> crate::Result<Placeholder> {
             .map(Placeholder::Env)
             .ok_or_else(|| unknown_placeholder(raw));
     }
+    if let Some(rest) = trimmed.strip_prefix("schemas.") {
+        return parse_named(rest)
+            .map(Placeholder::Schema)
+            .ok_or_else(|| unknown_placeholder(raw));
+    }
 
     Err(unknown_placeholder(raw))
 }
@@ -154,23 +163,36 @@ pub fn placeholders(template: &str) -> crate::Result<Vec<Placeholder>> {
 }
 
 /// Statically checks that a template only references `input`, a DECLARED
-/// argument (present in `declared_args`), or `env.X` (any syntactically
+/// argument (present in `declared_args`), a DECLARED schema (present in
+/// `declared_schemas`, the command's `[schemas]` table), or `env.X` (any syntactically
 /// valid name: the PRESENCE of an environment variable is only
 /// checked at render time, never here). Called when the command is loaded.
 ///
 /// A declared argument never referenced in the prompt is not an
 /// error: it remains a valid, documented CLI argument, simply unused by
 /// this particular prompt.
-pub fn validate(template: &str, declared_args: &BTreeSet<String>) -> crate::Result<()> {
+pub fn validate(
+    template: &str,
+    declared_args: &BTreeSet<String>,
+    declared_schemas: &BTreeSet<String>,
+) -> crate::Result<()> {
     for placeholder in placeholders(template)? {
-        if let Placeholder::Arg(name) = placeholder
-            && !declared_args.contains(&name)
-        {
-            return Err(crate::Error::Config(format!(
-                "unknown argument \"{name}\" referenced by {{{{ args.{name} }}}}: \
-                 declared arguments: {}",
-                crate::error::format_available(declared_args.iter())
-            )));
+        match placeholder {
+            Placeholder::Arg(name) if !declared_args.contains(&name) => {
+                return Err(crate::Error::Config(format!(
+                    "unknown argument \"{name}\" referenced by {{{{ args.{name} }}}}: \
+                     declared arguments: {}",
+                    crate::error::format_available(declared_args.iter())
+                )));
+            }
+            Placeholder::Schema(id) if !declared_schemas.contains(&id) => {
+                return Err(crate::Error::Config(format!(
+                    "unknown schema \"{id}\" referenced by {{{{ schemas.{id} }}}}: declared \
+                     in [schemas]: {}",
+                    crate::error::format_available(declared_schemas.iter())
+                )));
+            }
+            _ => {}
         }
     }
     Ok(())
@@ -197,6 +219,21 @@ fn resolve_env(name: &str, env: &dyn Fn(&str) -> Option<String>) -> crate::Resul
         crate::Error::Config(format!(
             "environment variable \"{name}\" referenced by {{{{ env.{name} }}}} but not \
              defined"
+        ))
+    })
+}
+
+/// Resolves the document of a schema referenced by `{{ schemas.ID }}`, or
+/// the configuration error naming it. Shared by [`render`] and
+/// [`preflight`] for the same reason as [`resolve_arg`].
+fn resolve_schema<'a>(
+    id: &str,
+    schemas: &'a BTreeMap<String, String>,
+) -> crate::Result<&'a String> {
+    schemas.get(id).ok_or_else(|| {
+        crate::Error::Config(format!(
+            "schema \"{id}\" referenced by {{{{ schemas.{id} }}}} but missing from the \
+             schemas loaded"
         ))
     })
 }
@@ -229,6 +266,7 @@ pub fn preflight(
     template: &str,
     args: &BTreeMap<String, String>,
     env: &dyn Fn(&str) -> Option<String>,
+    schemas: &BTreeMap<String, String>,
 ) -> crate::Result<()> {
     for placeholder in placeholders(template)? {
         match placeholder {
@@ -238,6 +276,9 @@ pub fn preflight(
             }
             Placeholder::Env(name) => {
                 resolve_env(&name, env)?;
+            }
+            Placeholder::Schema(id) => {
+                resolve_schema(&id, schemas)?;
             }
         }
     }
@@ -258,6 +299,8 @@ pub fn preflight(
 /// - `{{ env.NAME }}` → `env(NAME)`. `None` (variable not defined):
 ///   `Error::Config` naming the variable. `Some(String::new())` (variable
 ///   defined but empty): substituted with an empty string, not an error.
+/// - `{{ schemas.ID }}` → `schemas[ID]`, the schema document as read from
+///   its file. Missing from the map: `Error::Config` naming the schema.
 ///
 /// The substitution is never reapplied to its own result: the
 /// template is fully scanned BEFORE any substitution (`scan`), so
@@ -268,6 +311,7 @@ pub fn render(
     input: &str,
     args: &BTreeMap<String, String>,
     env: &dyn Fn(&str) -> Option<String>,
+    schemas: &BTreeMap<String, String>,
 ) -> crate::Result<String> {
     let mut result = String::new();
 
@@ -288,6 +332,7 @@ pub fn render(
                     let value = resolve_env(&name, env)?;
                     result.push_str(&value);
                 }
+                Placeholder::Schema(id) => result.push_str(resolve_schema(&id, schemas)?),
             },
         }
     }
@@ -384,14 +429,15 @@ mod tests {
     #[test]
     fn validate_rejects_undeclared_arg_naming_it_and_declared_args() {
         let declared: BTreeSet<String> = BTreeSet::new();
-        let err = validate("{{ args.language }}", &declared).expect_err("undeclared arg must fail");
+        let err = validate("{{ args.language }}", &declared, &BTreeSet::new())
+            .expect_err("undeclared arg must fail");
         assert!(matches!(err, crate::Error::Config(_)));
     }
 
     #[test]
     fn validate_accepts_declared_arg() {
         let declared: BTreeSet<String> = ["language".to_string()].into_iter().collect();
-        assert!(validate("{{ args.language }}", &declared).is_ok());
+        assert!(validate("{{ args.language }}", &declared, &BTreeSet::new()).is_ok());
     }
 
     #[test]
@@ -399,13 +445,27 @@ mod tests {
         let declared: BTreeSet<String> = ["language".to_string(), "unused".to_string()]
             .into_iter()
             .collect();
-        assert!(validate("{{ args.language }}", &declared).is_ok());
+        assert!(validate("{{ args.language }}", &declared, &BTreeSet::new()).is_ok());
     }
 
     #[test]
     fn validate_does_not_check_env_presence() {
         let declared: BTreeSet<String> = BTreeSet::new();
-        assert!(validate("{{ env.NOT_SET_ANYWHERE }}", &declared).is_ok());
+        assert!(validate("{{ env.NOT_SET_ANYWHERE }}", &declared, &BTreeSet::new()).is_ok());
+    }
+
+    #[test]
+    fn validate_undeclared_schema_is_config_error_naming_it() {
+        let err = validate("{{ schemas.report }}", &BTreeSet::new(), &BTreeSet::new())
+            .expect_err("undeclared schema must fail");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("report"));
+    }
+
+    #[test]
+    fn validate_declared_schema_is_ok() {
+        let declared = BTreeSet::from(["report".to_string()]);
+        assert!(validate("{{ schemas.report }}", &BTreeSet::new(), &declared).is_ok());
     }
 
     // -- render() ---------------------------------------------------------------
@@ -421,6 +481,7 @@ mod tests {
             "hello",
             &args,
             &env,
+            &BTreeMap::new(),
         )
         .expect("render should succeed");
 
@@ -432,7 +493,8 @@ mod tests {
         let args = BTreeMap::new();
         let env = |_: &str| None;
 
-        let err = render("{{ env.API_KEY }}", "x", &args, &env).expect_err("must fail");
+        let err =
+            render("{{ env.API_KEY }}", "x", &args, &env, &BTreeMap::new()).expect_err("must fail");
 
         assert!(matches!(err, crate::Error::Config(_)));
     }
@@ -442,8 +504,8 @@ mod tests {
         let args = BTreeMap::new();
         let env = |name: &str| (name == "EMPTY").then(String::new);
 
-        let rendered =
-            render("[{{ env.EMPTY }}]", "x", &args, &env).expect("empty value is not an error");
+        let rendered = render("[{{ env.EMPTY }}]", "x", &args, &env, &BTreeMap::new())
+            .expect("empty value is not an error");
 
         assert_eq!(rendered, "[]");
     }
@@ -453,7 +515,8 @@ mod tests {
         let args = BTreeMap::new();
         let env = |_: &str| None;
 
-        let err = render("{{ args.language }}", "x", &args, &env).expect_err("must fail");
+        let err = render("{{ args.language }}", "x", &args, &env, &BTreeMap::new())
+            .expect_err("must fail");
 
         assert!(matches!(err, crate::Error::Config(_)));
     }
@@ -464,8 +527,14 @@ mod tests {
         args.insert("note".to_string(), "{{ input }}".to_string());
         let env = |_: &str| None;
 
-        let rendered =
-            render("{{ args.note }}", "real-input", &args, &env).expect("should succeed");
+        let rendered = render(
+            "{{ args.note }}",
+            "real-input",
+            &args,
+            &env,
+            &BTreeMap::new(),
+        )
+        .expect("should succeed");
 
         assert_eq!(rendered, "{{ input }}");
     }
@@ -476,8 +545,14 @@ mod tests {
         args.insert("x".to_string(), "V".to_string());
         let env = |_: &str| None;
 
-        let rendered =
-            render("{{ args.x }}-{{ args.x }}", "in", &args, &env).expect("should succeed");
+        let rendered = render(
+            "{{ args.x }}-{{ args.x }}",
+            "in",
+            &args,
+            &env,
+            &BTreeMap::new(),
+        )
+        .expect("should succeed");
 
         assert_eq!(rendered, "V-V");
     }
@@ -488,11 +563,12 @@ mod tests {
         let env = |_: &str| None;
 
         assert_eq!(
-            render("{{input", "test", &args, &env).expect("should succeed"),
+            render("{{input", "test", &args, &env, &BTreeMap::new()).expect("should succeed"),
             "{{input"
         );
         assert_eq!(
-            render("{{ input }text", "test", &args, &env).expect("should succeed"),
+            render("{{ input }text", "test", &args, &env, &BTreeMap::new())
+                .expect("should succeed"),
             "{{ input }text"
         );
     }
@@ -517,6 +593,7 @@ mod tests {
             "☕é",
             &args,
             &env,
+            &BTreeMap::new(),
         )
         .expect("an accented/emoji template must never panic");
 
@@ -528,8 +605,14 @@ mod tests {
         let args = BTreeMap::new();
         let env = |_: &str| None;
 
-        let rendered = render("café 🎉 {{ input not closed", "x", &args, &env)
-            .expect("an unclosed {{ after multi-byte text must not panic");
+        let rendered = render(
+            "café 🎉 {{ input not closed",
+            "x",
+            &args,
+            &env,
+            &BTreeMap::new(),
+        )
+        .expect("an unclosed {{ after multi-byte text must not panic");
 
         assert_eq!(rendered, "café 🎉 {{ input not closed");
     }
@@ -539,9 +622,36 @@ mod tests {
         let args = BTreeMap::new();
         let env = |_: &str| None;
 
-        let err = render("{{ foo }}", "x", &args, &env).expect_err("must fail");
+        let err = render("{{ foo }}", "x", &args, &env, &BTreeMap::new()).expect_err("must fail");
 
         assert!(matches!(err, crate::Error::Config(_)));
+    }
+
+    #[test]
+    fn render_substitutes_schema_document() {
+        let schemas = BTreeMap::from([("report".to_string(), "{\"type\":\"object\"}".to_string())]);
+        let rendered = render(
+            "Shape: {{ schemas.report }}",
+            "x",
+            &BTreeMap::new(),
+            &|_| None,
+            &schemas,
+        )
+        .expect("render should succeed");
+        assert_eq!(rendered, "Shape: {\"type\":\"object\"}");
+    }
+
+    #[test]
+    fn preflight_missing_schema_is_config_error_naming_it() {
+        let err = preflight(
+            "{{ schemas.report }}",
+            &BTreeMap::new(),
+            &|_| None,
+            &BTreeMap::new(),
+        )
+        .expect_err("missing schema must fail");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("report"));
     }
 
     // -- preflight() (L3 review, fix 1) -----------------------------------
@@ -556,8 +666,13 @@ mod tests {
         let args = BTreeMap::new();
         let env = |_: &str| None;
 
-        let err = preflight("{{ env.NPU_ABSENT }}: {{ input }}", &args, &env)
-            .expect_err("a missing environment variable must fail in preflight");
+        let err = preflight(
+            "{{ env.NPU_ABSENT }}: {{ input }}",
+            &args,
+            &env,
+            &BTreeMap::new(),
+        )
+        .expect_err("a missing environment variable must fail in preflight");
 
         assert!(matches!(err, crate::Error::Config(_)));
     }
@@ -567,8 +682,13 @@ mod tests {
         let args = BTreeMap::new();
         let env = |_: &str| None;
 
-        let err = preflight("the {{ args.tone }}: {{ input }}", &args, &env)
-            .expect_err("a missing argument must fail in preflight");
+        let err = preflight(
+            "the {{ args.tone }}: {{ input }}",
+            &args,
+            &env,
+            &BTreeMap::new(),
+        )
+        .expect_err("a missing argument must fail in preflight");
 
         assert!(matches!(err, crate::Error::Config(_)));
     }
@@ -581,7 +701,7 @@ mod tests {
         let args = BTreeMap::new();
         let env = |_: &str| None;
 
-        assert!(preflight("{{ input }}", &args, &env).is_ok());
+        assert!(preflight("{{ input }}", &args, &env, &BTreeMap::new()).is_ok());
     }
 
     #[test]
@@ -595,6 +715,7 @@ mod tests {
                 "{{ env.USER }} wants a {{ args.tone }} tone for {{ input }}",
                 &args,
                 &env,
+                &BTreeMap::new(),
             )
             .is_ok()
         );
@@ -607,9 +728,9 @@ mod tests {
         let args = BTreeMap::new();
         let env = |_: &str| None;
 
-        let preflight_err =
-            preflight("{{ env.API_KEY }}", &args, &env).expect_err("preflight must fail");
-        let render_err = render("{{ env.API_KEY }}", "x", &args, &env)
+        let preflight_err = preflight("{{ env.API_KEY }}", &args, &env, &BTreeMap::new())
+            .expect_err("preflight must fail");
+        let render_err = render("{{ env.API_KEY }}", "x", &args, &env, &BTreeMap::new())
             .expect_err("render must fail the same way");
 
         assert_eq!(preflight_err.to_string(), render_err.to_string());

@@ -401,14 +401,15 @@ fn help_survives_a_syntactically_broken_schema_declared_by_an_uninvoked_command_
 /// schema's resolved path AND the command file that requires it.
 #[test]
 fn invoking_the_command_with_a_missing_schema_fails_with_exit_code_two_naming_both_paths() {
-    let (addr, server) = spawn_stub_server("{\"a\": 1}".to_string());
+    // The schema is read before the backend is ever contacted (and before
+    // the input is read): an unreachable backend proves it, since reaching
+    // it would give exit 3, not 2.
 
     let xdg = fixture_scope("xdg-missing-schema-invoked");
     let cwd = fixture_cwd_without_local_scope("missing-schema-invoked");
-    write_general_scope_with_never_invoked_command(&xdg, &format!("http://{addr}"), None);
+    write_general_scope_with_never_invoked_command(&xdg, "http://127.0.0.1:1", None);
 
     let output = run_npu_xdg(&cwd, &xdg, &["never-invoked"], "whatever");
-    server.join().expect("the server thread must not panic");
 
     assert_eq!(
         output.status.code(),
@@ -437,18 +438,17 @@ fn invoking_the_command_with_a_missing_schema_fails_with_exit_code_two_naming_bo
 /// IS PRESENT but syntactically BROKEN.
 #[test]
 fn invoking_the_command_with_a_broken_schema_fails_with_exit_code_two_naming_both_paths() {
-    let (addr, server) = spawn_stub_server("{\"a\": 1}".to_string());
+    // Unreachable backend, for the same reason as proof (c).
 
     let xdg = fixture_scope("xdg-broken-schema-invoked");
     let cwd = fixture_cwd_without_local_scope("broken-schema-invoked");
     write_general_scope_with_never_invoked_command(
         &xdg,
-        &format!("http://{addr}"),
+        "http://127.0.0.1:1",
         Some("{ this is not JSON"),
     );
 
     let output = run_npu_xdg(&cwd, &xdg, &["never-invoked"], "whatever");
-    server.join().expect("the server thread must not panic");
 
     assert_eq!(
         output.status.code(),

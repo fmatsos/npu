@@ -44,6 +44,7 @@ next reader.
 | `[operations.<name>]` | at least one | each needs `method` and `path` |
 | `[runtime]` | no | how `npu backend serve` starts this backend; `type` picks the family — `"docker"` or `"process"` |
 | `[timeouts]` | no | `request_secs` — overrides the default request timeout (120s) |
+| `structured_output` | no | `true` when the server accepts `response_format: json_schema` (OVMS, `llama-server`, vLLM): a command's output schema is then sent with the request. Default `false` |
 
 ## What is rejected at load time
 

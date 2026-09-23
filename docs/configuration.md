@@ -198,6 +198,17 @@ request_secs = 120
 falls back to the CLI's own default (120s — enough for a full `max_tokens` generation on a slow
 accelerator such as an NPU). `request_secs = 0` is rejected at load time, naming the file.
 
+### `structured_output` (optional)
+
+```toml
+structured_output = true
+```
+
+Declares that the server accepts an OpenAI `response_format` of type `json_schema` (OVMS,
+`llama-server` and vLLM do). A command's output schema is then sent with each request and
+constrains the model's answer. Omitted or `false`, nothing is sent and the answer is only
+validated after it arrives — a server that rejects unknown request fields never receives one.
+
 ---
 
 ## Starting a backend with Docker

@@ -36,6 +36,10 @@ const ERROR_BODY_TRUNCATE_AT: usize = 500;
 
 /// Executes the `chat` operation of the given `model` against `backend`, with `prompt`.
 ///
+/// `schema` is the command's output schema, if any: sent as
+/// `response_format` only when `backend.structured_output` is declared,
+/// ignored otherwise (the caller validates the answer either way).
+///
 /// `base_url` is passed in rather than read from `backend`: a
 /// `port = "auto"` backend's own `base_url` still carries
 /// `{{ backend.port }}` after loading, and only `builtin::resolve_base_url`
@@ -46,6 +50,7 @@ pub fn chat(
     model: &crate::config::Model,
     base_url: &str,
     prompt: &str,
+    schema: Option<&Value>,
     logger: crate::log::Logger,
 ) -> crate::Result<String> {
     let operation = backend.operations.get(&model.operation).ok_or_else(|| {
@@ -58,7 +63,8 @@ pub fn chat(
     })?;
 
     let url = join_url(base_url, &operation.path);
-    let body = build_chat_request(&model.model, prompt, &model.generation);
+    let schema = schema.filter(|_| backend.structured_output);
+    let body = build_chat_request(&model.model, prompt, &model.generation, schema);
 
     let timeout = effective_timeout(backend);
 
@@ -71,9 +77,14 @@ pub fn chat(
         .new_agent();
 
     logger.info(&format!(
-        "POST {url} (model \"{}\", timeout {} s)",
+        "POST {url} (model \"{}\", timeout {} s{})",
         model.model,
-        timeout.as_secs()
+        timeout.as_secs(),
+        if schema.is_some() {
+            ", output schema sent as response_format"
+        } else {
+            ""
+        }
     ));
 
     let started = std::time::Instant::now();
@@ -138,8 +149,14 @@ fn join_url(base_url: &str, path: &str) -> String {
 /// Builds the `chat/completions` request body in `OpenAI` format.
 ///
 /// `temperature` and `max_tokens` are only inserted if they are `Some`: no
-/// `null` value is serialized for an absent field.
-fn build_chat_request(model: &str, prompt: &str, generation: &crate::config::Generation) -> Value {
+/// `null` value is serialized for an absent field. Likewise
+/// `response_format`, only for `Some(schema)`.
+fn build_chat_request(
+    model: &str,
+    prompt: &str,
+    generation: &crate::config::Generation,
+    schema: Option<&Value>,
+) -> Value {
     let mut body = serde_json::json!({
         "model": model,
         "messages": [
@@ -161,9 +178,20 @@ fn build_chat_request(model: &str, prompt: &str, generation: &crate::config::Gen
         if let Some(max_tokens) = generation.max_tokens {
             map.insert("max_tokens".to_string(), Value::from(max_tokens));
         }
+        if let Some(schema) = schema {
+            map.insert("response_format".to_string(), response_format(schema));
+        }
     }
 
     body
+}
+
+/// The `OpenAI` `response_format` constraining the answer to `schema`.
+fn response_format(schema: &Value) -> Value {
+    serde_json::json!({
+        "type": "json_schema",
+        "json_schema": { "name": "output", "schema": schema }
+    })
 }
 
 /// Converts an `f32` to `f64` via its shortest textual representation, to
@@ -218,6 +246,7 @@ mod tests {
             runtime: None,
             docker: None,
             timeouts,
+            structured_output: false,
             source: std::path::PathBuf::new(),
         }
     }
@@ -264,7 +293,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
         };
-        let body = build_chat_request("qwen-2.5-1.5b", "hello", &generation);
+        let body = build_chat_request("qwen-2.5-1.5b", "hello", &generation, None);
 
         assert_eq!(body["model"], "qwen-2.5-1.5b");
         assert_eq!(body["messages"][0]["role"], "user");
@@ -274,12 +303,26 @@ mod tests {
     }
 
     #[test]
+    fn build_chat_request_with_schema_sends_json_schema_response_format() {
+        let schema = serde_json::json!({ "type": "object" });
+        let body = build_chat_request("m", "hello", &Generation::default(), Some(&schema));
+        assert_eq!(body["response_format"]["type"], "json_schema");
+        assert_eq!(body["response_format"]["json_schema"]["schema"], schema);
+    }
+
+    #[test]
+    fn build_chat_request_without_schema_sends_no_response_format() {
+        let body = build_chat_request("m", "hello", &Generation::default(), None);
+        assert!(body.get("response_format").is_none());
+    }
+
+    #[test]
     fn build_chat_request_with_generation_options() {
         let generation = Generation {
             temperature: Some(0.0),
             max_tokens: Some(512),
         };
-        let body = build_chat_request("qwen-2.5-1.5b", "hello", &generation);
+        let body = build_chat_request("qwen-2.5-1.5b", "hello", &generation, None);
 
         assert_eq!(body["temperature"], 0.0);
         assert_eq!(body["max_tokens"], 512);
@@ -294,7 +337,7 @@ mod tests {
             temperature: Some(0.7),
             max_tokens: None,
         };
-        let body = build_chat_request("qwen-2.5-1.5b", "hello", &generation);
+        let body = build_chat_request("qwen-2.5-1.5b", "hello", &generation, None);
 
         assert_eq!(body["temperature"].to_string(), "0.7");
     }
@@ -405,6 +448,7 @@ mod tests {
             runtime: None,
             docker: None,
             timeouts: None,
+            structured_output: false,
             source: std::path::PathBuf::new(),
         };
         let model = crate::config::Model {
@@ -421,6 +465,7 @@ mod tests {
             &model,
             &backend.base_url.clone(),
             "hello",
+            None,
             crate::log::Logger::new(crate::log::Level::Error),
         )
         .expect("chat() must succeed against the stubbed listener");

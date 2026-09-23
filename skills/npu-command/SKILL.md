@@ -105,13 +105,14 @@ Default values, repeated flags and boolean flags do not exist yet.
 
 ## Prompt templating
 
-Three placeholders, no conditions, no loops, no expressions, no includes.
+Four placeholders, no conditions, no loops, no expressions, no includes.
 
 | Placeholder | Resolves to |
 | --- | --- |
 | `{{ input }}` | the resolved input (stdin or file) |
 | `{{ args.name }}` | a declared argument's value |
 | `{{ env.NAME }}` | an environment variable |
+| `{{ schemas.id }}` | a schema declared in `[schemas]`, as compact JSON |
 
 Whitespace inside the braces is free. Substitution is never re-applied to
 substituted content, so an argument whose value contains `{{ input }}` passes
@@ -135,8 +136,21 @@ Two constraints worth knowing before writing a prompt:
 ```toml
 [output]
 format = "json"                        # "text" (default) or "json"
-schema = "schemas/classification.json" # JSON only, relative to the SCOPE ROOT
+schema = "classification"              # JSON only: a NAME (-> <scope root>/schemas/classification.json),
+                                       # a path relative to the SCOPE ROOT, or an absolute path
 ```
+
+When the backend declares `structured_output = true`, the output schema is sent
+to the model as `response_format` and constrains its answer: the prompt does
+not need to describe the JSON shape. Without it, the prompt MUST describe the
+shape — `npu` only validates the answer afterwards.
+
+```toml
+[schemas]                              # ids usable as {{ schemas.<id> }} in the prompt
+ticket = "ticket"                      # same three forms as [output].schema
+```
+
+An undeclared `{{ schemas.x }}` is rejected at load time.
 
 ```toml
 [output]

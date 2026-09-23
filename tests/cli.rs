@@ -58,8 +58,12 @@ fn discovers_translate_fixture_with_declared_language_arg() {
     assert!(language.required, "'language' must be required = true");
 
     let declared: BTreeSet<String> = translate.args.keys().cloned().collect();
-    prompt::validate(&translate.prompt, &declared)
-        .expect("the translate prompt must pass static placeholder validation");
+    prompt::validate(
+        &translate.prompt,
+        &declared,
+        &std::collections::BTreeSet::new(),
+    )
+    .expect("the translate prompt must pass static placeholder validation");
 }
 
 /// Discovers the versioned `.npu/commands/classify.md` fixture: checks

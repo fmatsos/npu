@@ -44,6 +44,11 @@ pub struct CommandSpec {
     pub prompt: String,
     pub args: BTreeMap<String, ArgSpec>,
     pub output: crate::output::OutputSpec,
+    /// `[schemas]` table: each id the prompt may reference through
+    /// `{{ schemas.<id> }}`, mapped to its resolved path (same resolution
+    /// as `[output].schema`, see [`resolve_schema_path`]). Read lazily, when
+    /// the command runs — never at load time.
+    pub schemas: BTreeMap<String, std::path::PathBuf>,
     /// Path of the source command file (e.g. `.npu/commands/classify.md`)
     /// this `CommandSpec` was parsed from. Needed by `output::finalize`
     /// (L3 review, fix 1) to name, at real execution time, the command
@@ -109,6 +114,10 @@ struct Frontmatter {
     /// (rule 3 of the shared contract), never `serde`/`toml`.
     #[serde(default)]
     output: Option<RawOutputSpec>,
+    /// `[schemas]` table: `<id> = "<name or path>"`, resolved by
+    /// [`resolve_schema_path`].
+    #[serde(default)]
+    schemas: BTreeMap<String, String>,
 }
 
 /// Raw version of the `[output]` section as written in TOML: `schema` is
@@ -497,15 +506,15 @@ fn convert_args(raw: BTreeMap<String, RawArgSpec>) -> crate::Result<BTreeMap<Str
     Ok(args)
 }
 
-/// Resolves the path of a JSON schema declared in `[output].schema`
-/// against `scope_root` (rule 3 of the shared contract, §4/§6 of the
-/// spec: `schemas/` is a sibling directory of `commands/`, both direct
-/// children of the scope root). `declared` already carries the
-/// `schemas/` segment (see the §6 example:
-/// `schema = "schemas/classification.json"`) — it is therefore joined
-/// directly to `scope_root`, without inserting `schemas/` a second time.
-/// An ABSOLUTE path in the frontmatter is accepted as-is, never
-/// recomposed with `scope_root`.
+/// Resolves a JSON schema declared in `[output].schema` or `[schemas]`
+/// against `scope_root` (`schemas/` is a sibling directory of `commands/`,
+/// both direct children of the scope root). Three forms:
+///
+/// - a bare NAME (no path separator, no `.json` suffix, e.g.
+///   `"classification"`): `<scope_root>/schemas/<name>.json`;
+/// - a RELATIVE path (e.g. `"schemas/classification.json"`): joined to
+///   `scope_root` as-is, without inserting `schemas/` a second time;
+/// - an ABSOLUTE path: used as-is, never recomposed with `scope_root`.
 ///
 /// PURELY SYNTACTIC: never touches the disk, checks neither the
 /// existence, readability nor validity of the resulting file — it's a
@@ -535,9 +544,21 @@ fn resolve_schema_path(declared: &str, scope_root: &std::path::Path) -> std::pat
     let declared_path = std::path::Path::new(declared);
     if declared_path.is_absolute() {
         declared_path.to_path_buf()
+    } else if is_schema_name(declared) {
+        scope_root.join("schemas").join(format!("{declared}.json"))
     } else {
         scope_root.join(declared_path)
     }
+}
+
+/// Whether `declared` is a bare schema NAME rather than a path: no path
+/// separator and no `.json` suffix. Purely syntactic, like
+/// [`resolve_schema_path`].
+fn is_schema_name(declared: &str) -> bool {
+    !declared.contains(['/', '\\'])
+        && !std::path::Path::new(declared)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
 }
 
 /// Converts the raw `[output]` section of the frontmatter
@@ -606,6 +627,27 @@ fn convert_output(
             })
         }
     }
+}
+
+/// Converts the raw `[schemas]` table into resolved paths, rejecting an id
+/// that `{{ schemas.<id> }}` could never reference (same character rule
+/// as an argument name, shared with `prompt`).
+fn convert_schemas(
+    raw: BTreeMap<String, String>,
+    scope_root: &std::path::Path,
+) -> crate::Result<BTreeMap<String, std::path::PathBuf>> {
+    raw.into_iter()
+        .map(|(id, declared)| {
+            if id.is_empty() || !id.chars().all(crate::prompt::is_valid_name_char) {
+                return Err(crate::Error::Config(format!(
+                    "[schemas]: invalid schema id \"{id}\": only ASCII letters, digits, '_' \
+                     and '-' are accepted"
+                )));
+            }
+            let path = resolve_schema_path(&declared, scope_root);
+            Ok((id, path))
+        })
+        .collect()
 }
 
 /// Line delimiting the TOML frontmatter of a command file, opening and
@@ -693,7 +735,9 @@ pub fn parse(
     // validated (see L3 review, phase 2; test
     // `discover_scopes_broken_placeholder_fully_masked_by_local_scope_resolves_successfully`).
     let declared: BTreeSet<String> = args.keys().cloned().collect();
-    crate::prompt::validate(&prompt, &declared)?;
+    let schemas = convert_schemas(frontmatter.schemas, scope_root)?;
+    let declared_schemas: BTreeSet<String> = schemas.keys().cloned().collect();
+    crate::prompt::validate(&prompt, &declared, &declared_schemas)?;
 
     // L3 review, fix 2: an argument referenced by the prompt via
     // {{ args.NAME }} but declared `required = false` is a contradiction
@@ -749,6 +793,7 @@ pub fn parse(
         prompt,
         args,
         output,
+        schemas,
         // Filled in by `read_and_parse`, the only caller that knows the
         // path of the file actually read (see the field's doc on
         // `CommandSpec`).
@@ -1614,6 +1659,58 @@ mod tests {
             "the schema must resolve against the scope root, never the cwd nor the command \
              file's path, whatever the depth of the command path"
         );
+    }
+
+    #[test]
+    fn output_json_schema_bare_name_resolves_under_scope_schemas_directory() {
+        let root = test_scope_root();
+        let source = "---\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\n\
+                       schema = \"classification\"\n---\nprompt\n";
+        let spec = parse(source, vec!["x".to_string()], &root).expect("a bare name should parse");
+
+        assert_eq!(
+            spec.output.schema,
+            Some(root.join("schemas").join("classification.json"))
+        );
+    }
+
+    #[test]
+    fn schemas_table_resolves_each_entry_and_is_referenceable_from_the_prompt() {
+        let root = test_scope_root();
+        let source = "---\nmodel = \"qwen-fast\"\n\n[schemas]\nreport = \"report\"\n\
+                       legacy = \"other/legacy.json\"\n---\n{{ schemas.report }} {{ schemas.legacy }}\n";
+        let spec =
+            parse(source, vec!["x".to_string()], &root).expect("declared schemas should parse");
+
+        assert_eq!(
+            spec.schemas.get("report"),
+            Some(&root.join("schemas").join("report.json"))
+        );
+        assert_eq!(
+            spec.schemas.get("legacy"),
+            Some(&root.join("other").join("legacy.json"))
+        );
+    }
+
+    #[test]
+    fn prompt_referencing_undeclared_schema_is_config_error_naming_it() {
+        let source = "---\nmodel = \"qwen-fast\"\n---\n{{ schemas.report }}\n";
+        let err = parse(source, vec!["x".to_string()], &test_scope_root())
+            .expect_err("an undeclared schema must be rejected at load time");
+
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("report"));
+    }
+
+    #[test]
+    fn schemas_table_invalid_id_is_config_error_naming_it() {
+        let source =
+            "---\nmodel = \"qwen-fast\"\n\n[schemas]\n\"bad.id\" = \"report\"\n---\nprompt\n";
+        let err = parse(source, vec!["x".to_string()], &test_scope_root())
+            .expect_err("an id no placeholder can reference must be rejected");
+
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("bad.id"));
     }
 
     #[test]

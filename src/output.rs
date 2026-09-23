@@ -255,28 +255,38 @@ pub(crate) fn compile_schema(
     path: &Path,
     command_file: &Path,
 ) -> crate::Result<jsonschema::Validator> {
+    let document = read_schema(path, command_file)?;
+
+    jsonschema::validator_for(&document).map_err(|err| {
+        crate::Error::Config(format!(
+            "output schema \"{}\", declared by command file \"{}\", invalid: \
+             {err}",
+            path.display(),
+            command_file.display()
+        ))
+    })
+}
+
+/// Reads and parses the schema document at `path`, declared by
+/// `command_file` (in `[output].schema` or `[schemas]`). Absent,
+/// unreadable or not JSON: `Error::Config` naming both files. Shared by
+/// [`compile_schema`] and by the callers that SEND a schema — to the model
+/// (`response_format`) or into the prompt (`{{ schemas.<id> }}`) — so the
+/// three read the file with the same messages.
+pub(crate) fn read_schema(path: &Path, command_file: &Path) -> crate::Result<serde_json::Value> {
     let text = std::fs::read_to_string(path).map_err(|err| {
         crate::Error::Config(format!(
-            "output schema \"{}\", declared by command file \"{}\", not found \
+            "schema \"{}\", declared by command file \"{}\", not found \
              or unreadable: {err}",
             path.display(),
             command_file.display()
         ))
     })?;
 
-    let document: serde_json::Value = serde_json::from_str(&text).map_err(|err| {
+    serde_json::from_str(&text).map_err(|err| {
         crate::Error::Config(format!(
-            "output schema \"{}\", declared by command file \"{}\": invalid \
+            "schema \"{}\", declared by command file \"{}\": invalid \
              JSON: {err}",
-            path.display(),
-            command_file.display()
-        ))
-    })?;
-
-    jsonschema::validator_for(&document).map_err(|err| {
-        crate::Error::Config(format!(
-            "output schema \"{}\", declared by command file \"{}\", invalid: \
-             {err}",
             path.display(),
             command_file.display()
         ))

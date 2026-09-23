@@ -481,7 +481,7 @@ fn render_one(
 ) -> crate::Result<String> {
     let mut args = std::collections::BTreeMap::new();
     args.insert("model".to_string(), model.model.clone());
-    crate::prompt::render(template, "", &args, env)
+    crate::prompt::render(template, "", &args, env, &std::collections::BTreeMap::new())
 }
 
 /// The same, over a list.
@@ -1854,6 +1854,7 @@ mod tests {
             runtime: None,
             docker: None,
             timeouts: None,
+            structured_output: false,
             source: PathBuf::from(SOURCE),
         }
     }

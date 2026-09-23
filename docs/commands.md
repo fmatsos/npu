@@ -89,6 +89,7 @@ cat README.md | npu translate --language french
 | `[input] mode` | string | `"stdin"` | see [Input modes](#input-modes) |
 | `[args.<name>]` | table | none | see [CLI arguments](#cli-arguments) |
 | `[output]` | table | text, no limit | see [Output contracts](output.md) |
+| `[schemas]` | table | none | `<id> = "<name or path>"`, for `{{ schemas.<id> }}` — see [Schemas in the prompt](output.md#schemas-in-the-prompt) |
 
 > [!IMPORTANT]
 > Unknown keys are **rejected**, not ignored — at the top level, under `[input]`, under
@@ -163,6 +164,7 @@ includes — the goal is configuration that stays deterministic and statically i
 | `{{ input }}` | the resolved input (stdin or file) |
 | `{{ args.name }}` | the value of a declared argument |
 | `{{ env.NAME }}` | an environment variable |
+| `{{ schemas.id }}` | a schema declared in `[schemas]`, as JSON |
 
 Whitespace inside the braces is flexible: `{{input}}`, `{{ input }}` and `{{  input  }}` are the
 same. Substitution is never re-applied to substituted content, so an argument value containing

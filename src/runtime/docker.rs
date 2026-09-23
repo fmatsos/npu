@@ -145,7 +145,8 @@ fn run_args(
     let mut args = BTreeMap::new();
     args.insert("model".to_string(), model.model.clone());
 
-    let render = |template: &String| crate::prompt::render(template, "", &args, env);
+    let render =
+        |template: &String| crate::prompt::render(template, "", &args, env, &BTreeMap::new());
 
     let mut out = vec![
         "run".to_string(),
@@ -442,6 +443,7 @@ mod tests {
             runtime: None,
             docker: None,
             timeouts: None,
+            structured_output: false,
             source: std::path::PathBuf::new(),
         }
     }

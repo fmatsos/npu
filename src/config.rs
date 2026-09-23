@@ -459,6 +459,13 @@ pub struct Backend {
     /// Optional: overrides `backend::REQUEST_TIMEOUT` for this backend.
     #[serde(default)]
     pub timeouts: Option<Timeouts>,
+    /// Optional, `false` by default: the backend accepts an `OpenAI`
+    /// `response_format` of type `json_schema`, so a command's
+    /// `[output].schema` is SENT with the request and constrains the
+    /// model's answer. Off, the schema is only checked after the answer
+    /// arrives — a server that rejects the field must never receive it.
+    #[serde(default)]
+    pub structured_output: bool,
     /// The file this backend was loaded from, filled in by [`load_scopes`]
     /// once the merge picked a winner.
     ///
@@ -597,6 +604,13 @@ fn validate_runtime_template(template: &str, backend_id: &str, source: &Path) ->
                 return Err(crate::Error::Config(format!(
                     "{}: backend \"{backend_id}\": [runtime] references {{{{ input }}}}, which \
                      has no meaning for a runtime start",
+                    source.display()
+                )));
+            }
+            crate::prompt::Placeholder::Schema(id) => {
+                return Err(crate::Error::Config(format!(
+                    "{}: backend \"{backend_id}\": [runtime] references {{{{ schemas.{id} }}}}, \
+                     which has no meaning for a runtime start",
                     source.display()
                 )));
             }
