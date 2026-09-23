@@ -7,11 +7,16 @@
 //! estimate against `--max-memory` percent of the RAM. Opt-in filters
 //! narrow the list further:
 //!
-//! - `--openvino`: an architecture `optimum-intel` exports to `OpenVINO` for
-//!   the task — read from its own registry at run time, never frozen in this
-//!   binary —, original weights (not already quantized), not gated unless
-//!   `HF_TOKEN` is set;
-//! - `--npu`: `--openvino`, on a host that has an Intel NPU.
+//! - `--backend openvino`: an architecture `optimum-intel` exports to
+//!   `OpenVINO` for the task — read from its own registry at run time, never
+//!   frozen in this binary —, original weights (not already quantized), not
+//!   gated unless `HF_TOKEN` is set;
+//! - `--backend llamacpp`: a GGUF repository;
+//! - `--backend mlx`: an MLX repository;
+//! - `--npu`: `--backend openvino`, on a host that has an Intel NPU.
+//!
+//! `--backend` also takes a configured backend's identifier, whose engine is
+//! read from its runtime (cf. [`Engine::of_backend`]).
 //!
 //! Everything else is left out, not listed with a caveat. Everything that
 //! touches the outside world — HTTP, `llmfit`, the NPU device, the RAM —
@@ -40,9 +45,67 @@ pub struct Query {
     pub candidates: usize,
     pub max_memory_percent: u64,
     pub min_score: f64,
-    pub openvino: bool,
+    pub engine: Option<Engine>,
     pub npu: bool,
     pub hf_token: Option<String>,
+}
+
+/// The inference engine a model must be packaged for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Engine {
+    OpenVino,
+    LlamaCpp,
+    Mlx,
+}
+
+impl Engine {
+    /// The names `--backend` accepts for an engine.
+    pub const NAMES: &'static str = "openvino, llamacpp, mlx";
+
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "openvino" | "ovms" => Some(Self::OpenVino),
+            "llamacpp" | "llama.cpp" | "llama-cpp" | "gguf" => Some(Self::LlamaCpp),
+            "mlx" => Some(Self::Mlx),
+            _ => None,
+        }
+    }
+
+    /// The engine a configured backend runs, read from what its runtime
+    /// starts: the Docker image and arguments, or the process command and
+    /// arguments. `None` when neither names a known engine.
+    #[must_use]
+    pub fn of_backend(backend: &crate::config::Backend) -> Option<Self> {
+        let started = match backend.runtime()? {
+            crate::config::Runtime::Docker(d) => format!("{} {}", d.image, d.args.join(" ")),
+            crate::config::Runtime::Process(p) => {
+                format!("{} {}", p.command, p.arguments.join(" "))
+            }
+        }
+        .to_ascii_lowercase();
+        if started.contains("model_server")
+            || started.contains("openvino")
+            || started.contains("ovms")
+        {
+            Some(Self::OpenVino)
+        } else if started.contains("llama") {
+            Some(Self::LlamaCpp)
+        } else if started.contains("mlx") {
+            Some(Self::Mlx)
+        } else {
+            None
+        }
+    }
+
+    /// The Hub tag a repository carries for this engine, searched server-side.
+    fn hub_filter(self) -> Option<&'static str> {
+        match self {
+            Self::OpenVino => None,
+            Self::LlamaCpp => Some("gguf"),
+            Self::Mlx => Some("mlx"),
+        }
+    }
 }
 
 /// The outside world, injected.
@@ -122,6 +185,9 @@ fn search_url(query: &Query) -> String {
         encode(&query.task),
         query.candidates
     );
+    if let Some(tag) = query.engine.and_then(Engine::hub_filter) {
+        let _ = write!(url, "&filter={tag}&expand[]=gguf");
+    }
     if let Some(text) = &query.text {
         let _ = write!(url, "&search={}", encode(text));
     }
@@ -143,6 +209,8 @@ struct Survivor {
     id: String,
     model_type: String,
     parameters: Option<u64>,
+    /// Estimated weights in memory, for a model llmfit does not size.
+    estimate: Option<u64>,
     license: String,
     downloads: u64,
     fit: Option<Fit>,
@@ -156,7 +224,20 @@ fn int4_bytes(parameters: u64) -> u64 {
     parameters / 2 * INT4_OVERHEAD_PERCENT / 100
 }
 
-/// The opt-in `--openvino` filter: `None` when it is off.
+// ponytail: an MLX repository is already quantized, and the Hub counts its
+// parameters unpacked; the bit width is read from its name (`-4bit`,
+// `-8bit`...), 4 when it says nothing. Read `config.json`'s
+// `quantization.bits` if a name ever lies.
+fn mlx_bytes(id: &str, parameters: u64) -> u64 {
+    let id = id.to_ascii_lowercase();
+    let bits = (2..=16)
+        .rev()
+        .find(|b| id.contains(&format!("{b}bit")) || id.contains(&format!("{b}-bit")))
+        .unwrap_or(4);
+    parameters * bits / 8 * INT4_OVERHEAD_PERCENT / 100
+}
+
+/// The `--backend openvino` filter: `None` when it is off.
 struct OpenVino<'a> {
     architectures: &'a BTreeSet<String>,
     authenticated: bool,
@@ -184,10 +265,15 @@ fn survivors(
             let model_type = m
                 .pointer("/config/model_type")
                 .and_then(serde_json::Value::as_str);
+            let gguf = m.get("gguf").filter(|g| g.is_object());
             let parameters = m
                 .pointer("/safetensors/total")
+                .or_else(|| gguf.and_then(|g| g.get("total")))
                 .and_then(serde_json::Value::as_u64);
             if parameters.is_some_and(|p| p < MIN_PARAMETERS) {
+                return None;
+            }
+            if query.engine == Some(Engine::LlamaCpp) && gguf.is_none() {
                 return None;
             }
             if let Some(ov) = openvino {
@@ -207,18 +293,23 @@ fn survivors(
             let fit = llmfit
                 .and_then(|index| index.get(&id.to_lowercase()))
                 .cloned();
+            let estimate = parameters.map(|p| match query.engine {
+                Some(Engine::Mlx) => mlx_bytes(id, p),
+                _ => int4_bytes(p),
+            });
             let runs = match &fit {
                 Some(f) => {
                     (f.level == "Perfect" || f.level == "Good") && f.score >= query.min_score
                 }
                 // A repository without safetensors (GGUF...) llmfit does not
                 // know cannot be sized: it cannot be said to run.
-                None => parameters.is_some_and(|p| int4_bytes(p) <= ceiling),
+                None => estimate.is_some_and(|e| e <= ceiling),
             };
             runs.then(|| Survivor {
                 id: id.to_string(),
                 model_type: model_type.unwrap_or("-").to_string(),
                 parameters,
+                estimate,
                 license: m
                     .pointer("/cardData/license")
                     .and_then(serde_json::Value::as_str)
@@ -274,8 +365,14 @@ fn billions(parameters: u64) -> String {
 }
 
 fn format_report(found: &[Survivor], with_llmfit: bool) -> String {
+    let width = found
+        .iter()
+        .map(|s| s.id.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(5);
     let mut report = format!(
-        "{:48} {:14} {:>7} {:>7} {:14} {:>11}",
+        "{:width$} {:14} {:>7} {:>7} {:14} {:>11}",
         "model", "type", "params", "mem GB", "license", "downloads"
     );
     if with_llmfit {
@@ -283,17 +380,16 @@ fn format_report(found: &[Survivor], with_llmfit: bool) -> String {
     }
     for s in found {
         // llmfit's memory when it knows the model, the INT4 estimate otherwise.
-        let memory = match (&s.fit, s.parameters) {
+        let memory = match (&s.fit, s.estimate) {
             (Some(f), _) => format!("{:.1}", f.memory_gb),
-            (None, Some(p)) => {
-                let b = int4_bytes(p);
+            (None, Some(b)) => {
                 format!("~{}.{}", b / 1_000_000_000, b / 100_000_000 % 10)
             }
             (None, None) => "-".to_string(),
         };
         let _ = write!(
             report,
-            "\n{:48} {:14} {:>7} {:>7} {:14} {:>11}",
+            "\n{:width$} {:14} {:>7} {:>7} {:14} {:>11}",
             s.id,
             s.model_type,
             s.parameters.map_or_else(|| "-".to_string(), billions),
@@ -334,7 +430,7 @@ pub fn discover(
             "--npu: no Intel NPU on this host (no /dev/accel/accel* device)".to_string(),
         ));
     }
-    let architectures = if query.openvino || query.npu {
+    let architectures = if query.engine == Some(Engine::OpenVino) || query.npu {
         let found = exportable_architectures(&(world.fetch)(ARCHITECTURES_URL, None)?, &query.task);
         if found.is_empty() {
             return Err(crate::Error::Backend(format!(
@@ -451,7 +547,7 @@ class LlamaConfig(Base):
             candidates: 10,
             max_memory_percent: 50,
             min_score: 60.0,
-            openvino: false,
+            engine: None,
             npu: false,
             hf_token: None,
         }
@@ -526,6 +622,37 @@ class LlamaConfig(Base):
         };
         let found = survivors(&hub(), &query(), 32_000_000_000, None, Some(&ov));
         assert_eq!(ids(&found), ["Qwen/Qwen3-8B", "meta/gated"]);
+    }
+
+    #[test]
+    fn the_llamacpp_engine_keeps_gguf_repositories_sized_from_their_header() {
+        let hub = serde_json::json!([
+            {"id": "x/model-GGUF", "pipeline_tag": "text-generation", "gguf": {"total": 8_000_000_000_u64}},
+            {"id": "x/safetensors", "pipeline_tag": "text-generation",
+             "config": {"model_type": "qwen3"}, "safetensors": {"total": 1_000_000_000}}
+        ]);
+        let query = Query {
+            engine: Some(Engine::LlamaCpp),
+            ..query()
+        };
+        let found = survivors(&hub, &query, 32_000_000_000, None, None);
+        assert_eq!(ids(&found), ["x/model-GGUF"]);
+        assert_eq!(found[0].estimate, Some(int4_bytes(8_000_000_000)));
+        assert!(search_url(&query).contains("&filter=gguf"));
+    }
+
+    #[test]
+    fn an_mlx_repository_is_sized_from_the_bit_width_in_its_name() {
+        assert_eq!(mlx_bytes("mlx-community/Qwen3-8B-8bit", 1_000), 1_200);
+        assert_eq!(mlx_bytes("mlx-community/Qwen3-8B-4bit", 1_000), 600);
+        assert_eq!(mlx_bytes("mlx-community/Qwen3-8B", 1_000), 600);
+    }
+
+    #[test]
+    fn engine_names_parse_case_insensitively() {
+        assert_eq!(Engine::parse("OpenVINO"), Some(Engine::OpenVino));
+        assert_eq!(Engine::parse("llama.cpp"), Some(Engine::LlamaCpp));
+        assert_eq!(Engine::parse("vllm"), None);
     }
 
     #[test]

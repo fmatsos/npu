@@ -36,6 +36,10 @@ Turn the hint into search words (`qwen coder`, `phi`, `llama instruct`...) and, 
 task other than chat or code, the matching Hugging Face `--task`. A size hint is applied by reading
 the `params` column, not by a flag.
 
+For a backend already configured, `--backend <backend-id>` restricts the list to its engine
+(`openvino`, `llamacpp`, `mlx`, also accepted by name); `--npu` is `--backend openvino` plus the
+NPU check.
+
 `--npu` is what makes the list NPU-specific: without it, the command lists whatever runs on the
 host, CPU and GPU included. With it, a model is kept only when all of these hold. Never present a
 dropped model as a near-miss:

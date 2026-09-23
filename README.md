@@ -282,7 +282,7 @@ $ npu describe translate
 backend, end it, see what is up, read what it printed. `npu backend tune` sizes the context
 and memory of NPU- and GPU-compiled models from the model and the host's RAM, and
 `npu model discover` lists the Hugging Face models the host can run
-(`--npu` for those its Intel NPU can run through OpenVINO). What gets started comes from the backend's
+(`--backend openvino|llamacpp|mlx|<backend>` for one engine, `--npu` for the Intel NPU). What gets started comes from the backend's
 `[runtime]` table — a container (`type = "docker"`) or a plain local process
 (`type = "process"`) — so switching family, image, command, ports or accelerator is a
 configuration change, not a rebuild.

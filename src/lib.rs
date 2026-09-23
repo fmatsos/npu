@@ -160,7 +160,22 @@ fn build_cli(specs: &[command::CommandSpec]) -> clap::Command {
 
 /// `npu model discover`: reads its flags, the host's RAM and NPU, then
 /// delegates to [`discover::discover`], whose report is the result.
-fn model_discover(leaf_matches: &clap::ArgMatches, logger: log::Logger) -> Result<String> {
+fn model_discover(
+    leaf_matches: &clap::ArgMatches,
+    config: std::result::Result<&config::Config, &Error>,
+    logger: log::Logger,
+) -> Result<String> {
+    let npu = leaf_matches.get_flag("npu");
+    let engine = match leaf_matches.get_one::<String>("backend") {
+        None => npu.then_some(discover::Engine::OpenVino),
+        Some(name) => Some(discover_engine(name, config)?),
+    };
+    if npu && engine != Some(discover::Engine::OpenVino) {
+        return Err(Error::Config(
+            "--npu runs models through OpenVINO: it cannot be combined with another --backend"
+                .to_string(),
+        ));
+    }
     let words: Vec<&str> = leaf_matches
         .get_many::<String>("QUERY")
         .into_iter()
@@ -186,8 +201,8 @@ fn model_discover(leaf_matches: &clap::ArgMatches, logger: log::Logger) -> Resul
                 .copied()
                 .unwrap_or(60),
         ),
-        openvino: leaf_matches.get_flag("openvino"),
-        npu: leaf_matches.get_flag("npu"),
+        engine,
+        npu,
         hf_token: std::env::var("HF_TOKEN").ok().filter(|t| !t.is_empty()),
     };
     let mut system = sysinfo::System::new();
@@ -203,12 +218,47 @@ fn model_discover(leaf_matches: &clap::ArgMatches, logger: log::Logger) -> Resul
     discover::discover(&query, &world, logger)
 }
 
+/// The engine `--backend <name>` designates: an engine name, or a
+/// configured backend's identifier, whose engine is read from its runtime.
+/// Only the second needs the configuration, and only then does a failed
+/// load become this command's error.
+fn discover_engine(
+    name: &str,
+    config: std::result::Result<&config::Config, &Error>,
+) -> Result<discover::Engine> {
+    if let Some(engine) = discover::Engine::parse(name) {
+        return Ok(engine);
+    }
+    let config = config.map_err(|err| {
+        Error::Config(format!(
+            "--backend \"{name}\" is no engine ({}), and the configuration that could \
+             name such a backend failed to load: {err}",
+            discover::Engine::NAMES
+        ))
+    })?;
+    let Some(backend) = config.backends.get(name) else {
+        return Err(Error::Config(format!(
+            "--backend \"{name}\" is neither an engine ({}) nor a configured backend \
+             (available backends: {})",
+            discover::Engine::NAMES,
+            error::format_available(config.backends.keys())
+        )));
+    };
+    discover::Engine::of_backend(backend).ok_or_else(|| {
+        Error::Config(format!(
+            "backend \"{name}\" starts no runtime npu recognizes as an engine: \
+             pass --backend {}",
+            discover::Engine::NAMES.replace(", ", "|")
+        ))
+    })
+}
+
 /// `npu model discover`'s arguments.
 fn discover_command() -> clap::Command {
     clap::Command::new("discover")
         .about(
             "Search Hugging Face for models this host can run, judged by llmfit when it is \
-             on PATH; --openvino or --npu narrow the list",
+             on PATH; --backend or --npu narrow the list",
         )
         .arg(
             clap::Arg::new("QUERY")
@@ -259,19 +309,19 @@ fn discover_command() -> clap::Command {
                 .help("Lowest llmfit score kept, out of 100"),
         )
         .arg(
-            clap::Arg::new("openvino")
-                .long("openvino")
-                .action(clap::ArgAction::SetTrue)
+            clap::Arg::new("backend")
+                .long("backend")
+                .value_name("ENGINE|ID")
                 .help(
-                    "Only original, open weights of an architecture optimum-intel exports \
-                     to OpenVINO",
+                    "Only models packaged for this engine (openvino, llamacpp, mlx), or for \
+                     the engine a configured backend runs",
                 ),
         )
         .arg(
             clap::Arg::new("npu")
                 .long("npu")
                 .action(clap::ArgAction::SetTrue)
-                .help("--openvino, on a host that has an Intel NPU"),
+                .help("--backend openvino, on a host that has an Intel NPU"),
         )
 }
 
@@ -959,7 +1009,8 @@ pub fn run() -> Result<i32> {
 
     // Needs no configuration: it looks at the host and at Hugging Face.
     if route == ["model", "discover"] {
-        println!("{}", model_discover(leaf_matches, logger)?);
+        let config = loaded.as_ref().map(|(config, _)| config);
+        println!("{}", model_discover(leaf_matches, config, logger)?);
         return Ok(0);
     }
 

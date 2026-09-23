@@ -400,7 +400,7 @@ needs no configuration, so like `doctor` it works when yours fails to load.
 
 ```console
 $ npu model discover --help
-Search Hugging Face for models this host can run, judged by llmfit when it is on PATH; --openvino or --npu narrow the list
+Search Hugging Face for models this host can run, judged by llmfit when it is on PATH; --backend or --npu narrow the list
 
 Usage: npu model discover [OPTIONS] [QUERY]...
 
@@ -414,8 +414,8 @@ Options:
       --candidates <N>        Hugging Face results examined before filtering [default: 100]
       --max-memory <PERCENT>  Share of the total RAM one model's INT4 weights may take, in percent, for the models llmfit does not size [default: 50]
       --min-score <SCORE>     Lowest llmfit score kept, out of 100 [default: 60]
-      --openvino              Only original, open weights of an architecture optimum-intel exports to OpenVINO
-      --npu                   --openvino, on a host that has an Intel NPU
+      --backend <ENGINE|ID>   Only models packaged for this engine (openvino, llamacpp, mlx), or for the engine a configured backend runs
+      --npu                   --backend openvino, on a host that has an Intel NPU
   -h, --help                  Print help
 ```
 
@@ -428,12 +428,20 @@ repository that cannot be sized that way, such as a GGUF-only one llmfit does no
 out. The search also asks for `--task` (Hugging Face `pipeline_tag`, `text-generation` by
 default), and leaves out anything under 100M parameters: tokenizer fixtures and toys.
 
-Two opt-in filters narrow the list to what `npu`'s OpenVINO path can export:
+`--backend` narrows the list to what one inference engine serves. It accepts an engine name, or
+the identifier of a configured backend: its engine is read from what its runtime starts (the
+Docker image and arguments, or the process command and arguments). `openvino/model_server` or
+`ovms` means `openvino`, and `llama-server` means `llamacpp`. A backend that starts neither is a
+configuration error (`2`) naming it, and so is a name that is neither an engine nor a backend.
 
-| Flag | Keeps only |
+| `--backend` | Keeps only |
 | --- | --- |
-| `--openvino` | An architecture `optimum-intel` exports for `--task`, read at run time from its own registry (`model_configs.py` on `main`), never frozen in the binary. The original weights, not an already-quantized repository (AWQ, GPTQ, FP8, etc.): `optimum-cli export --weight-format int4` starts from those. Open weights, unless `HF_TOKEN` is set (it is then sent to the Hub). |
-| `--npu` | `--openvino`, on a host with an Intel NPU. With no `/dev/accel/accel*`, it fails before any request with exit `3`. |
+| `openvino` | An architecture `optimum-intel` exports for `--task`, read at run time from its own registry (`model_configs.py` on `main`), never frozen in the binary. The original weights, not an already-quantized repository (AWQ, GPTQ, FP8, etc.): `optimum-cli export --weight-format int4` starts from those. Open weights, unless `HF_TOKEN` is set (it is then sent to the Hub). |
+| `llamacpp` | GGUF repositories, searched by their Hub tag and sized from the parameter count in their GGUF header. |
+| `mlx` | MLX repositories, searched by their Hub tag. They are already quantized: the size is read from the bit width in the name (`-4bit`, `-8bit`), 4 bits when it gives none. |
+
+`--npu` is `--backend openvino` on a host with an Intel NPU. With no `/dev/accel/accel*`, it fails
+before any request with exit `3`. It cannot be combined with another `--backend`.
 
 A candidate that fails a filter is left out, never listed with a caveat. The report is the
 result: stdout, sorted by downloads. The `mem GB` column is llmfit's figure when it sized the
@@ -442,11 +450,11 @@ appear only with llmfit.
 
 ```console
 $ npu model discover qwen3 instruct -n 4
-model                                            type            params  mem GB license          downloads  score fit      on    use case
-Qwen/Qwen3-4B-Instruct-2507                      qwen3             4.0B     5.8 apache-2.0         3963193   72.3 Perfect  GPU   Instruction following, chat
-Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8            qwen3_moe        30.5B    15.6 apache-2.0         1150065   80.8 Perfect  GPU   Code generation and completion
-QuantTrio/Qwen3-VL-30B-A3B-Instruct-AWQ          qwen3_vl_moe     31.1B   ~18.6 apache-2.0         1107291      - -        -     -
-cyankiwi/Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit   qwen3_moe         5.3B    ~3.1 apache-2.0          970477      - -        -     -
+model                                          type            params  mem GB license          downloads  score fit      on    use case
+Qwen/Qwen3-4B-Instruct-2507                    qwen3             4.0B     5.8 apache-2.0         3963193   72.3 Perfect  GPU   Instruction following, chat
+Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8          qwen3_moe        30.5B    15.6 apache-2.0         1150065   80.8 Perfect  GPU   Code generation and completion
+QuantTrio/Qwen3-VL-30B-A3B-Instruct-AWQ        qwen3_vl_moe     31.1B   ~18.6 apache-2.0         1107291      - -        -     -
+cyankiwi/Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit qwen3_moe         5.3B    ~3.1 apache-2.0          970477      - -        -     -
 ```
 
 A Hub or registry that cannot be reached fails with exit `3`, naming the URL. This list answers
