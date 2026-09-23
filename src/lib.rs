@@ -180,6 +180,14 @@ fn model_discover(leaf_matches: &clap::ArgMatches, logger: log::Logger) -> Resul
             .get_one::<u64>("max-memory")
             .copied()
             .unwrap_or(50),
+        min_score: f64::from(
+            leaf_matches
+                .get_one::<u8>("min-score")
+                .copied()
+                .unwrap_or(60),
+        ),
+        openvino: leaf_matches.get_flag("openvino"),
+        npu: leaf_matches.get_flag("npu"),
         hf_token: std::env::var("HF_TOKEN").ok().filter(|t| !t.is_empty()),
     };
     let mut system = sysinfo::System::new();
@@ -199,8 +207,8 @@ fn model_discover(leaf_matches: &clap::ArgMatches, logger: log::Logger) -> Resul
 fn discover_command() -> clap::Command {
     clap::Command::new("discover")
         .about(
-            "Search Hugging Face for models this host's Intel NPU can run through OpenVINO, \
-             scored by llmfit when it is on PATH",
+            "Search Hugging Face for models this host can run, judged by llmfit when it is \
+             on PATH; --openvino or --npu narrow the list",
         )
         .arg(
             clap::Arg::new("QUERY")
@@ -237,7 +245,33 @@ fn discover_command() -> clap::Command {
                 .value_name("PERCENT")
                 .default_value("50")
                 .value_parser(clap::value_parser!(u64).range(1..=100))
-                .help("Share of the total RAM one model's INT4 weights may take, in percent"),
+                .help(
+                    "Share of the total RAM one model's INT4 weights may take, in percent, \
+                     for the models llmfit does not size",
+                ),
+        )
+        .arg(
+            clap::Arg::new("min-score")
+                .long("min-score")
+                .value_name("SCORE")
+                .default_value("60")
+                .value_parser(clap::value_parser!(u8).range(0..=100))
+                .help("Lowest llmfit score kept, out of 100"),
+        )
+        .arg(
+            clap::Arg::new("openvino")
+                .long("openvino")
+                .action(clap::ArgAction::SetTrue)
+                .help(
+                    "Only original, open weights of an architecture optimum-intel exports \
+                     to OpenVINO",
+                ),
+        )
+        .arg(
+            clap::Arg::new("npu")
+                .long("npu")
+                .action(clap::ArgAction::SetTrue)
+                .help("--openvino, on a host that has an Intel NPU"),
         )
 }
 

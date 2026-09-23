@@ -395,12 +395,12 @@ missing or malformed, naming the file.
 
 ## `npu model discover`
 
-Searches Hugging Face for models this host's Intel NPU can run through OpenVINO, and lists only
-those. It needs no configuration: like `doctor`, it works when yours fails to load.
+Searches Hugging Face for the models this host can run, whatever runs them: CPU, GPU or NPU. It
+needs no configuration, so like `doctor` it works when yours fails to load.
 
 ```console
 $ npu model discover --help
-Search Hugging Face for models this host's Intel NPU can run through OpenVINO, scored by llmfit when it is on PATH
+Search Hugging Face for models this host can run, judged by llmfit when it is on PATH; --openvino or --npu narrow the list
 
 Usage: npu model discover [OPTIONS] [QUERY]...
 
@@ -412,43 +412,46 @@ Options:
   -v, --verbose <LEVEL>       Diagnostic verbosity on stderr; stdout always carries the result only [default: warn] [possible values: error, warn, info]
   -n, --limit <N>             Most models listed [default: 20]
       --candidates <N>        Hugging Face results examined before filtering [default: 100]
-      --max-memory <PERCENT>  Share of the total RAM one model's INT4 weights may take, in percent [default: 50]
+      --max-memory <PERCENT>  Share of the total RAM one model's INT4 weights may take, in percent, for the models llmfit does not size [default: 50]
+      --min-score <SCORE>     Lowest llmfit score kept, out of 100 [default: 60]
+      --openvino              Only original, open weights of an architecture optimum-intel exports to OpenVINO
+      --npu                   --openvino, on a host that has an Intel NPU
   -h, --help                  Print help
 ```
 
-A candidate is kept only if all of these hold:
-- its `model_type` is an architecture `optimum-intel` exports for `--task`. The list is read at
-  run time from `optimum-intel`'s own registry (`model_configs.py` on `main`), never frozen in the
-  binary;
-- its Hugging Face `pipeline_tag` is `--task`, which rules out an embedding model that merely
-  carries the tag;
-- it is not already quantized (AWQ, GPTQ, FP8, etc.). `optimum-cli export --weight-format int4`
-  starts from the original weights, and a packed repository misreports its parameter count;
-- it has at least 100M parameters, which rules out tokenizer fixtures and toys;
-- it is not gated, unless `HF_TOKEN` is set, in which case it is also sent to the Hub;
-- its INT4 weights (half a byte per parameter, plus 20 %) fit `--max-memory` percent of the RAM.
-  A client NPU has no memory of its own.
+By default, the only filter is that the model runs well on this machine. This is decided by
+[llmfit](https://github.com/AlexsJones/llmfit), when its CLI is on `PATH`
+(`uv tool install llmfit`) and it knows the model: a fit of `Perfect` or `Good`, and a score of at
+least `--min-score`. For a model llmfit does not know, or without llmfit, the check is an INT4
+estimate (half a byte per parameter, plus 20 %) against `--max-memory` percent of the RAM. A
+repository that cannot be sized that way, such as a GGUF-only one llmfit does not know, is left
+out. The search also asks for `--task` (Hugging Face `pipeline_tag`, `text-generation` by
+default), and leaves out anything under 100M parameters: tokenizer fixtures and toys.
 
-A candidate that fails the filter is left out, never listed with a caveat. When the `llmfit` CLI
-is on `PATH` (`uv tool install llmfit`), its `fit --json` view of the host adds a `score` and a
-`use case` to each model it knows (`-` for the others). Without `llmfit`, those two columns are
-absent.
+Two opt-in filters narrow the list to what `npu`'s OpenVINO path can export:
+
+| Flag | Keeps only |
+| --- | --- |
+| `--openvino` | An architecture `optimum-intel` exports for `--task`, read at run time from its own registry (`model_configs.py` on `main`), never frozen in the binary. The original weights, not an already-quantized repository (AWQ, GPTQ, FP8, etc.): `optimum-cli export --weight-format int4` starts from those. Open weights, unless `HF_TOKEN` is set (it is then sent to the Hub). |
+| `--npu` | `--openvino`, on a host with an Intel NPU. With no `/dev/accel/accel*`, it fails before any request with exit `3`. |
+
+A candidate that fails a filter is left out, never listed with a caveat. The report is the
+result: stdout, sorted by downloads. The `mem GB` column is llmfit's figure when it sized the
+model, and `~` marks the INT4 estimate otherwise. The `score`, `fit`, `on` and `use case` columns
+appear only with llmfit.
 
 ```console
 $ npu model discover qwen3 instruct -n 4
-model                                            type            params int4 ~GB license          downloads  score  use case
-Qwen/Qwen3-4B-Instruct-2507                      qwen3             4.0B      2.4 apache-2.0         3963193   72.3  Instruction following, chat
-Qwen/Qwen3-30B-A3B-Instruct-2507                 qwen3_moe        30.5B     18.3 apache-2.0          784500   76.2  Instruction following, chat
-Qwen/Qwen3-Coder-30B-A3B-Instruct                qwen3_moe        30.5B     18.3 apache-2.0          564937   80.8  Code generation and completion
-heretic-org/Qwen3-4B-Instruct-2507-heretic       qwen3             4.0B      2.4 apache-2.0           28402   72.9  Instruction following, chat
+model                                            type            params  mem GB license          downloads  score fit      on    use case
+Qwen/Qwen3-4B-Instruct-2507                      qwen3             4.0B     5.8 apache-2.0         3963193   72.3 Perfect  GPU   Instruction following, chat
+Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8            qwen3_moe        30.5B    15.6 apache-2.0         1150065   80.8 Perfect  GPU   Code generation and completion
+QuantTrio/Qwen3-VL-30B-A3B-Instruct-AWQ          qwen3_vl_moe     31.1B   ~18.6 apache-2.0         1107291      - -        -     -
+cyankiwi/Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit   qwen3_moe         5.3B    ~3.1 apache-2.0          970477      - -        -     -
 ```
 
-The report is the result: stdout, sorted by downloads. A host without an Intel NPU (no
-`/dev/accel/accel*`) is refused before any request, with exit `3`. So is a Hub or registry that
-cannot be reached, naming the URL.
-
-This list answers "worth trying". [`npu-export`](intel-npu.md)'s CPU check answers "actually
-works", and [`npu backend tune`](#npu-backend-tune) sizes the context once the model is exported.
+A Hub or registry that cannot be reached fails with exit `3`, naming the URL. This list answers
+"worth trying". [`npu-export`](intel-npu.md)'s CPU check answers "actually works", and
+[`npu backend tune`](#npu-backend-tune) sizes the context once the model is exported.
 
 ## `npu describe`
 

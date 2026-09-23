@@ -29,24 +29,27 @@ chat model. This skill only searches and filters — it never exports. Hand the 
 The filtering is done by `npu` itself — do not re-implement it with `curl`:
 
 ```sh
-npu model discover [words] [-n 20] [--task text-generation] [--max-memory 50] [--candidates 100]
+npu model discover --npu [words] [-n 20] [--task text-generation] [--max-memory 50] [--candidates 100]
 ```
 
 Turn the hint into search words (`qwen coder`, `phi`, `llama instruct`...) and, when it names a
 task other than chat or code, the matching Hugging Face `--task`. A size hint is applied by reading
 the `params` column, not by a flag.
 
-`npu model discover` keeps a model only when all of these hold. Never present a dropped model as
-a near-miss:
+`--npu` is what makes the list NPU-specific: without it, the command lists whatever runs on the
+host, CPU and GPU included. With it, a model is kept only when all of these hold. Never present a
+dropped model as a near-miss:
 - its architecture is exportable to OpenVINO for the task, according to `optimum-intel`'s
   registry read at run time;
 - its `pipeline_tag` is the task;
 - it is not already quantized;
 - it has at least 100M parameters;
 - it is not gated, unless `HF_TOKEN` is set;
-- its INT4 weights fit `--max-memory` percent of the RAM.
+- it fits the host: llmfit's `Perfect` or `Good` with a score of at least `--min-score` when
+  llmfit is on `PATH` and knows the model, otherwise the INT4 weights within `--max-memory`
+  percent of the RAM.
 
-When `llmfit` is on `PATH`, it adds a `score` and a `use case` column.
+When `llmfit` is on `PATH`, it adds `score`, `fit`, `on` and `use case` columns.
 
 Exit codes:
 - `3`: either no Intel NPU (say so plainly and stop, since a list nobody can run is useless), or

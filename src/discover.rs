@@ -1,21 +1,21 @@
-//! `npu model discover`: searches Hugging Face for models this host's Intel
-//! NPU can run through `OpenVINO`, and lists only those.
+//! `npu model discover`: searches Hugging Face for the models this host can
+//! run, whatever runs them — CPU, GPU or NPU.
 //!
-//! A candidate survives when ALL of these hold:
+//! By default a candidate is kept when its weights fit the host: llmfit's
+//! verdict (`Perfect` or `Good`, and a score of at least `--min-score`) when
+//! the `llmfit` CLI is on `PATH` and knows the model, otherwise an INT4
+//! estimate against `--max-memory` percent of the RAM. Opt-in filters
+//! narrow the list further:
 //!
-//! - its `model_type` is an architecture `optimum-intel` exports to `OpenVINO`
-//!   for the requested task — read from `optimum-intel`'s own registry at run
-//!   time, never from a list frozen in this binary;
-//! - it is not gated, unless `HF_TOKEN` is set;
-//! - its INT4 weights fit `--max-memory` percent of the host's RAM (a client
-//!   NPU has no memory of its own).
+//! - `--openvino`: an architecture `optimum-intel` exports to `OpenVINO` for
+//!   the task — read from its own registry at run time, never frozen in this
+//!   binary —, original weights (not already quantized), not gated unless
+//!   `HF_TOKEN` is set;
+//! - `--npu`: `--openvino`, on a host that has an Intel NPU.
 //!
-//! Everything else is left out, not listed with a caveat. When the `llmfit`
-//! CLI is on `PATH`, its score and use case are added to each survivor.
-//!
-//! Everything that touches the outside world — HTTP, `llmfit`, the NPU
-//! device, the RAM — comes in through [`World`], so the filter is tested
-//! without a network.
+//! Everything else is left out, not listed with a caveat. Everything that
+//! touches the outside world — HTTP, `llmfit`, the NPU device, the RAM —
+//! comes in through [`World`], so the filters are tested without a network.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
@@ -39,6 +39,9 @@ pub struct Query {
     pub limit: usize,
     pub candidates: usize,
     pub max_memory_percent: u64,
+    pub min_score: f64,
+    pub openvino: bool,
+    pub npu: bool,
     pub hf_token: Option<String>,
 }
 
@@ -125,55 +128,96 @@ fn search_url(query: &Query) -> String {
     url
 }
 
+/// llmfit's view of one model.
+#[derive(Debug, Clone, PartialEq)]
+struct Fit {
+    score: f64,
+    level: String,
+    memory_gb: f64,
+    run_mode: String,
+    use_case: String,
+}
+
 #[derive(Debug, PartialEq)]
 struct Survivor {
     id: String,
     model_type: String,
-    parameters: u64,
+    parameters: Option<u64>,
     license: String,
     downloads: u64,
+    fit: Option<Fit>,
 }
 
-// ponytail: below this, a "model" is a tokenizer test fixture or a toy, not
-// something to chat with. Make it a flag if a tiny model is ever the point.
+// ponytail: below this, a "model" is a tokenizer test fixture or a toy that
+// no score would call good. Make it a flag if a tiny model is ever the point.
 const MIN_PARAMETERS: u64 = 100_000_000;
 
 fn int4_bytes(parameters: u64) -> u64 {
     parameters / 2 * INT4_OVERHEAD_PERCENT / 100
 }
 
+/// The opt-in `--openvino` filter: `None` when it is off.
+struct OpenVino<'a> {
+    architectures: &'a BTreeSet<String>,
+    authenticated: bool,
+}
+
 /// The Hub's answer, reduced to the candidates that pass every filter, in
 /// the Hub's (downloads) order.
 fn survivors(
     hub: &serde_json::Value,
-    architectures: &BTreeSet<String>,
+    query: &Query,
     ceiling: u64,
-    task: &str,
-    authenticated: bool,
+    llmfit: Option<&HashMap<String, Fit>>,
+    openvino: Option<&OpenVino<'_>>,
 ) -> Vec<Survivor> {
     hub.as_array()
         .into_iter()
         .flatten()
         .filter_map(|m| {
-            let model_type = m.pointer("/config/model_type")?.as_str()?;
-            let parameters = m.pointer("/safetensors/total")?.as_u64()?;
-            let gated = m
-                .get("gated")
-                .is_some_and(|g| g != &serde_json::Value::Bool(false));
             let id = m.get("id")?.as_str()?;
-            // A repository already quantized (AWQ, GPTQ, FP8...) is not what
-            // `optimum-cli export --weight-format int4` starts from, and its
-            // `safetensors.total` counts packed tensors, not parameters.
-            let quantized = m.pointer("/config/quantization_config").is_some();
-            let keep = architectures.contains(model_type)
-                && m.get("pipeline_tag").and_then(serde_json::Value::as_str) == Some(task)
-                && !quantized
-                && parameters >= MIN_PARAMETERS
-                && (authenticated || !gated)
-                && int4_bytes(parameters) <= ceiling;
-            keep.then(|| Survivor {
+            if m.get("pipeline_tag").and_then(serde_json::Value::as_str)
+                != Some(query.task.as_str())
+            {
+                return None;
+            }
+            let model_type = m
+                .pointer("/config/model_type")
+                .and_then(serde_json::Value::as_str);
+            let parameters = m
+                .pointer("/safetensors/total")
+                .and_then(serde_json::Value::as_u64);
+            if parameters.is_some_and(|p| p < MIN_PARAMETERS) {
+                return None;
+            }
+            if let Some(ov) = openvino {
+                // An already-quantized repository (AWQ, GPTQ, FP8...) is not
+                // what `optimum-cli export --weight-format int4` starts from.
+                let quantized = m.pointer("/config/quantization_config").is_some();
+                let gated = m
+                    .get("gated")
+                    .is_some_and(|g| g != &serde_json::Value::Bool(false));
+                if !model_type.is_some_and(|t| ov.architectures.contains(t))
+                    || quantized
+                    || (gated && !ov.authenticated)
+                {
+                    return None;
+                }
+            }
+            let fit = llmfit
+                .and_then(|index| index.get(&id.to_lowercase()))
+                .cloned();
+            let runs = match &fit {
+                Some(f) => {
+                    (f.level == "Perfect" || f.level == "Good") && f.score >= query.min_score
+                }
+                // A repository without safetensors (GGUF...) llmfit does not
+                // know cannot be sized: it cannot be said to run.
+                None => parameters.is_some_and(|p| int4_bytes(p) <= ceiling),
+            };
+            runs.then(|| Survivor {
                 id: id.to_string(),
-                model_type: model_type.to_string(),
+                model_type: model_type.unwrap_or("-").to_string(),
                 parameters,
                 license: m
                     .pointer("/cardData/license")
@@ -184,15 +228,21 @@ fn survivors(
                     .get("downloads")
                     .and_then(serde_json::Value::as_u64)
                     .unwrap_or(0),
+                fit,
             })
         })
         .collect()
 }
 
-/// `llmfit fit --json`, indexed by lowercased Hugging Face id: score and use
-/// case.
-fn llmfit_index(json: &str) -> HashMap<String, (f64, String)> {
+/// `llmfit fit --json`, indexed by lowercased Hugging Face id.
+fn llmfit_index(json: &str) -> HashMap<String, Fit> {
     let parsed: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
+    let text = |m: &serde_json::Value, key: &str| {
+        m.get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("-")
+            .to_string()
+    };
     parsed
         .get("models")
         .and_then(serde_json::Value::as_array)
@@ -200,12 +250,19 @@ fn llmfit_index(json: &str) -> HashMap<String, (f64, String)> {
         .flatten()
         .filter_map(|m| {
             let name = m.get("name")?.as_str()?.to_lowercase();
-            let score = m.get("score")?.as_f64()?;
-            let use_case = m
-                .get("use_case")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("-");
-            Some((name, (score, use_case.to_string())))
+            Some((
+                name,
+                Fit {
+                    score: m.get("score")?.as_f64()?,
+                    level: text(m, "fit_level"),
+                    memory_gb: m
+                        .get("memory_required_gb")
+                        .and_then(serde_json::Value::as_f64)
+                        .unwrap_or(0.0),
+                    run_mode: text(m, "run_mode"),
+                    use_case: text(m, "use_case"),
+                },
+            ))
         })
         .collect()
 }
@@ -216,90 +273,104 @@ fn billions(parameters: u64) -> String {
     format!("{}.{}B", tenths / 10, tenths % 10)
 }
 
+fn format_report(found: &[Survivor], with_llmfit: bool) -> String {
+    let mut report = format!(
+        "{:48} {:14} {:>7} {:>7} {:14} {:>11}",
+        "model", "type", "params", "mem GB", "license", "downloads"
+    );
+    if with_llmfit {
+        let _ = write!(report, " {:>6} {:8} {:4}  use case", "score", "fit", "on");
+    }
+    for s in found {
+        // llmfit's memory when it knows the model, the INT4 estimate otherwise.
+        let memory = match (&s.fit, s.parameters) {
+            (Some(f), _) => format!("{:.1}", f.memory_gb),
+            (None, Some(p)) => {
+                let b = int4_bytes(p);
+                format!("~{}.{}", b / 1_000_000_000, b / 100_000_000 % 10)
+            }
+            (None, None) => "-".to_string(),
+        };
+        let _ = write!(
+            report,
+            "\n{:48} {:14} {:>7} {:>7} {:14} {:>11}",
+            s.id,
+            s.model_type,
+            s.parameters.map_or_else(|| "-".to_string(), billions),
+            memory,
+            s.license,
+            s.downloads
+        );
+        if with_llmfit {
+            match &s.fit {
+                Some(f) => {
+                    let _ = write!(
+                        report,
+                        " {:>6.1} {:8} {:4}  {}",
+                        f.score, f.level, f.run_mode, f.use_case
+                    );
+                }
+                None => report.push_str("      - -        -     -"),
+            }
+        }
+    }
+    report
+}
+
 /// Runs the search and returns the report — this command's result.
 ///
 /// # Errors
 ///
-/// `Error::Backend` when the host has no Intel NPU, when Hugging Face or
-/// `optimum-intel`'s registry cannot be reached, or when that registry no
-/// longer yields any architecture — each naming what failed.
+/// `Error::Backend` when `--npu` is asked on a host without an Intel NPU,
+/// when Hugging Face or `optimum-intel`'s registry cannot be reached, or when
+/// that registry no longer yields any architecture — each naming what failed.
 pub fn discover(
     query: &Query,
     world: &World<'_>,
     logger: crate::log::Logger,
 ) -> crate::Result<String> {
-    if !world.has_npu {
+    if query.npu && !world.has_npu {
         return Err(crate::Error::Backend(
-            "no Intel NPU on this host (no /dev/accel/accel* device): \
-             nothing found here could run on it"
-                .to_string(),
+            "--npu: no Intel NPU on this host (no /dev/accel/accel* device)".to_string(),
         ));
     }
-    let architectures =
-        exportable_architectures(&(world.fetch)(ARCHITECTURES_URL, None)?, &query.task);
-    if architectures.is_empty() {
-        return Err(crate::Error::Backend(format!(
-            "no architecture exportable for task \"{}\" found in {ARCHITECTURES_URL}",
+    let architectures = if query.openvino || query.npu {
+        let found = exportable_architectures(&(world.fetch)(ARCHITECTURES_URL, None)?, &query.task);
+        if found.is_empty() {
+            return Err(crate::Error::Backend(format!(
+                "no architecture exportable for task \"{}\" found in {ARCHITECTURES_URL}",
+                query.task
+            )));
+        }
+        logger.info(&format!(
+            "{} architectures exportable to OpenVINO for \"{}\"",
+            found.len(),
             query.task
-        )));
-    }
-    logger.info(&format!(
-        "{} architectures exportable to OpenVINO for \"{}\"",
-        architectures.len(),
-        query.task
-    ));
+        ));
+        Some(found)
+    } else {
+        None
+    };
+    let openvino = architectures.as_ref().map(|architectures| OpenVino {
+        architectures,
+        authenticated: query.hf_token.is_some(),
+    });
 
-    let url = search_url(query);
-    let body = (world.fetch)(&url, query.hf_token.as_deref())?;
+    let body = (world.fetch)(&search_url(query), query.hf_token.as_deref())?;
     let hub: serde_json::Value = serde_json::from_str(&body)
         .map_err(|e| crate::Error::Backend(format!("unexpected answer from {HUB_API}: {e}")))?;
-    let ceiling = world.total_ram / 100 * query.max_memory_percent;
-    let mut found = survivors(
-        &hub,
-        &architectures,
-        ceiling,
-        &query.task,
-        query.hf_token.is_some(),
-    );
-    found.truncate(query.limit);
 
     let llmfit = (world.llmfit)().map(|json| llmfit_index(&json));
     if llmfit.is_none() {
-        logger.info("llmfit is not on PATH: no score or use case to add");
+        logger.info("llmfit is not on PATH: fit judged from an INT4 estimate, no score");
     }
-
-    let mut report = format!(
-        "{:48} {:14} {:>7} {:>8} {:14} {:>11}",
-        "model", "type", "params", "int4 ~GB", "license", "downloads"
-    );
-    if llmfit.is_some() {
-        let _ = write!(report, " {:>6}  use case", "score");
-    }
-    for s in &found {
-        let int4 = int4_bytes(s.parameters);
-        let _ = write!(
-            report,
-            "\n{:48} {:14} {:>7} {:>8} {:14} {:>11}",
-            s.id,
-            s.model_type,
-            billions(s.parameters),
-            format!("{}.{}", int4 / 1_000_000_000, int4 / 100_000_000 % 10),
-            s.license,
-            s.downloads
-        );
-        if let Some(index) = &llmfit {
-            match index.get(&s.id.to_lowercase()) {
-                Some((score, use_case)) => {
-                    let _ = write!(report, " {score:>6.1}  {use_case}");
-                }
-                None => report.push_str("      -  -"),
-            }
-        }
-    }
+    let ceiling = world.total_ram / 100 * query.max_memory_percent;
+    let mut found = survivors(&hub, query, ceiling, llmfit.as_ref(), openvino.as_ref());
+    found.truncate(query.limit);
     if found.is_empty() {
-        logger.warn("no candidate passed the filter: try a broader query or more --candidates");
+        logger.warn("no candidate passed the filters: try broader words or more --candidates");
     }
-    Ok(report)
+    Ok(format_report(&found, llmfit.is_some()))
 }
 
 /// The real [`World::fetch`]: a GET through `ureq`, `Error::Backend` on any
@@ -372,6 +443,20 @@ class LlamaConfig(Base):
         assert_eq!(features.into_iter().collect::<Vec<_>>(), ["bert"]);
     }
 
+    fn query() -> Query {
+        Query {
+            text: None,
+            task: "text-generation".into(),
+            limit: 10,
+            candidates: 10,
+            max_memory_percent: 50,
+            min_score: 60.0,
+            openvino: false,
+            npu: false,
+            hf_token: None,
+        }
+    }
+
     fn hub() -> serde_json::Value {
         serde_json::json!([
             {"id": "Qwen/Qwen3-8B", "gated": false, "downloads": 10, "pipeline_tag": "text-generation",
@@ -381,12 +466,12 @@ class LlamaConfig(Base):
              "config": {"model_type": "qwen3"}, "safetensors": {"total": 400_000_000_000_u64}},
             {"id": "meta/gated", "gated": "manual", "pipeline_tag": "text-generation",
              "config": {"model_type": "llama"}, "safetensors": {"total": 1_000_000_000}},
-            {"id": "x/bert", "gated": false,
-             "config": {"model_type": "bert"}, "safetensors": {"total": 1_000_000}},
-            {"id": "x/gguf-only", "gated": false},
+            {"id": "x/gguf", "gated": false, "pipeline_tag": "text-generation"},
             {"id": "x/awq", "gated": false, "pipeline_tag": "text-generation",
              "config": {"model_type": "qwen3", "quantization_config": {}},
              "safetensors": {"total": 1_000_000_000}},
+            {"id": "x/mamba", "gated": false, "pipeline_tag": "text-generation",
+             "config": {"model_type": "mamba"}, "safetensors": {"total": 1_000_000_000}},
             {"id": "x/embedding", "gated": false, "pipeline_tag": "feature-extraction",
              "config": {"model_type": "qwen3"}, "safetensors": {"total": 1_000_000_000}},
             {"id": "x/toy", "gated": false, "pipeline_tag": "text-generation",
@@ -394,26 +479,61 @@ class LlamaConfig(Base):
         ])
     }
 
+    fn ids(found: &[Survivor]) -> Vec<&str> {
+        found.iter().map(|s| s.id.as_str()).collect()
+    }
+
     #[test]
-    fn a_candidate_failing_any_filter_is_left_out() {
+    fn by_default_only_the_fit_to_the_host_filters() {
+        let found = survivors(&hub(), &query(), 32_000_000_000, None, None);
+        assert_eq!(
+            ids(&found),
+            ["Qwen/Qwen3-8B", "meta/gated", "x/awq", "x/mamba"]
+        );
+    }
+
+    #[test]
+    fn llmfit_decides_the_fit_of_the_models_it_knows() {
+        let fit = |level: &str, score: f64| Fit {
+            score,
+            level: level.into(),
+            memory_gb: 5.0,
+            run_mode: "GPU".into(),
+            use_case: "chat".into(),
+        };
+        let index: HashMap<String, Fit> = [
+            ("x/gguf".to_string(), fit("Perfect", 80.0)),
+            ("qwen/qwen3-8b".to_string(), fit("Perfect", 40.0)),
+            ("x/mamba".to_string(), fit("Too Tight", 90.0)),
+        ]
+        .into();
+        let found = survivors(&hub(), &query(), 32_000_000_000, Some(&index), None);
+        assert_eq!(ids(&found), ["meta/gated", "x/gguf", "x/awq"]);
+    }
+
+    #[test]
+    fn the_openvino_filter_keeps_exportable_original_open_weights() {
         let archs: BTreeSet<String> = ["qwen3", "llama"].map(String::from).into();
-        let found = survivors(&hub(), &archs, 32_000_000_000, "text-generation", false);
-        let ids: Vec<&str> = found.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, ["Qwen/Qwen3-8B"]);
-        assert_eq!(found[0].license, "apache-2.0");
-        let with_token = survivors(&hub(), &archs, 32_000_000_000, "text-generation", true);
-        assert!(with_token.iter().any(|s| s.id == "meta/gated"));
+        let ov = OpenVino {
+            architectures: &archs,
+            authenticated: false,
+        };
+        let found = survivors(&hub(), &query(), 32_000_000_000, None, Some(&ov));
+        assert_eq!(ids(&found), ["Qwen/Qwen3-8B"]);
+        let ov = OpenVino {
+            architectures: &archs,
+            authenticated: true,
+        };
+        let found = survivors(&hub(), &query(), 32_000_000_000, None, Some(&ov));
+        assert_eq!(ids(&found), ["Qwen/Qwen3-8B", "meta/gated"]);
     }
 
     #[test]
     fn the_search_url_encodes_the_query() {
         let query = Query {
             text: Some("qwen coder 7b".into()),
-            task: "text-generation".into(),
-            limit: 5,
             candidates: 50,
-            max_memory_percent: 50,
-            hf_token: None,
+            ..query()
         };
         let url = search_url(&query);
         assert!(url.contains("search=qwen%20coder%207b") && url.contains("limit=50"));
@@ -421,17 +541,19 @@ class LlamaConfig(Base):
 
     #[test]
     fn llmfit_scores_are_indexed_by_lowercased_id() {
-        let index =
-            llmfit_index(r#"{"models":[{"name":"Qwen/Qwen3-8B","score":80.5,"use_case":"chat"}]}"#);
+        let index = llmfit_index(
+            r#"{"models":[{"name":"Qwen/Qwen3-8B","score":80.5,"fit_level":"Good","use_case":"chat"}]}"#,
+        );
+        let fit = index.get("qwen/qwen3-8b");
         assert_eq!(
-            index.get("qwen/qwen3-8b"),
-            Some(&(80.5, "chat".to_string()))
+            fit.map(|f| (f.score, f.level.as_str())),
+            Some((80.5, "Good"))
         );
         assert!(llmfit_index("not json").is_empty());
     }
 
     #[test]
-    fn no_npu_is_a_backend_error_before_any_request() {
+    fn npu_on_a_host_without_one_is_a_backend_error_before_any_request() {
         let fetch = |_: &str, _: Option<&str>| -> crate::Result<String> {
             Err(crate::Error::Config("must not be called".into()))
         };
@@ -442,12 +564,8 @@ class LlamaConfig(Base):
             total_ram: 1,
         };
         let query = Query {
-            text: None,
-            task: "text-generation".into(),
-            limit: 1,
-            candidates: 1,
-            max_memory_percent: 50,
-            hf_token: None,
+            npu: true,
+            ..query()
         };
         let err = discover(
             &query,
