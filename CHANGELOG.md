@@ -4,6 +4,19 @@ Every notable change to `npu`, newest first. Versions follow
 [semantic versioning](https://semver.org); pre-1.0, a breaking change bumps
 the minor.
 
+## [0.3.1] - 2026-09-23
+
+### Fixed
+
+- `npu update` and `npu version` no longer warn about an invalid configuration: neither reads it.
+  After an update, the newly installed binary checks the configuration instead of the old one, so
+  a key introduced by the new release no longer looks invalid; if the new version does reject it,
+  a warning on stderr points to this changelog and the documentation, and the update still exits
+  `0`
+  ([`3e2fb18`](https://github.com/fmatsos/npu/commit/3e2fb187293dfac95e7d0414ab7b3b4ec3e80966))
+
+**Full changelog**: [`v0.3.0...v0.3.1`](https://github.com/fmatsos/npu/compare/v0.3.0...v0.3.1)
+
 ## [0.3.0] - 2026-09-22
 
 ### Added
