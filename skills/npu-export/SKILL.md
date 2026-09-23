@@ -119,8 +119,8 @@ pull from the Hub, it never generates one for a local export, and serving fails 
 passes:
 
 ```sh
-docker run --rm -v ~/models:/models:rw openvino/model_server:2026.4.0 \
-    --configure --model_path /models/<basename>-int4-ov \
+docker run --rm --user "$(id -u):$(id -g)" -v ~/models:/models:rw \
+    openvino/model_server:2026.4.0 --configure --model_path /models/<basename>-int4-ov \
     --task text_generation --target_device NPU
 ```
 
@@ -132,21 +132,14 @@ directory therefore serves exactly one device, which is why step 3.6 exists.
 Match the OVMS image tag to the one the backend's `[docker]` table uses: a mismatch pulls a second
 multi-GB image for nothing.
 
-**If this prints `Unable to open file: .../graph.pbtxt` again instead of `Graph: graph.pbtxt
-created in: ...`, it is a permissions problem, not a missing-file problem** — `--configure` is
-trying to *create* the file and can't. The image runs as a fixed non-root user (`ovms`, uid 5000)
-inside the container; the export directory is owned by the host user who ran `optimum-cli` and is
-usually not writable by anyone else:
-
-```sh
-ls -ld ~/models/<basename>-int4-ov      # confirm: no write bit for "other"
-chmod o+w ~/models/<basename>-int4-ov ~/models/.ov_cache
-```
-
-Re-run the `--configure` command above after fixing permissions. This is the same class of problem
-as the documented `Cache directory /cache is not writable` warning in
-[docs/intel-npu.md's troubleshooting table](https://github.com/fmatsos/npu/blob/main/docs/intel-npu.md#troubleshooting)
-— add a row for it there if it is still missing.
+**`--user "$(id -u):$(id -g)"` is not optional.** Without it the image runs as its own fixed user
+(`ovms`, uid 5000): `--configure` then cannot create `graph.pbtxt` in a directory the host user
+owns (`Unable to open file: .../graph.pbtxt` instead of `Graph: graph.pbtxt created in: ...`), and
+where it can, it leaves a file the host user cannot edit afterwards — which is what step 4.5 does.
+The serving containers already run as the host user (`--user` in the backend's `[runtime]`), so
+running `--configure` the same way keeps everything under `~/models` owned by one user. **Never
+`chmod o+w`** an export directory or `.ov_cache` to work around it: that makes them writable by
+every account on the machine, and is not needed once the uid matches.
 
 ## 3.6. Build the GPU twin
 
@@ -167,10 +160,9 @@ cd ~/models/<basename>-int4-ov-gpu
 for f in ../<basename>-int4-ov/*; do
     [ "$(basename "$f")" = graph.pbtxt ] || ln -sf "$f" .
 done
-chmod o+w .    # same uid-5000 constraint as step 3.5
 
-docker run --rm -v ~/models:/models:rw openvino/model_server:2026.4.0 \
-    --configure --model_path /models/<basename>-int4-ov-gpu \
+docker run --rm --user "$(id -u):$(id -g)" -v ~/models:/models:rw \
+    openvino/model_server:2026.4.0 --configure --model_path /models/<basename>-int4-ov-gpu \
     --task text_generation --target_device GPU
 ```
 
@@ -234,6 +226,36 @@ Two coupling facts worth stating when reporting:
   compiled prompt shape, never the model's own context ceiling: a prompt past that fails on both,
   with a different message (`Number of prompt tokens: N exceeds model max length: M`).
 
+## 4.5. Size the NPU context from the model and the host
+
+`--configure` compiles the NPU graph for OVMS's DEFAULT static context: 1024 prompt tokens plus
+128 answer tokens. A longer prompt is refused (the `fallback` absorbs it); a longer ANSWER is cut
+mid-way — no fallback helps, and a JSON answer then fails with exit `4`. Never leave the defaults,
+and never pick numbers by hand: run the script shipped with this skill, after the model files
+exist:
+
+```sh
+python3 .claude/skills/npu-export/npu-context.py           # print the plan
+python3 .claude/skills/npu-export/npu-context.py --apply   # write it
+```
+
+For every model file whose export holds an NPU graph, it derives the context from:
+
+- the model: `max_position_embeddings` and the fp16 KV cache cost per token, from `config.json`;
+- the host: `--ram-share` (default `0.5`) of the total RAM, minus the weights of every NPU model,
+  split evenly between them — so all of them can be served at once.
+
+`--apply` writes `MAX_PROMPT_LEN` and `MIN_RESPONSE_LEN` **at the root** of `plugin_config` in
+`graph.pbtxt` (under `DEVICE_PROPERTIES.NPU` they are silently ignored), and sets `max_tokens` of
+the model file and of its GPU twin to the answer length, so a request never asks for more than
+the graph can produce. Re-run it after every export, re-export or `--configure`: those rewrite
+`graph.pbtxt` back to the defaults. Adding a model shrinks everyone's share, so re-run it for all.
+
+The real memory of an NPU graph is several times its theoretical KV cache (×4 up to 16K tokens,
+×6 at 32K, measured on a Meteor Lake NPU), and its compile time grows with it (78 s at 8K, 408 s
+at 32K for Qwen3-4B). The script's `OVERHEAD_*` constants hold those measurements: recalibrate
+them on another NPU or OVMS version rather than trusting them blindly.
+
 ## 5. Report
 
 State plainly:
@@ -244,6 +266,7 @@ State plainly:
   if permissions had to be fixed, that they were;
 - whether the two model files were written, in which scope, and that `<id>` declares
   `fallback = "<id>-gpu"`;
+- the context the script chose (prompt and answer lengths) and the resulting `max_tokens`;
 - the next step: `npu backend serve <id>` **and** `npu backend serve <id>-gpu` (two containers, two ports), then
   `npu doctor` to confirm both backends resolve, `npu config models` to see the `FALLBACK` column, then a
   real request through the command that will use it.

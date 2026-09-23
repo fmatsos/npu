@@ -142,8 +142,8 @@ fails immediately with `Unable to open file: <dir>/graph.pbtxt`. Run `--configur
 writes it and exits:
 
 ```sh
-docker run --rm -v ~/models:/models:rw openvino/model_server:2026.4.0 \
-    --configure --model_path /models/Qwen2.5-Coder-3B-Instruct-int4-ov \
+docker run --rm --user "$(id -u):$(id -g)" -v ~/models:/models:rw \
+    openvino/model_server:2026.4.0 --configure --model_path /models/Qwen2.5-Coder-3B-Instruct-int4-ov \
     --task text_generation --target_device NPU
 ```
 
@@ -151,10 +151,11 @@ docker run --rm -v ~/models:/models:rw openvino/model_server:2026.4.0 \
 what OVMS reads when it serves. **One export directory therefore serves exactly one device** —
 [§6](#6-the-gpu-twin-and-the-npu-fallback) covers running the same weights on both.
 
-If this prints `Unable to open file: .../graph.pbtxt` instead of `Graph: graph.pbtxt created in:
-...`, it is a permission problem, not a missing file: `--configure` is trying to *create* the file
-and cannot. The image runs as a fixed non-root user (`ovms`, uid 5000) while the export directory
-belongs to whoever ran `optimum-cli`. `chmod o+w` the directory and retry.
+`--user "$(id -u):$(id -g)"` matters: without it the image runs as its own fixed user (`ovms`,
+uid 5000), which cannot create `graph.pbtxt` in a directory you own — `Unable to open file:
+.../graph.pbtxt` instead of `Graph: graph.pbtxt created in: ...` — and, where it can, leaves a file
+you cannot edit afterwards. The serving containers run as your user too, so nothing under
+`~/models` ever needs to be world-writable: do not `chmod o+w` it.
 
 ### 3b. Serve it
 
@@ -257,10 +258,9 @@ cd ~/models/<export>-gpu
 for f in ../<export>/*; do
     [ "$(basename "$f")" = graph.pbtxt ] || ln -sf "$f" .
 done
-chmod o+w .
 
-docker run --rm -v ~/models:/models:rw openvino/model_server:2026.4.0 \
-    --configure --model_path /models/<export>-gpu \
+docker run --rm --user "$(id -u):$(id -g)" -v ~/models:/models:rw \
+    openvino/model_server:2026.4.0 --configure --model_path /models/<export>-gpu \
     --task text_generation --target_device GPU
 ```
 
@@ -306,9 +306,10 @@ The `npu-export` skill performs this whole section automatically.
 | `curl` straight to OVMS reproduces the same garbage as through `npu` | not `npu` | the client did its job faithfully; look at the export and the OVMS logs, not `backend.rs` |
 | OVMS logs show `Available devices: CPU` | deployment | `--device`/`--group-add`/`--user` are missing or wrong; the NPU was never reached |
 | `Cache directory /cache is not writable` | deployment | the container's `--user` cannot write the bind-mounted cache directory |
-| `Unable to open file: .../graph.pbtxt` right after `npu backend serve` starts | deployment | either [§3a](#3a-bake-the-device-into-the-export) was skipped, or the backend serves with `--source_model`, which fails this way on a local export whatever the file's state — use `--model_name`/`--model_path`. The same message when running `--configure` itself means it cannot *create* the file: `chmod o+w` the export directory (and `.ov_cache`) and retry |
+| `Unable to open file: .../graph.pbtxt` right after `npu backend serve` starts | deployment | either [§3a](#3a-bake-the-device-into-the-export) was skipped, or the backend serves with `--source_model`, which fails this way on a local export whatever the file's state — use `--model_name`/`--model_path`. The same message when running `--configure` itself means it ran as the image's own user (uid 5000) and cannot *create* the file: re-run it with `--user "$(id -u):$(id -g)"` |
 | `400 ... Input length exceeds the maximum allowed length` | deployment | the prompt is past the NPU graph's static shape. Recoverable: declare a `fallback` onto a GPU twin, [§6](#6-the-gpu-twin-and-the-npu-fallback) |
 | `400 ... Number of prompt tokens: N exceeds model max length: M` | not the device | the model's own context window, shared by every device and by the GPU twin. A fallback cannot help; shorten the input or use a longer-context model |
+| a JSON answer cut mid-way (exit `4`, `EOF while parsing`), `prompt_tokens + completion_tokens` stopping at 1152 | deployment | the NPU graph still has OVMS's default static context (1024 prompt + 128 answer tokens). Size it from the model and the host with `.claude/skills/npu-export/npu-context.py --apply`, which writes `MAX_PROMPT_LEN`/`MIN_RESPONSE_LEN` at the root of `plugin_config` in `graph.pbtxt` and aligns `max_tokens`; re-run it after any re-export or `--configure` |
 | The NPU model answers on the CPU/GPU instead, or vice versa | deployment | `graph.pbtxt`'s `device:` field is what OVMS obeys; `grep device ~/models/<export>/graph.pbtxt` and re-run `--configure` with the right `--target_device` |
 | Compilation takes minutes instead of seconds | export | the export is asymmetric (`--sym` missing) or the OVMS/image version changed and invalidated the cache |
 | Fast on one machine, minutes on another for the "same" model | deployment | a floating image tag (`:latest-gpu`) resolved to a different OpenVINO version; pin the tag |
