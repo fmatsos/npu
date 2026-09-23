@@ -386,7 +386,18 @@ fn healthy_config_describe_produces_parsable_json_for_a_known_command() {
     let value: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("PROOF (f): stdout must be parsable JSON");
     assert_eq!(value["name"], "commit-message");
+    assert_eq!(value["kind"], "command");
     assert_eq!(value["model"], "qwen-fast");
+    assert_eq!(value["backend"], "ovms");
+    assert!(value["fallback"].is_null());
+    let file = value["source"]["file"]
+        .as_str()
+        .expect("source.file is a string");
+    assert!(file.ends_with("commit-message.md"), "got: {file}");
+    assert_eq!(
+        value["source"]["scope"].as_str(),
+        Some(xdg.join("npu").display().to_string().as_str())
+    );
 }
 
 // -- (g)/(h): `npu serve` -----------------------------------------------------
@@ -584,6 +595,58 @@ fn a_command_named_status_is_a_business_command() {
 
     let output = run_npu(&cwd, &xdg, &["status"]);
 
-    assert_eq!(output.status.code(), Some(3), "stderr: {}", stderr_of(&output));
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "stderr: {}",
+        stderr_of(&output)
+    );
     assert!(output.stdout.is_empty());
+}
+
+/// A built-in is described from the `clap` tree, so a broken configuration
+/// does not prevent it — while a configured command, which needs the
+/// configuration, still exits `2`.
+#[test]
+fn broken_config_describe_still_describes_a_built_in() {
+    let xdg = fixture_dir("broken-describe-xdg");
+    let cwd = fixture_dir("broken-describe-cwd");
+    write_broken_scope(&xdg);
+
+    let output = run_npu(&cwd, &xdg, &["describe", "backend", "serve"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr_of(&output));
+    let value: serde_json::Value =
+        serde_json::from_str(stdout_of(&output).trim()).expect("stdout must be JSON");
+    assert_eq!(value["name"], "backend/serve");
+    assert_eq!(value["kind"], "builtin");
+    assert_eq!(value["args"]["MODEL"]["required"], true);
+    assert_eq!(value["degraded_mode"], false);
+
+    let doctor = run_npu(&cwd, &xdg, &["describe", "doctor"]);
+    let value: serde_json::Value =
+        serde_json::from_str(stdout_of(&doctor).trim()).expect("stdout must be JSON");
+    assert_eq!(value["degraded_mode"], true);
+
+    let custom = run_npu(&cwd, &xdg, &["describe", "commit-message"]);
+    assert_eq!(custom.status.code(), Some(2));
+    assert!(custom.stdout.is_empty());
+}
+
+/// An unknown path exits `2` and the message names it.
+#[test]
+fn describe_unknown_path_exits_two_naming_it() {
+    let xdg = fixture_dir("describe-unknown-xdg");
+    let cwd = fixture_dir("describe-unknown-cwd");
+    write_healthy_scope(&xdg, &closed_port_base_url());
+
+    let output = run_npu(&cwd, &xdg, &["describe", "backend", "nope"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(
+        stderr_of(&output).contains("backend/nope"),
+        "got: {}",
+        stderr_of(&output)
+    );
 }

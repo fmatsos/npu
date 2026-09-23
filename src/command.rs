@@ -1113,7 +1113,8 @@ mod tests {
 
     #[test]
     fn discover_rejects_update_reserved_name() {
-        for name in ["update"] {
+        {
+            let name = "update";
             let root = fixture_dir(&format!("reserved-{name}"));
             write_command(&root, name, "qwen-fast", "prompt");
 

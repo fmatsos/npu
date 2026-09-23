@@ -178,12 +178,16 @@ fn add_builtins(cli: clap::Command) -> clap::Command {
         .subcommand(
             clap::Command::new("serve")
                 .about("Start the runtime of the backend a model points at")
-                .arg(model_arg("Identifier of the model to serve (e.g. \"qwen-fast\")")),
+                .arg(model_arg(
+                    "Identifier of the model to serve (e.g. \"qwen-fast\")",
+                )),
         )
         .subcommand(
             clap::Command::new("stop")
                 .about("Stop the runtime started for a model's backend")
-                .arg(model_arg("Identifier of the model whose runtime is stopped")),
+                .arg(model_arg(
+                    "Identifier of the model whose runtime is stopped",
+                )),
         )
         .subcommand(
             clap::Command::new("status")
@@ -214,17 +218,61 @@ fn add_builtins(cli: clap::Command) -> clap::Command {
         .subcommand(clap::Command::new("doctor").about(DOCTOR_ABOUT))
         .subcommand(
             clap::Command::new("describe")
-                .about("Describe a dynamically configured command, as JSON")
-                .arg(
-                    clap::Arg::new("COMMAND")
-                        .required(true)
-                        .help("Path of the command to describe (e.g. \"classify\" or \"git/review\")"),
-                ),
+                .about("Describe a command, built-in or configured, as JSON")
+                .arg(clap::Arg::new("COMMAND").required(true).num_args(1..).help(
+                    "Command to describe, built-in or configured \
+                             (e.g. \"doctor\", \"backend serve\" or \"git review\")",
+                )),
         )
         .subcommand(
             clap::Command::new("update")
                 .about("Download and install the latest npu release from GitHub"),
         )
+}
+
+/// Built-ins that run with a configuration that failed to load: the
+/// dispatch in [`run`] handles them before it requires one.
+const DEGRADED_MODE_BUILTINS: &[&[&str]] = &[
+    &["doctor"],
+    &["config", "check"],
+    &["update"],
+    &["describe"],
+];
+
+/// The path `npu describe` was given, one segment per word, a word written
+/// `git/review` counting as two.
+fn describe_words(leaf_matches: &clap::ArgMatches) -> Vec<String> {
+    leaf_matches
+        .get_many::<String>("COMMAND")
+        .into_iter()
+        .flatten()
+        .flat_map(|word| word.split('/'))
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Describes `words` if they name a built-in; `None` lets the caller look
+/// among the configured commands. A group (`backend`) is a built-in too.
+fn describe_builtin(words: &[String]) -> Result<Option<String>> {
+    let tree = add_builtins(clap::Command::new("npu"));
+    let mut command = &tree;
+    for word in words {
+        match command.find_subcommand(word) {
+            Some(sub) => command = sub,
+            None => return Ok(None),
+        }
+    }
+    if words.is_empty() {
+        return Ok(None);
+    }
+    let path: Vec<&str> = words.iter().map(String::as_str).collect();
+    builtin::describe_builtin(
+        &path,
+        command,
+        DEGRADED_MODE_BUILTINS.contains(&path.as_slice()),
+    )
+    .map(Some)
 }
 
 /// `doctor` and `config check` are the same command under two names.
@@ -573,6 +621,14 @@ pub fn run() -> Result<i32> {
         return update(logger);
     }
 
+    // A built-in is described from the `clap` tree alone: like `doctor`,
+    // this works whatever state the configuration is in.
+    if route == ["describe"]
+        && let Some(json) = describe_builtin(&describe_words(leaf_matches))? {
+            println!("{json}");
+            return Ok(0);
+        }
+
     // Any OTHER branch (business command, `models`, the lifecycle commands,
     // `describe`) requires a
     // successfully loaded configuration: propagates the error KEPT above,
@@ -663,16 +719,9 @@ pub fn run() -> Result<i32> {
     }
 
     if route == ["describe"] {
-        // `COMMAND` is declared `.required(true)` by `add_builtins`: clap
-        // has already rejected the invocation before `get_matches()` if
-        // the argument is absent, so `leaf_matches` always carries it at
-        // this point.
-        let name = leaf_matches
-            .get_one::<String>("COMMAND")
-            .map(String::as_str)
-            .unwrap_or_default();
-        let spec = find_command(&specs, name)?;
-        println!("{}", builtin::describe(spec)?);
+        let key = describe_words(leaf_matches).join("/");
+        let spec = find_command(&specs, &key)?;
+        println!("{}", builtin::describe(spec, &config)?);
         return Ok(0);
     }
 
@@ -1221,7 +1270,10 @@ mod first_word_tests {
             first(&["--verbose=info", "update"]).as_deref(),
             Some("update")
         );
-        assert_eq!(first(&["-vinfo", "--version"]).as_deref(), Some("--version"));
+        assert_eq!(
+            first(&["-vinfo", "--version"]).as_deref(),
+            Some("--version")
+        );
         assert_eq!(first(&["--verbose", "warn"]), None);
     }
 }
