@@ -37,10 +37,12 @@ fn complete_bash_prints_a_registration_script() {
 
 /// A dynamic completion request for the root command lists the global
 /// flags `run`'s own tree declares (`--config-dir`, added by this very
-/// stack) -- proves the SAME `clap` tree as `run`'s own is what gets
-/// completed, not a stub. Built-ins (`doctor`, ...) are declared `hidden`
-/// in that tree (`cli::sectioned_help`'s doc) so they never appear here
-/// either -- consistent, not a gap this test should paper over.
+/// stack) -- proves the tree built for completion carries the same global
+/// flags as `run`'s own. Built-ins are declared `hidden` ONLY in the
+/// separate tree `cli::sectioned_help` builds for `--help`'s rendering
+/// (a presentation concern); `complete_env` builds its own tree straight
+/// from `cli::builtins::add_builtins`, so a built-in GROUP (`backend`,
+/// `config`, ...) must still be offered here.
 #[test]
 fn complete_bash_dynamic_request_lists_global_flags() {
     let output = Command::new(env!("CARGO_BIN_EXE_npu"))
@@ -66,5 +68,42 @@ fn complete_bash_dynamic_request_lists_global_flags() {
     assert!(
         stdout.lines().any(|line| line == "--config-dir"),
         "got: {stdout}"
+    );
+}
+
+/// Root completion candidates must include built-in GROUPS (`backend`,
+/// `config`), not only the global flags: `sectioned_help` hides them for
+/// `--help`'s own rendering, but the tree `complete_env` builds for
+/// completion must not inherit that hide.
+#[test]
+fn complete_bash_dynamic_request_offers_builtin_groups() {
+    let output = Command::new(env!("CARGO_BIN_EXE_npu"))
+        .args(["--", "npu", ""])
+        .env("COMPLETE", "bash")
+        .env("_CLAP_COMPLETE_INDEX", "1")
+        .env("HOME", "/does/not/exist")
+        .env_remove("XDG_CONFIG_HOME")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launching npu")
+        .wait_with_output()
+        .expect("waiting for npu");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let candidates: Vec<&str> = stdout.lines().collect();
+    assert!(
+        candidates.iter().any(|line| line.starts_with("backend")),
+        "got: {candidates:?}"
+    );
+    assert!(
+        candidates.iter().any(|line| line.starts_with("config")),
+        "got: {candidates:?}"
     );
 }

@@ -123,6 +123,7 @@ pub fn run() -> Result<i32> {
 
     let (path, leaf_matches) = cli::selected_path(&matches);
     let route_path: Vec<&str> = path.iter().map(String::as_str).collect();
+    let cfg_dir = config_dir_override.as_deref();
     let route = dispatch::route_for(&route_path);
 
     // These routes depend only on the binary itself, the host and GitHub
@@ -139,8 +140,8 @@ pub fn run() -> Result<i32> {
                 leaf_matches.get_flag("json"),
             ));
         }
-        dispatch::Route::Help => return cli::builtins::help(help_cli, leaf_matches),
-        dispatch::Route::Update => return cli::builtins::update(logger),
+        dispatch::Route::Help => return cli::builtins::help(help_cli, leaf_matches, error_format),
+        dispatch::Route::Update => return cli::builtins::update(logger, cfg_dir),
         #[cfg(feature = "hardware-tooling")]
         dispatch::Route::ModelDiscover => {
             let config = loaded.as_ref().map(|(config, _)| config);
@@ -336,15 +337,40 @@ fn run_backend_lifecycle(
 /// before anything else). `--config-dir`/`NPU_CONFIG_DIR` are read again
 /// here for the same reason: the project scope must be known before the
 /// commands it declares can be listed for completion.
+/// The tree is built with `cli::builtins::add_builtins` directly, NEVER
+/// through `sectioned_help`: `sectioned_help` hides the built-ins
+/// (`mut_subcommand(name, |sub| sub.hide(true))`) so they render under their
+/// own "Built-ins:" heading in `--help` rather than clap's default
+/// "Commands:" section — a presentation concern with no bearing here. A
+/// `clap_complete` engine reads that same `hide` flag to decide what to
+/// offer, so completing through the hidden tree would silently drop every
+/// built-in group (`backend`, `config`, ...) from `npu <TAB>`.
+/// The command line being completed. A dynamic completion request is
+/// `npu -- npu <words…>`: the first `--` is the completion transport, not
+/// the argument terminator, so it is dropped here before the raw scanners
+/// (which stop at `--`) read the words. Anything that is not a completion
+/// request is returned as is.
+fn completed_line(args: impl IntoIterator<Item = String>) -> Vec<String> {
+    let args: Vec<String> = args.into_iter().collect();
+    match args.iter().position(|arg| arg == "--") {
+        Some(transport) => args[transport + 1..].to_vec(),
+        None => args,
+    }
+}
+
 fn complete_env() -> clap_complete::CompleteEnv<'static, impl Fn() -> clap::Command> {
     clap_complete::CompleteEnv::with_factory(|| {
-        let config_dir_override =
-            scope::config_dir_from_args(std::env::args()).or_else(scope::config_dir_env_var);
+        let config_dir_override = scope::config_dir_from_args(completed_line(std::env::args()))
+            .or_else(scope::config_dir_env_var);
         let roots = scope::roots(config_dir_override);
         let specs = config::load_scopes(&roots)
             .and_then(|_| command::discover_scopes(&roots))
             .unwrap_or_default();
-        cli::sectioned_help(cli::builtins::add_builtins(cli::build_cli(&specs)), false)
+        // `disable_help_subcommand`, same as `sectioned_help`: `clap`'s own
+        // generated `help` subcommand would otherwise collide with the
+        // `help` built-in `add_builtins` declares (cf. this crate's
+        // CLAUDE.md, "Built-ins and the container lifecycle").
+        cli::builtins::add_builtins(cli::build_cli(&specs)).disable_help_subcommand(true)
     })
 }
 
@@ -392,15 +418,19 @@ fn describe_command(
 /// `clap::Error::exit` would, except a genuine USAGE error (anything other
 /// than `--help`/`--version`) is rendered under `format` first —
 /// `error::render_clap_usage_error` — so `--error-format json` can envelope
-/// it. `--help`/`--version` keep `clap`'s own stdout rendering and exit `0`
-/// whatever `format` is, since they are not errors (cf.
-/// `error::ErrorFormat`'s doc). Never returns.
+/// it. Only `--help`/`--version` keep `clap`'s own stdout rendering and
+/// exit `0` whatever `format` is, since they are not errors (cf.
+/// `error::ErrorFormat`'s doc).
+/// `DisplayHelpOnMissingArgumentOrSubcommand` (e.g. `npu backend` with no
+/// further word) is a USAGE failure, not a help request — it still exits
+/// `2` (`err.exit_code()`, `clap`'s own contract) but goes through the
+/// same envelope as any other usage error, or a calling agent would get
+/// unenvelopped text for exactly the case it is most likely to hit first.
+/// Never returns.
 fn exit_on_clap_error(err: &clap::Error, format: error::ErrorFormat) -> ! {
     if matches!(
         err.kind(),
-        clap::error::ErrorKind::DisplayHelp
-            | clap::error::ErrorKind::DisplayVersion
-            | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
     ) {
         err.exit()
     }
@@ -417,16 +447,29 @@ fn skips_config() -> bool {
     )
 }
 
-/// First argument that is neither `--verbose`/`-v` nor its value,
-/// read from the RAW command line (cf. [`log::level_from_args`]).
+/// First argument that is neither a global flag (`--verbose`/`-v`,
+/// `--error-format`, `--config-dir`) nor its value, read from the RAW
+/// command line (cf. [`log::level_from_args`]). A global flag declared
+/// after the actual first word (e.g. `npu classify --verbose info`) is
+/// none of this function's concern: it only has to look PAST the flags
+/// that can precede the first word, same idiom as `level_from_args`,
+/// `error::error_format_from_args` and `scope::config_dir_from_args`.
 fn first_word<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
     let mut expecting_value = false;
     for arg in args {
         if expecting_value {
             expecting_value = false;
-        } else if arg == "--verbose" || arg == "-v" {
+        } else if arg == "--verbose"
+            || arg == "-v"
+            || arg == "--error-format"
+            || arg == "--config-dir"
+        {
             expecting_value = true;
-        } else if !arg.starts_with("--verbose=") && !arg.starts_with("-v") {
+        } else if !arg.starts_with("--verbose=")
+            && !arg.starts_with("-v")
+            && !arg.starts_with("--error-format=")
+            && !arg.starts_with("--config-dir=")
+        {
             return Some(arg);
         }
     }
@@ -436,6 +479,15 @@ fn first_word<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
 #[cfg(test)]
 mod first_word_tests {
     use super::first_word;
+
+    #[test]
+    fn a_completion_request_keeps_the_config_dir_of_the_completed_line() {
+        let argv = ["npu", "--", "npu", "--config-dir", "/custom/.npu", "cl"].map(String::from);
+        assert_eq!(
+            crate::scope::config_dir_from_args(super::completed_line(argv)),
+            Some(std::path::PathBuf::from("/custom/.npu"))
+        );
+    }
 
     fn first(args: &[&str]) -> Option<String> {
         first_word(args.iter().map(ToString::to_string))
@@ -460,5 +512,32 @@ mod first_word_tests {
             Some("--version")
         );
         assert_eq!(first(&["--verbose", "warn"]), None);
+    }
+
+    /// `npu --error-format json --version` with a broken configuration must
+    /// print no degraded-mode warning: `skips_config` reads `--version` as
+    /// the first word, not `--error-format` or its value `json`.
+    #[test]
+    fn skips_error_format_and_its_value() {
+        assert_eq!(
+            first(&["--error-format", "json", "--version"]).as_deref(),
+            Some("--version")
+        );
+        assert_eq!(
+            first(&["--error-format=json", "update"]).as_deref(),
+            Some("update")
+        );
+    }
+
+    #[test]
+    fn skips_config_dir_and_its_value() {
+        assert_eq!(
+            first(&["--config-dir", "/x", "update"]).as_deref(),
+            Some("update")
+        );
+        assert_eq!(
+            first(&["--config-dir=/x", "--version"]).as_deref(),
+            Some("--version")
+        );
     }
 }

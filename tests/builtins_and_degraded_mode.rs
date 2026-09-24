@@ -958,3 +958,64 @@ fn help_is_unaffected_by_error_format_json() {
     assert!(!stdout_of(&output).is_empty());
     assert!(output.stderr.is_empty());
 }
+
+/// `npu backend --error-format json` (a group with no further word) is
+/// `clap`'s `DisplayHelpOnMissingArgumentOrSubcommand`: a genuine usage
+/// failure, not a help request, so it must get the same JSON envelope as
+/// any other usage error, keeping `clap`'s own exit code (2).
+#[test]
+fn missing_subcommand_with_error_format_json_is_a_one_line_envelope_on_stderr() {
+    let xdg = fixture_dir("json-error-format-missing-sub-xdg");
+    let cwd = fixture_dir("json-error-format-missing-sub-cwd");
+    write_healthy_scope(&xdg, "http://127.0.0.1:1");
+
+    let output = run_npu(&cwd, &xdg, &["backend", "--error-format", "json"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = stderr_of(&output);
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 1, "got: {stderr}");
+    let envelope: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("stderr must be one line of valid JSON");
+    assert_eq!(envelope["kind"], "usage");
+}
+
+/// `npu help does-not-exist --error-format json`: the second, internal
+/// `clap` parse `help` performs must go through the same envelope as any
+/// other usage error, not always `clap`'s bare text.
+#[test]
+fn help_of_an_unknown_path_with_error_format_json_is_a_one_line_envelope_on_stderr() {
+    let xdg = fixture_dir("json-error-format-help-unknown-xdg");
+    let cwd = fixture_dir("json-error-format-help-unknown-cwd");
+    write_healthy_scope(&xdg, "http://127.0.0.1:1");
+
+    let output = run_npu(
+        &cwd,
+        &xdg,
+        &["help", "does-not-exist", "--error-format", "json"],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = stderr_of(&output);
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 1, "got: {stderr}");
+    let envelope: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("stderr must be one line of valid JSON");
+    assert_eq!(envelope["kind"], "usage");
+}
+
+/// `npu help backend --error-format json`: `backend` alone resolves to
+/// `DisplayHelp` (the real help text), not a usage error, so it must be
+/// unaffected by `--error-format json` — same discipline as top-level
+/// `--help`.
+#[test]
+fn help_of_a_known_path_with_error_format_json_is_unaffected() {
+    let xdg = fixture_dir("json-error-format-help-known-xdg");
+    let cwd = fixture_dir("json-error-format-help-known-cwd");
+    write_healthy_scope(&xdg, "http://127.0.0.1:1");
+
+    let output = run_npu(&cwd, &xdg, &["help", "backend", "--error-format", "json"]);
+    assert!(output.status.success());
+    assert!(!stdout_of(&output).is_empty());
+    assert!(output.stderr.is_empty());
+}

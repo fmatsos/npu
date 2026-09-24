@@ -22,6 +22,7 @@ lint:
 	@if grep -rnE '(^|[^A-Za-z0-9_])vendor::' \
 		src/backend.rs src/exec.rs src/prompt.rs src/output.rs src/command.rs \
 		src/config src/input.rs src/cli src/dispatch.rs src/error.rs src/log.rs \
+		src/runtime/docker.rs src/runtime/process.rs src/runtime/state.rs src/runtime/mod.rs \
 		2>/dev/null; then \
 		echo "the engine must not reference vendor:: (see above)"; exit 1; \
 	fi

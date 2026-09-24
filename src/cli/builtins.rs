@@ -468,30 +468,28 @@ pub(crate) fn describe_words(leaf_matches: &clap::ArgMatches) -> Vec<String> {
         .collect()
 }
 
-/// Recursively collects every LEAF path of `cmd` (a subcommand declaring no
-/// subcommand of its own) into `out`, with its own `about` text: an
-/// intermediate node (`backend`, `config`) is a group, not a describable
-/// command by itself, so only leaves are collected — the same rule
-/// `cli::mod::build_clap_node` uses to tell a business command apart from
-/// an intermediate segment (`spec.is_some()`).
+/// Recursively collects every describable path of `cmd` into `out`, with its
+/// own `about` text: both a LEAF (a subcommand declaring no subcommand of
+/// its own, e.g. `backend serve`) and a GROUP node (`backend`, `config` —
+/// itself resolved by `describe_builtin`, cf. its own doc: "a group is a
+/// built-in too") are describable, so both are collected — only the
+/// synthetic `npu` root (`prefix.is_empty()`) is excluded.
 fn collect_leaf_paths(
     cmd: &clap::Command,
     prefix: &mut Vec<String>,
     out: &mut Vec<serde_json::Value>,
 ) {
-    let mut has_children = false;
-    for sub in cmd.get_subcommands() {
-        has_children = true;
-        prefix.push(sub.get_name().to_string());
-        collect_leaf_paths(sub, prefix, out);
-        prefix.pop();
-    }
-    if !has_children && !prefix.is_empty() {
+    if !prefix.is_empty() {
         out.push(serde_json::json!({
             "path": prefix.join("/"),
             "kind": "builtin",
             "about": cmd.get_about().map(ToString::to_string).unwrap_or_default(),
         }));
+    }
+    for sub in cmd.get_subcommands() {
+        prefix.push(sub.get_name().to_string());
+        collect_leaf_paths(sub, prefix, out);
+        prefix.pop();
     }
 }
 
@@ -581,9 +579,19 @@ pub(crate) fn doctor(
     crate::builtin::doctor_exit_code(&checks)
 }
 
-/// `npu help <path…>` is `npu <path…> --help`: `clap` renders it, and an
-/// unknown path is `clap`'s own usage error, exit `2`, nothing on stdout.
-pub(crate) fn help(cli: clap::Command, leaf_matches: &clap::ArgMatches) -> crate::Result<i32> {
+/// `npu help <path…>` is `npu <path…> --help`: `clap` renders the help text
+/// itself (`DisplayHelp`, exit 0, on stdout — `clap`'s own rendering).
+/// An unknown path (e.g. `npu help does-not-exist`) is a genuine USAGE
+/// error, not a help request, so it goes through the same
+/// `error::render_clap_usage_error` envelope as any other usage error
+/// (`lib.rs::exit_on_clap_error`) instead of always printing `clap`'s bare
+/// text — a calling agent asking `npu help <path> --error-format json`
+/// must get JSON back exactly like any other malformed invocation.
+pub(crate) fn help(
+    cli: clap::Command,
+    leaf_matches: &clap::ArgMatches,
+    format: crate::error::ErrorFormat,
+) -> crate::Result<i32> {
     let path = leaf_matches
         .get_many::<String>("COMMAND")
         .into_iter()
@@ -592,8 +600,12 @@ pub(crate) fn help(cli: clap::Command, leaf_matches: &clap::ArgMatches) -> crate
         .chain(path.cloned())
         .chain(std::iter::once("--help".to_string()));
     match cli.try_get_matches_from(args) {
-        Err(err) => {
+        Err(err) if matches!(err.kind(), clap::error::ErrorKind::DisplayHelp) => {
             err.print()?;
+            Ok(err.exit_code())
+        }
+        Err(err) => {
+            eprint!("{}", crate::error::render_clap_usage_error(&err, format));
             Ok(err.exit_code())
         }
         Ok(_) => Ok(0),
@@ -605,9 +617,28 @@ pub(crate) fn help(cli: clap::Command, leaf_matches: &clap::ArgMatches) -> crate
 /// network, so its only failure is a configuration error.
 pub(crate) const POST_UPDATE_CHECK: &[&str] = &["--verbose", "error", "config", "models"];
 
+/// [`POST_UPDATE_CHECK`], with `--config-dir <dir>` appended when the
+/// running invocation carried one: the new binary must judge the SAME
+/// scope this one resolved, not fall back to its own default walk-up,
+/// which would run `config models` in degraded mode's shadow — checking
+/// the wrong `.npu` and reporting nothing about the one actually in use.
+/// A pure function (owns no process) so it is testable without spawning
+/// the freshly installed binary.
+fn post_update_check_args(config_dir: Option<&std::path::Path>) -> Vec<String> {
+    let mut args: Vec<String> = POST_UPDATE_CHECK.iter().map(ToString::to_string).collect();
+    if let Some(dir) = config_dir {
+        args.push("--config-dir".to_string());
+        args.push(dir.display().to_string());
+    }
+    args
+}
+
 /// Runs `npu update`, then asks the NEW binary whether it accepts the
 /// configuration and, if not, points the user at the changelog and the docs.
-pub(crate) fn update(logger: crate::log::Logger) -> crate::Result<i32> {
+pub(crate) fn update(
+    logger: crate::log::Logger,
+    config_dir: Option<&std::path::Path>,
+) -> crate::Result<i32> {
     let outcome = crate::updater::update()?;
     println!("{outcome}");
     if let crate::updater::Outcome::Updated { current, .. } = &outcome {
@@ -615,9 +646,11 @@ pub(crate) fn update(logger: crate::log::Logger) -> crate::Result<i32> {
         // this one: a key added in the new release must not look invalid,
         // and a key it dropped must not look valid. Only a configuration
         // error (`2`) is reported; the update itself has already succeeded.
+        let args = post_update_check_args(config_dir);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let rejected = std::env::current_exe()
             .ok()
-            .and_then(|exe| crate::runtime::exit_code_of(&exe, POST_UPDATE_CHECK))
+            .and_then(|exe| crate::runtime::exit_code_of(&exe, &args))
             == Some(crate::error::CONFIG_EXIT);
         if rejected {
             logger.warn(&format!(
@@ -628,4 +661,60 @@ pub(crate) fn update(logger: crate::log::Logger) -> crate::Result<i32> {
         }
     }
     Ok(0)
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn post_update_check_args_appends_config_dir_when_given() {
+        let args = post_update_check_args(Some(std::path::Path::new("/custom/.npu")));
+        assert_eq!(
+            args,
+            vec![
+                "--verbose",
+                "error",
+                "config",
+                "models",
+                "--config-dir",
+                "/custom/.npu",
+            ]
+        );
+    }
+
+    #[test]
+    fn post_update_check_args_is_unchanged_without_a_config_dir() {
+        let args = post_update_check_args(None);
+        assert_eq!(args, vec!["--verbose", "error", "config", "models"]);
+    }
+
+    /// `describe_index` with no configured commands: a group built-in
+    /// (`backend`, `config`) is itself describable (`describe_builtin`
+    /// resolves it fine), so it must appear in the index too, not only its
+    /// leaves.
+    #[test]
+    fn describe_index_includes_builtin_groups_not_only_their_leaves() {
+        let json = describe_index(&[]);
+        let entries: Vec<serde_json::Value> =
+            serde_json::from_str(&json).expect("describe_index must produce valid JSON");
+        let paths: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry["path"].as_str().expect("path must be a string"))
+            .collect();
+
+        assert!(paths.contains(&"backend"), "got: {paths:?}");
+        assert!(paths.contains(&"config"), "got: {paths:?}");
+        // Leaves are still there: the fix must not have turned a leaf into
+        // a group-only entry or dropped it.
+        assert!(paths.contains(&"backend/serve"), "got: {paths:?}");
+        assert!(paths.contains(&"config/check"), "got: {paths:?}");
+
+        let backend_entry = entries
+            .iter()
+            .find(|entry| entry["path"] == "backend")
+            .expect("the backend group must be in the index");
+        assert_eq!(backend_entry["kind"], "builtin");
+    }
 }

@@ -149,6 +149,19 @@ pub(crate) fn chat_with_fallback(
 /// leak through it.
 const REDACTED_HEADER_VALUE: &str = "<redacted>";
 
+/// Whether a real (non-dry-run) invocation of `spec` would stream its
+/// answer: only to a terminal, only for free text, only with no
+/// `max_lines` to enforce after the fact, and never when `strip_reasoning`
+/// would otherwise show the reasoning block before it can be stripped.
+/// Shared by the real request path and `--dry-run`, so the reported
+/// `"stream"` field never drifts from what `chat` would actually send.
+fn would_stream(spec: &crate::command::CommandSpec, stdout_is_terminal: bool) -> bool {
+    stdout_is_terminal
+        && spec.output.format == crate::output::Format::Text
+        && spec.output.max_lines.is_none()
+        && !spec.output.strip_reasoning
+}
+
 /// `npu <command> --dry-run`'s whole job: build the exact request `chat`
 /// would send to the PRIMARY model (never the fallback — a dry run shows
 /// what would be tried first), through the same [`crate::backend::build_request`]
@@ -163,6 +176,7 @@ const REDACTED_HEADER_VALUE: &str = "<redacted>";
 /// - header VALUES are redacted (`REDACTED_HEADER_VALUE`): only their names
 ///   are shown, same discipline as the "POST ..." info log line in
 ///   `backend::chat`.
+#[allow(clippy::too_many_arguments)]
 fn print_dry_run(
     model: &crate::config::Model,
     backend: &crate::config::Backend,
@@ -170,6 +184,7 @@ fn print_dry_run(
     schema: Option<&serde_json::Value>,
     spec: &crate::command::CommandSpec,
     env: &dyn Fn(&str) -> Option<String>,
+    stdout_is_terminal: bool,
 ) -> crate::Result<()> {
     let headers = crate::config::resolve_headers(backend, env)?;
     let generation = crate::config::Generation::merged(&model.generation, spec.generation.as_ref());
@@ -189,10 +204,23 @@ fn print_dry_run(
         .map(|name| (name.as_str(), REDACTED_HEADER_VALUE))
         .collect();
 
+    // `on_token` above is always `None`, so `build_request` never sets
+    // `"stream"` on its own (`backend::chat` sets it afterwards, keyed on
+    // whether it was actually given a token callback) — the dry run must
+    // compute the same decision a real call would make and add it here, or
+    // the report would silently omit `"stream": true` for every command
+    // that would in fact stream.
+    let mut body = prepared.body;
+    if would_stream(spec, stdout_is_terminal)
+        && let serde_json::Value::Object(map) = &mut body
+    {
+        map.insert("stream".to_string(), serde_json::Value::Bool(true));
+    }
+
     let report = serde_json::json!({
         "url": prepared.url,
         "headers": redacted_headers,
-        "body": prepared.body,
+        "body": body,
     });
     println!("{report}");
     Ok(())
@@ -252,6 +280,29 @@ fn build_messages(
     }
     messages.push(crate::backend::Message::user(prompt.to_string()));
     Ok(messages)
+}
+
+/// Resolves headers at preflight time, for the primary backend AND (when
+/// declared) the fallback's: the fallback fires after the input has already
+/// been consumed, so a missing environment variable there must be caught
+/// here rather than at call time, same invariant as the prompt's own
+/// preflight. The resolved values are discarded here (only the possibility
+/// of resolving them matters): `chat_with_fallback` resolves them again,
+/// once it knows which backend it is actually calling. Split out of
+/// `execute_business_command` only to keep it under the crate's line-count
+/// lint, same convention as `build_messages` above.
+fn preflight_headers(
+    config: &crate::config::Config,
+    model: &crate::config::Model,
+    backend: &crate::config::Backend,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> crate::Result<()> {
+    crate::config::resolve_headers(backend, env)?;
+    if let Some(fallback_id) = &model.fallback {
+        let (_, fallback_backend) = config.resolve(fallback_id)?;
+        crate::config::resolve_headers(fallback_backend, env)?;
+    }
+    Ok(())
 }
 
 /// Fails with `Error::Output` when the answer was cut at `max_tokens` and
@@ -348,14 +399,8 @@ pub(crate) fn execute_business_command(
 
     let args = crate::cli::collect_arg_values(spec, leaf_matches);
     // `env` is injected by the caller (`std::env::var(name).ok()` in
-    // production): `Err` (missing variable, or invalid UTF-8) and a variable
-    // defined but empty both flow through it exactly as `std::env::var`
-    // would produce them, which is the semantics
-    // `prompt::render`/`prompt::preflight` expect (contract rule 5: presence
-    // checked at render time — and now at preflight time —, not at load
-    // time). Exercised by `prompt::render`'s tests
-    // (`render_env_var_defined_but_empty_is_not_an_error`) via this same
-    // shape of closure.
+    // production), with the same "missing or empty" semantics
+    // `prompt::render`/`prompt::preflight` expect (contract rule 5).
 
     // Schemas are configuration, knowable without the input: read here,
     // before `input::resolve`, for the same reason as `preflight` (see
@@ -388,19 +433,7 @@ pub(crate) fn execute_business_command(
         crate::prompt::preflight(&example.assistant, &args, env, &schemas)?;
     }
 
-    // Headers are resolved at preflight too, for the primary backend AND
-    // (when declared) the fallback's: the fallback fires after the input
-    // has already been consumed, so a missing environment variable there
-    // must be caught here rather than at call time, same invariant as the
-    // prompt's own preflight above. The resolved values are discarded here
-    // (only the possibility of resolving them matters): `chat_with_fallback`
-    // resolves them again, once it knows which backend it is actually
-    // calling.
-    crate::config::resolve_headers(backend, env)?;
-    if let Some(fallback_id) = &model.fallback {
-        let (_, fallback_backend) = config.resolve(fallback_id)?;
-        crate::config::resolve_headers(fallback_backend, env)?;
-    }
+    preflight_headers(config, model, backend, env)?;
 
     // The `FILE` argument is only declared (cf. `build_clap_node`) for the
     // modes that accept a file: reproducing the same condition here avoids
@@ -436,7 +469,16 @@ pub(crate) fn execute_business_command(
     let messages = build_messages(spec, &prompt, &args, env, &schemas)?;
 
     if dry_run {
-        return print_dry_run(model, backend, &messages, output_schema.as_ref(), spec, env);
+        let schema = output_schema.as_ref();
+        return print_dry_run(
+            model,
+            backend,
+            &messages,
+            schema,
+            spec,
+            env,
+            stdout_is_terminal,
+        );
     }
 
     // The backend's raw response is never
@@ -454,10 +496,7 @@ pub(crate) fn execute_business_command(
     // tokens as they arrive would show the reasoning block before it can be
     // stripped, defeating the whole point. The answer then arrives in one
     // piece, exactly as for a JSON contract.
-    let streaming = stdout_is_terminal
-        && spec.output.format == crate::output::Format::Text
-        && spec.output.max_lines.is_none()
-        && !spec.output.strip_reasoning;
+    let streaming = would_stream(spec, stdout_is_terminal);
     let started = std::cell::Cell::new(false);
     let print_token = |answered_by: &str, token: &str| {
         // The answer is trimmed like `finalize` trims it: nothing is shown
@@ -502,7 +541,29 @@ pub(crate) fn execute_business_command(
         output.chars().count()
     ));
 
-    if started.get() {
+    write_final_output(
+        started.get(),
+        stdout_is_terminal,
+        &raw_output,
+        &output,
+        &answered_by,
+    );
+    Ok(())
+}
+
+/// Writes the answer's closing bytes once the pipeline is done: closes the
+/// streaming frame already on screen, prints a fresh frame on a terminal
+/// that never streamed, or writes the plain answer to a pipe. Split out of
+/// `execute_business_command` only to keep it under the crate's line-count
+/// lint, same convention as `build_messages` above.
+fn write_final_output(
+    started: bool,
+    stdout_is_terminal: bool,
+    raw_output: &str,
+    output: &str,
+    answered_by: &str,
+) {
+    if started {
         // Already on screen, token by token: only the frame is closed.
         anstream::print!(
             "{}",
@@ -513,12 +574,10 @@ pub(crate) fn execute_business_command(
             }
         );
     } else if stdout_is_terminal {
-        anstream::print!("{}", framed_answer(&output, &answered_by));
+        anstream::print!("{}", framed_answer(output, answered_by));
     } else {
         println!("{output}");
     }
-
-    Ok(())
 }
 
 /// The answer as a terminal shows it: set apart from the command line by a
@@ -545,6 +604,54 @@ pub(crate) fn answer_header(answered_by: &str) -> String {
 mod tests {
     use super::*;
     use crate::{Error, config, log};
+
+    fn text_output_spec() -> crate::output::OutputSpec {
+        crate::output::OutputSpec {
+            format: crate::output::Format::Text,
+            max_lines: None,
+            strip_reasoning: false,
+            ..crate::output::OutputSpec::default()
+        }
+    }
+
+    #[test]
+    fn would_stream_is_true_only_on_a_terminal_with_free_text_no_max_lines_and_no_strip_reasoning()
+    {
+        let mut spec = crate::command::CommandSpec {
+            path: vec!["x".to_string()],
+            description: String::new(),
+            model: "m".to_string(),
+            input: crate::command::InputMode::Stdin,
+            prompt: "{{ input }}".to_string(),
+            args: std::collections::BTreeMap::new(),
+            output: text_output_spec(),
+            schemas: std::collections::BTreeMap::new(),
+            system: None,
+            examples: Vec::new(),
+            generation: None,
+            file: std::path::PathBuf::from("x.md"),
+        };
+
+        assert!(would_stream(&spec, true));
+        assert!(!would_stream(&spec, false), "a pipe must never stream");
+
+        spec.output.max_lines = Some(1);
+        assert!(
+            !would_stream(&spec, true),
+            "max_lines could reject the answer after it is shown"
+        );
+        spec.output.max_lines = None;
+
+        spec.output.strip_reasoning = true;
+        assert!(
+            !would_stream(&spec, true),
+            "strip_reasoning must disable streaming even on a terminal"
+        );
+        spec.output.strip_reasoning = false;
+
+        spec.output.format = crate::output::Format::Json;
+        assert!(!would_stream(&spec, true), "a JSON contract never streams");
+    }
 
     #[test]
     fn a_framed_answer_keeps_the_answer_verbatim_and_names_who_answered() {

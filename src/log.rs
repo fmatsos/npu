@@ -93,6 +93,11 @@ where
 
     for arg in args {
         let arg = arg.as_ref();
+        // `--` ends option parsing: a literal positional spelled
+        // `--verbose`/`-v` after it must never be read as this flag.
+        if arg == "--" {
+            break;
+        }
         if expecting_value {
             level = arg.parse().ok();
             expecting_value = false;
@@ -228,6 +233,21 @@ mod tests {
         assert_eq!(level_from_args(["npu", "-v", "info"]), Level::Info);
         assert_eq!(level_from_args(["npu", "-v=info"]), Level::Info);
         assert_eq!(level_from_args(["npu", "-verror"]), Level::Error);
+    }
+
+    /// `--` ends option parsing: a literal positional spelled `--verbose`
+    /// after it must never be read as the flag.
+    #[test]
+    fn level_from_args_stops_at_a_double_dash() {
+        assert_eq!(
+            level_from_args(["npu", "--", "--verbose", "error"]),
+            Level::Warn
+        );
+        assert_eq!(
+            level_from_args(["npu", "--verbose", "error", "--", "x"]),
+            Level::Error,
+            "a value read BEFORE the -- is still honoured"
+        );
     }
 
     #[test]
