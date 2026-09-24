@@ -579,9 +579,19 @@ pub(crate) fn doctor(
     crate::builtin::doctor_exit_code(&checks)
 }
 
-/// `npu help <path…>` is `npu <path…> --help`: `clap` renders it, and an
-/// unknown path is `clap`'s own usage error, exit `2`, nothing on stdout.
-pub(crate) fn help(cli: clap::Command, leaf_matches: &clap::ArgMatches) -> crate::Result<i32> {
+/// `npu help <path…>` is `npu <path…> --help`: `clap` renders the help text
+/// itself (`DisplayHelp`, exit 0, on stdout — `clap`'s own rendering).
+/// An unknown path (e.g. `npu help does-not-exist`) is a genuine USAGE
+/// error, not a help request, so it goes through the same
+/// `error::render_clap_usage_error` envelope as any other usage error
+/// (`lib.rs::exit_on_clap_error`) instead of always printing `clap`'s bare
+/// text — a calling agent asking `npu help <path> --error-format json`
+/// must get JSON back exactly like any other malformed invocation.
+pub(crate) fn help(
+    cli: clap::Command,
+    leaf_matches: &clap::ArgMatches,
+    format: crate::error::ErrorFormat,
+) -> crate::Result<i32> {
     let path = leaf_matches
         .get_many::<String>("COMMAND")
         .into_iter()
@@ -590,8 +600,12 @@ pub(crate) fn help(cli: clap::Command, leaf_matches: &clap::ArgMatches) -> crate
         .chain(path.cloned())
         .chain(std::iter::once("--help".to_string()));
     match cli.try_get_matches_from(args) {
-        Err(err) => {
+        Err(err) if matches!(err.kind(), clap::error::ErrorKind::DisplayHelp) => {
             err.print()?;
+            Ok(err.exit_code())
+        }
+        Err(err) => {
+            eprint!("{}", crate::error::render_clap_usage_error(&err, format));
             Ok(err.exit_code())
         }
         Ok(_) => Ok(0),

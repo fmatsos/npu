@@ -139,7 +139,9 @@ pub fn run() -> Result<i32> {
                 leaf_matches.get_flag("json"),
             ));
         }
-        dispatch::Route::Help => return cli::builtins::help(help_cli, leaf_matches),
+        dispatch::Route::Help => {
+            return cli::builtins::help(help_cli, leaf_matches, error_format);
+        }
         dispatch::Route::Update => return cli::builtins::update(logger),
         #[cfg(feature = "hardware-tooling")]
         dispatch::Route::ModelDiscover => {
@@ -392,15 +394,19 @@ fn describe_command(
 /// `clap::Error::exit` would, except a genuine USAGE error (anything other
 /// than `--help`/`--version`) is rendered under `format` first —
 /// `error::render_clap_usage_error` — so `--error-format json` can envelope
-/// it. `--help`/`--version` keep `clap`'s own stdout rendering and exit `0`
-/// whatever `format` is, since they are not errors (cf.
-/// `error::ErrorFormat`'s doc). Never returns.
+/// it. Only `--help`/`--version` keep `clap`'s own stdout rendering and
+/// exit `0` whatever `format` is, since they are not errors (cf.
+/// `error::ErrorFormat`'s doc).
+/// `DisplayHelpOnMissingArgumentOrSubcommand` (e.g. `npu backend` with no
+/// further word) is a USAGE failure, not a help request — it still exits
+/// `2` (`err.exit_code()`, `clap`'s own contract) but goes through the
+/// same envelope as any other usage error, or a calling agent would get
+/// unenvelopped text for exactly the case it is most likely to hit first.
+/// Never returns.
 fn exit_on_clap_error(err: &clap::Error, format: error::ErrorFormat) -> ! {
     if matches!(
         err.kind(),
-        clap::error::ErrorKind::DisplayHelp
-            | clap::error::ErrorKind::DisplayVersion
-            | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
     ) {
         err.exit()
     }
