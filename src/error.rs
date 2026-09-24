@@ -288,7 +288,103 @@ pub(crate) fn format_available<S: AsRef<str>>(ids: impl Iterator<Item = S>) -> S
     }
 }
 
+/// The shape of a `clap` USAGE error printed on stderr: plain text
+/// (`clap`'s own rendering, unchanged) or a one-line JSON envelope
+/// (`--error-format json`). Only a usage error is ever affected — `--help`
+/// and `--version` (`clap::error::ErrorKind::DisplayHelp` /
+/// `DisplayVersion`) keep their normal stdout rendering and exit `0`
+/// whatever this format is, since they are not errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorFormat {
+    Text,
+    Json,
+}
+
+impl ErrorFormat {
+    /// The accepted `--error-format` values, in the order `--help` should
+    /// list them. Shared with `cli::mod`, which builds the argument from
+    /// it, same idiom as `log::Level::NAMES`.
+    pub const NAMES: [&'static str; 2] = ["text", "json"];
+}
+
+impl std::str::FromStr for ErrorFormat {
+    type Err = ();
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value {
+            "text" => Ok(ErrorFormat::Text),
+            "json" => Ok(ErrorFormat::Json),
+            _ => Err(()),
+        }
+    }
+}
+
+/// Reads `--error-format` from the RAW command line, before `clap` has
+/// parsed anything — same reason and same idiom as
+/// `log::level_from_args`: the case this flag exists for (a `clap` usage
+/// error) is raised by `clap` itself while parsing, before a declared
+/// argument's value could ever be read back from `ArgMatches`.
+///
+/// Deliberately permissive: an unknown or missing value falls back to
+/// [`ErrorFormat::Text`] instead of failing — `clap` diagnoses an invalid
+/// value itself, with its own message, once parsing actually runs.
+#[must_use]
+pub fn error_format_from_args<I, S>(args: I) -> ErrorFormat
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut format = None;
+    let mut expecting_value = false;
+
+    for arg in args {
+        let arg = arg.as_ref();
+        if expecting_value {
+            format = arg.parse().ok();
+            expecting_value = false;
+        } else if arg == "--error-format" {
+            expecting_value = true;
+        } else if let Some(value) = arg.strip_prefix("--error-format=") {
+            format = value.parse().ok();
+        }
+    }
+
+    format.unwrap_or(ErrorFormat::Text)
+}
+
+/// Renders a `clap` USAGE error under `format`: `clap`'s own rendering
+/// unchanged for [`ErrorFormat::Text`], or a one-line JSON envelope
+/// (`{"kind":"usage","message":"..."}`) for [`ErrorFormat::Json`] — never
+/// applied to `DisplayHelp`/`DisplayVersion`, which the caller filters out
+/// before reaching here (see `run`'s doc).
+#[must_use]
+pub fn render_clap_usage_error(err: &clap::Error, format: ErrorFormat) -> String {
+    match format {
+        // `clap`'s own rendering already ends with a newline.
+        ErrorFormat::Text => err.render().to_string(),
+        ErrorFormat::Json => {
+            // `clap`'s own rendering carries ANSI styling and the full
+            // usage block; the envelope keeps only the message a machine
+            // needs, stripped of styling, on ONE line (no embedded
+            // newline) so a line-oriented reader never has to buffer.
+            let message = err
+                .render()
+                .to_string()
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            format!(
+                "{}\n",
+                serde_json::json!({ "kind": "usage", "message": message })
+            )
+        }
+    }
+}
+
 #[cfg(test)]
+#[allow(clippy::expect_used)] // tolerated in tests (cf. Cargo.toml [lints.clippy]).
 mod tests {
     use super::*;
 
@@ -379,5 +475,52 @@ mod tests {
         assert!(
             matches!(already_named, Err(Error::Config(e)) if e.file.as_deref() == Some(std::path::Path::new("first.toml")))
         );
+    }
+
+    #[test]
+    fn error_format_from_args_reads_the_value() {
+        assert_eq!(
+            error_format_from_args(["npu", "--error-format", "json", "x"]),
+            ErrorFormat::Json
+        );
+        assert_eq!(
+            error_format_from_args(["npu", "--error-format=json", "x"]),
+            ErrorFormat::Json
+        );
+    }
+
+    #[test]
+    fn error_format_from_args_defaults_to_text() {
+        assert_eq!(error_format_from_args(["npu", "x"]), ErrorFormat::Text);
+        assert_eq!(
+            error_format_from_args(["npu", "--error-format", "not-a-format"]),
+            ErrorFormat::Text
+        );
+    }
+
+    #[test]
+    fn render_clap_usage_error_json_is_one_line_valid_json_naming_the_kind() {
+        let cli = clap::Command::new("npu").subcommand(clap::Command::new("x"));
+        let err = cli
+            .try_get_matches_from(["npu", "does-not-exist"])
+            .expect_err("an unknown subcommand must be a clap usage error");
+
+        let rendered = render_clap_usage_error(&err, ErrorFormat::Json);
+        assert_eq!(rendered.lines().count(), 1);
+        let parsed: serde_json::Value =
+            serde_json::from_str(rendered.trim()).expect("must be valid JSON");
+        assert_eq!(parsed["kind"], "usage");
+        assert!(parsed["message"].is_string());
+    }
+
+    #[test]
+    fn render_clap_usage_error_text_is_clap_s_own_rendering() {
+        let cli = clap::Command::new("npu").subcommand(clap::Command::new("x"));
+        let err = cli
+            .try_get_matches_from(["npu", "does-not-exist"])
+            .expect_err("an unknown subcommand must be a clap usage error");
+
+        let rendered = render_clap_usage_error(&err, ErrorFormat::Text);
+        assert_eq!(rendered, err.render().to_string());
     }
 }

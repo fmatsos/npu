@@ -84,6 +84,7 @@ pub fn run() -> Result<i32> {
     let level = log::level_from_args(std::env::args());
     let logger = log::Logger::new(level);
     progress::init(level);
+    let error_format = error::error_format_from_args(std::env::args());
 
     let roots = scope::roots();
     logger.info(&format!(
@@ -115,7 +116,7 @@ pub fn run() -> Result<i32> {
     let help_cli = cli.clone();
     let matches = match cli.try_get_matches() {
         Ok(matches) => matches,
-        Err(err) => err.exit(),
+        Err(err) => exit_on_clap_error(&err, error_format),
     };
 
     let (path, leaf_matches) = cli::selected_path(&matches);
@@ -128,7 +129,12 @@ pub fn run() -> Result<i32> {
     // (`Business` included) is handled below, after `loaded?` has
     // propagated any load error, exit code 2.
     match route {
-        dispatch::Route::Doctor => return Ok(cli::builtins::doctor(&loaded)),
+        dispatch::Route::Doctor => {
+            return Ok(cli::builtins::doctor(
+                &loaded,
+                leaf_matches.get_flag("json"),
+            ));
+        }
         dispatch::Route::Help => return cli::builtins::help(help_cli, leaf_matches),
         dispatch::Route::Update => return cli::builtins::update(logger),
         #[cfg(feature = "hardware-tooling")]
@@ -168,7 +174,11 @@ pub fn run() -> Result<i32> {
 
     match route {
         dispatch::Route::ConfigModels => {
-            println!("{}", builtin::format_models(&config));
+            if leaf_matches.get_flag("json") {
+                println!("{}", builtin::format_models_json(&config));
+            } else {
+                println!("{}", builtin::format_models(&config));
+            }
             Ok(0)
         }
         dispatch::Route::BackendServe
@@ -194,12 +204,7 @@ pub fn run() -> Result<i32> {
                 None => unreachable!("route matched a backend lifecycle command"),
             }
         }
-        dispatch::Route::Describe => {
-            let key = cli::builtins::describe_words(leaf_matches).join("/");
-            let spec = cli::find_command(&specs, &key)?;
-            println!("{}", builtin::describe(spec, &config)?);
-            Ok(0)
-        }
+        dispatch::Route::Describe => describe_command(leaf_matches, &specs, &config),
         dispatch::Route::Business => {
             let key = path.join("/");
             let spec = cli::find_command(&specs, &key)?;
@@ -269,10 +274,18 @@ fn run_backend_lifecycle(
 
     if route == ["backend", "status"] {
         // The report IS the result: stdout, like `doctor` and `models`.
-        println!(
-            "{}",
-            builtin::status(config, &runtime::docker::runner, host)?
-        );
+        if leaf_matches.get_flag("json") {
+            let rows = builtin::status_rows(config, &runtime::docker::runner, host);
+            println!(
+                "{}",
+                serde_json::to_string(&rows).unwrap_or_else(|_| "[]".to_string())
+            );
+        } else {
+            println!(
+                "{}",
+                builtin::status(config, &runtime::docker::runner, host)?
+            );
+        }
         return Ok(Some(0));
     }
 
@@ -307,6 +320,48 @@ fn run_backend_lifecycle(
     }
 
     Ok(None)
+}
+
+/// `npu describe [COMMAND…]`, once the configuration has LOADED (`run`'s
+/// pre-`loaded?` branch already handled a built-in path in degraded mode):
+/// with no argument, the index of every describable path (built-in and
+/// business, cf. `cli::builtins::describe_index`) — never an error naming a
+/// missing required argument, which `COMMAND` no longer is; with one,
+/// the description of the business command it names.
+fn describe_command(
+    leaf_matches: &clap::ArgMatches,
+    specs: &[command::CommandSpec],
+    config: &config::Config,
+) -> Result<i32> {
+    let words = cli::builtins::describe_words(leaf_matches);
+    if words.is_empty() {
+        println!("{}", cli::builtins::describe_index(specs));
+        return Ok(0);
+    }
+    let key = words.join("/");
+    let spec = cli::find_command(specs, &key)?;
+    println!("{}", builtin::describe(spec, config)?);
+    Ok(0)
+}
+
+/// Terminates the process for a `clap` parse failure, exactly as
+/// `clap::Error::exit` would, except a genuine USAGE error (anything other
+/// than `--help`/`--version`) is rendered under `format` first —
+/// `error::render_clap_usage_error` — so `--error-format json` can envelope
+/// it. `--help`/`--version` keep `clap`'s own stdout rendering and exit `0`
+/// whatever `format` is, since they are not errors (cf.
+/// `error::ErrorFormat`'s doc). Never returns.
+fn exit_on_clap_error(err: &clap::Error, format: error::ErrorFormat) -> ! {
+    if matches!(
+        err.kind(),
+        clap::error::ErrorKind::DisplayHelp
+            | clap::error::ErrorKind::DisplayVersion
+            | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    ) {
+        err.exit()
+    }
+    eprint!("{}", error::render_clap_usage_error(err, format));
+    std::process::exit(err.exit_code());
 }
 
 /// `update` and `--version` never read the configuration: warning about it

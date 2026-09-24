@@ -609,6 +609,76 @@ $ npu describe nexistepas
 configuration error: unknown command: "nexistepas" (available commands: classify, code, commit-message, synthese, translate)
 ```
 
+### The index
+
+With no argument, `npu describe` lists every describable path instead — built-in and business,
+each with its own one-line description — rather than failing on a missing required argument:
+
+```console
+$ npu describe | jq .
+[
+  {
+    "about": "Stream the logs of the runtime started for a model's backend",
+    "kind": "builtin",
+    "path": "backend/logs"
+  },
+  ...
+  {
+    "about": "",
+    "kind": "business",
+    "path": "classify"
+  },
+  ...
+]
+```
+
+---
+
+## `--json`
+
+`npu doctor` (and its alias `config check`), `npu backend status` and `npu config models` also
+accept `--json`: the same report, serialized instead of formatted for a terminal.
+
+```console
+$ npu doctor --json | jq .
+[
+  {
+    "kind": "config",
+    "label": "configuration loaded",
+    "status": "ok"
+  },
+  {
+    "kind": "reachability",
+    "label": "backend \"ovms\" reachable",
+    "status": "failed",
+    "message": "TCP connection to \"127.0.0.1:8000\" failed: Connection refused (os error 111)"
+  }
+]
+```
+
+`kind` and `status` are the machine contract (`CheckKind` — `"config"`/`"reachability"` —, and
+`"ok"`/`"failed"` with a `message` when failed): a calling agent reads those, never `label`'s text,
+to tell a configuration failure (exit `2`) apart from a reachability one (exit `3`).
+
+## `--error-format`
+
+`--error-format <text|json>` (default `text`) changes how a `clap` USAGE error is rendered on
+stderr — an unrecognized subcommand, a missing required argument, an invalid value. It is read
+from the raw command line, before `clap` parses anything, the same way `--verbose` is (a usage
+error is raised by `clap` itself while parsing, before any declared argument's value could be read
+back). `--help` and `--version` are never affected: they stay `clap`'s own rendering on stdout,
+exit `0`, whatever this flag says.
+
+```console
+$ npu does-not-exist --error-format json
+```
+```json
+{"kind":"usage","message":"error: unrecognized subcommand 'does-not-exist'"}
+```
+
+`error-format` is consequently a reserved argument name: a command declaring
+`[args."error-format"]` is rejected at load time, naming the file.
+
 ---
 
 ## `npu --version`

@@ -270,6 +270,17 @@ pub(crate) fn tune_command() -> clap::Command {
 /// carry one of these names as its first path segment: these
 /// `subcommand()` calls can therefore never collide with the ones added by
 /// [`super::build_cli`].
+/// The `--json` flag shared by `doctor`/`config check`, `backend status`
+/// and `config models`: the same report, serialized instead of formatted
+/// for a terminal — it only picks which renderer `crate::run` uses on an
+/// already-built report, never a second computation of it.
+fn json_arg() -> clap::Arg {
+    clap::Arg::new("json")
+        .long("json")
+        .action(clap::ArgAction::SetTrue)
+        .help("Print the report as JSON instead of formatting it for a terminal")
+}
+
 pub(crate) fn add_builtins(cli: clap::Command) -> clap::Command {
     // Help text in English: it is displayed next to the configured
     // commands' `description`, and the repository's documentation is in
@@ -299,7 +310,8 @@ pub(crate) fn add_builtins(cli: clap::Command) -> clap::Command {
         )
         .subcommand(
             clap::Command::new("status")
-                .about("Report the state of every backend declaring a runtime"),
+                .about("Report the state of every backend declaring a runtime")
+                .arg(json_arg()),
         )
         .subcommand(
             clap::Command::new("logs")
@@ -319,8 +331,16 @@ pub(crate) fn add_builtins(cli: clap::Command) -> clap::Command {
         .about("Inspect the configuration: check, models")
         .subcommand_required(true)
         .arg_required_else_help(true)
-        .subcommand(clap::Command::new("check").about(DOCTOR_ABOUT))
-        .subcommand(clap::Command::new("models").about("List configured models"));
+        .subcommand(
+            clap::Command::new("check")
+                .about(DOCTOR_ABOUT)
+                .arg(json_arg()),
+        )
+        .subcommand(
+            clap::Command::new("models")
+                .about("List configured models")
+                .arg(json_arg()),
+        );
 
     #[cfg(feature = "hardware-tooling")]
     let model = clap::Command::new("model")
@@ -336,28 +356,35 @@ pub(crate) fn add_builtins(cli: clap::Command) -> clap::Command {
     #[cfg(feature = "hardware-tooling")]
     let cli = cli.subcommand(model);
 
-    cli.subcommand(clap::Command::new("doctor").about(DOCTOR_ABOUT))
-        .subcommand(
-            clap::Command::new("describe")
-                .about("Describe a command, built-in or configured, as JSON")
-                .arg(clap::Arg::new("COMMAND").required(true).num_args(1..).help(
-                    "Command to describe, built-in or configured \
+    cli.subcommand(
+        clap::Command::new("doctor")
+            .about(DOCTOR_ABOUT)
+            .arg(json_arg()),
+    )
+    .subcommand(
+        clap::Command::new("describe")
+            .about(
+                "Describe a command, built-in or configured, as JSON; with none given, \
+                     list every command",
+            )
+            .arg(clap::Arg::new("COMMAND").num_args(0..).help(
+                "Command to describe, built-in or configured \
                              (e.g. \"doctor\", \"backend serve\" or \"git review\")",
-                )),
-        )
-        .subcommand(
-            clap::Command::new("update")
-                .about("Download and install the latest npu release from GitHub"),
-        )
-        .subcommand(
-            clap::Command::new("help")
-                .about("Print this message or the help of the given command")
-                .arg(
-                    clap::Arg::new("COMMAND")
-                        .num_args(0..)
-                        .help("Command whose help is printed (e.g. \"backend serve\")"),
-                ),
-        )
+            )),
+    )
+    .subcommand(
+        clap::Command::new("update")
+            .about("Download and install the latest npu release from GitHub"),
+    )
+    .subcommand(
+        clap::Command::new("help")
+            .about("Print this message or the help of the given command")
+            .arg(
+                clap::Arg::new("COMMAND")
+                    .num_args(0..)
+                    .help("Command whose help is printed (e.g. \"backend serve\")"),
+            ),
+    )
 }
 
 /// `npu backend tune`: reads its flags and the host's RAM, then delegates to
@@ -441,6 +468,53 @@ pub(crate) fn describe_words(leaf_matches: &clap::ArgMatches) -> Vec<String> {
         .collect()
 }
 
+/// Recursively collects every LEAF path of `cmd` (a subcommand declaring no
+/// subcommand of its own) into `out`, with its own `about` text: an
+/// intermediate node (`backend`, `config`) is a group, not a describable
+/// command by itself, so only leaves are collected — the same rule
+/// `cli::mod::build_clap_node` uses to tell a business command apart from
+/// an intermediate segment (`spec.is_some()`).
+fn collect_leaf_paths(
+    cmd: &clap::Command,
+    prefix: &mut Vec<String>,
+    out: &mut Vec<serde_json::Value>,
+) {
+    let mut has_children = false;
+    for sub in cmd.get_subcommands() {
+        has_children = true;
+        prefix.push(sub.get_name().to_string());
+        collect_leaf_paths(sub, prefix, out);
+        prefix.pop();
+    }
+    if !has_children && !prefix.is_empty() {
+        out.push(serde_json::json!({
+            "path": prefix.join("/"),
+            "kind": "builtin",
+            "about": cmd.get_about().map(ToString::to_string).unwrap_or_default(),
+        }));
+    }
+}
+
+/// `npu describe` with no argument: every describable path, built-in and
+/// business, sorted by path — the built-ins from the SAME `clap` tree
+/// `describe_builtin` resolves against (so this list cannot drift from
+/// what `npu <path> --help` actually accepts), the business commands from
+/// `specs` (the discovered `CommandSpec`s).
+pub(crate) fn describe_index(specs: &[crate::command::CommandSpec]) -> String {
+    let tree = add_builtins(clap::Command::new("npu"));
+    let mut entries = Vec::new();
+    collect_leaf_paths(&tree, &mut Vec::new(), &mut entries);
+    for spec in specs {
+        entries.push(serde_json::json!({
+            "path": spec.path.join("/"),
+            "kind": "business",
+            "about": spec.description,
+        }));
+    }
+    entries.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+    serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string())
+}
+
 /// Describes `words` if they name a built-in; `None` lets the caller look
 /// among the configured commands. A group (`backend`) is a built-in too.
 pub(crate) fn describe_builtin(words: &[String]) -> crate::Result<Option<String>> {
@@ -472,6 +546,7 @@ pub(crate) const DOCTOR_ABOUT: &str = "Check the runtime environment: configurat
 /// prints its report and returns its exit code.
 pub(crate) fn doctor(
     loaded: &crate::Result<(crate::config::Config, Vec<crate::command::CommandSpec>)>,
+    json: bool,
 ) -> i32 {
     // `doctor` ALWAYS runs, whether loading succeeded or failed: this
     // is precisely its point in degraded mode. `probe` is the REAL probe
@@ -493,7 +568,14 @@ pub(crate) fn doctor(
             runner: &crate::runtime::docker::runner,
         },
     );
-    anstream::println!("{}", crate::builtin::format_doctor(&checks));
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&checks).unwrap_or_else(|_| "[]".to_string())
+        );
+    } else {
+        anstream::println!("{}", crate::builtin::format_doctor(&checks));
+    }
     crate::builtin::doctor_exit_code(&checks)
 }
 

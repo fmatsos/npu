@@ -417,11 +417,21 @@ fn collect_markdown_files(
 /// already adds for commands whose input mode accepts a file
 /// (`InputMode::File`/`StdinOrFile`); `dry-run` and `model` would collide
 /// with the `--dry-run` and `--model` flags `cli::mod` (`build_clap_node`)
-/// adds to every business command leaf. Reject here, at load time,
+/// adds to every business command leaf; `error-format` would collide with
+/// the GLOBAL `--error-format` argument `cli::mod` declares on the root
+/// command, same reason as `verbose`. Reject here, at load time,
 /// rather than letting the error surface (much less clearly, or even
 /// panicking `clap::Command::arg` on a duplicate id) from the clap tree's
 /// construction downstream, in `cli::mod`.
-const RESERVED_ARG_NAMES: [&str; 6] = ["help", "version", "FILE", "verbose", "dry-run", "model"];
+const RESERVED_ARG_NAMES: [&str; 7] = [
+    "help",
+    "version",
+    "FILE",
+    "verbose",
+    "dry-run",
+    "model",
+    "error-format",
+];
 
 /// Short letter reserved by `clap`: every `Command` gets an automatic
 /// `-h`/`--help` flag, whether or not `disable_help_flag` is called —
@@ -1495,6 +1505,17 @@ mod tests {
 
         assert!(matches!(err, crate::Error::Config(_)));
         assert!(err.to_string().contains("model"));
+    }
+
+    #[test]
+    fn arg_named_error_format_is_config_error() {
+        let source = "---\nmodel = \"qwen-fast\"\n\n[args.\"error-format\"]\nrequired = true\n---\nHello {{ args.\"error-format\" }}\n";
+
+        let err = parse(source, vec!["x".to_string()], std::path::Path::new("."))
+            .expect_err("\"error-format\" collides with the global --error-format argument");
+
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("error-format"));
     }
 
     #[test]

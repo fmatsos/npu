@@ -1,5 +1,34 @@
 //! `npu config models`: a formatted table of every configured model.
 
+/// One row of `npu config models --json`: the same fields `format_models`
+/// tabulates, serialized instead of aligned into columns.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+struct ModelRow<'a> {
+    name: &'a str,
+    backend: &'a str,
+    operation: &'a str,
+    fallback: Option<&'a str>,
+}
+
+/// `npu config models --json`: every configured model, sorted by name like
+/// [`format_models`], serialized rather than tabulated.
+#[must_use]
+pub fn format_models_json(config: &crate::config::Config) -> String {
+    let mut rows: Vec<ModelRow<'_>> = config
+        .models
+        .values()
+        .map(|model| ModelRow {
+            name: model.id.as_str(),
+            backend: model.backend.as_str(),
+            operation: model.operation.as_str(),
+            fallback: model.fallback.as_deref(),
+        })
+        .collect();
+    rows.sort_unstable_by_key(|row| row.name);
+    serde_json::to_string(&rows).unwrap_or_else(|_| "[]".to_string())
+}
+
 /// Formats the `npu models` table:
 /// NAME/BACKEND/OPERATION columns, sorted by name to stay
 /// deterministic regardless of the underlying `HashMap`'s iteration
