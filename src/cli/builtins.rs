@@ -468,30 +468,28 @@ pub(crate) fn describe_words(leaf_matches: &clap::ArgMatches) -> Vec<String> {
         .collect()
 }
 
-/// Recursively collects every LEAF path of `cmd` (a subcommand declaring no
-/// subcommand of its own) into `out`, with its own `about` text: an
-/// intermediate node (`backend`, `config`) is a group, not a describable
-/// command by itself, so only leaves are collected — the same rule
-/// `cli::mod::build_clap_node` uses to tell a business command apart from
-/// an intermediate segment (`spec.is_some()`).
+/// Recursively collects every describable path of `cmd` into `out`, with its
+/// own `about` text: both a LEAF (a subcommand declaring no subcommand of
+/// its own, e.g. `backend serve`) and a GROUP node (`backend`, `config` —
+/// itself resolved by `describe_builtin`, cf. its own doc: "a group is a
+/// built-in too") are describable, so both are collected — only the
+/// synthetic `npu` root (`prefix.is_empty()`) is excluded.
 fn collect_leaf_paths(
     cmd: &clap::Command,
     prefix: &mut Vec<String>,
     out: &mut Vec<serde_json::Value>,
 ) {
-    let mut has_children = false;
-    for sub in cmd.get_subcommands() {
-        has_children = true;
-        prefix.push(sub.get_name().to_string());
-        collect_leaf_paths(sub, prefix, out);
-        prefix.pop();
-    }
-    if !has_children && !prefix.is_empty() {
+    if !prefix.is_empty() {
         out.push(serde_json::json!({
             "path": prefix.join("/"),
             "kind": "builtin",
             "about": cmd.get_about().map(ToString::to_string).unwrap_or_default(),
         }));
+    }
+    for sub in cmd.get_subcommands() {
+        prefix.push(sub.get_name().to_string());
+        collect_leaf_paths(sub, prefix, out);
+        prefix.pop();
     }
 }
 
@@ -628,4 +626,38 @@ pub(crate) fn update(logger: crate::log::Logger) -> crate::Result<i32> {
         }
     }
     Ok(0)
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    /// `describe_index` with no configured commands: a group built-in
+    /// (`backend`, `config`) is itself describable (`describe_builtin`
+    /// resolves it fine), so it must appear in the index too, not only its
+    /// leaves.
+    #[test]
+    fn describe_index_includes_builtin_groups_not_only_their_leaves() {
+        let json = describe_index(&[]);
+        let entries: Vec<serde_json::Value> =
+            serde_json::from_str(&json).expect("describe_index must produce valid JSON");
+        let paths: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry["path"].as_str().expect("path must be a string"))
+            .collect();
+
+        assert!(paths.contains(&"backend"), "got: {paths:?}");
+        assert!(paths.contains(&"config"), "got: {paths:?}");
+        // Leaves are still there: the fix must not have turned a leaf into
+        // a group-only entry or dropped it.
+        assert!(paths.contains(&"backend/serve"), "got: {paths:?}");
+        assert!(paths.contains(&"config/check"), "got: {paths:?}");
+
+        let backend_entry = entries
+            .iter()
+            .find(|entry| entry["path"] == "backend")
+            .expect("the backend group must be in the index");
+        assert_eq!(backend_entry["kind"], "builtin");
+    }
 }
