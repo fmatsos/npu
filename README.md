@@ -21,7 +21,7 @@ Adding, changing or removing a command never requires recompiling. A repository 
 `.npu/` directory and get project-specific AI tooling without shipping any executable code.
 
 > [!NOTE]
-> Version 0.1.0. Not published to crates.io — grab a binary from the
+> Not published to crates.io — grab a binary from the
 > [releases](https://github.com/fmatsos/npu/releases) or build from source (see below).
 
 ---
@@ -63,7 +63,8 @@ The Rust core understands execution mechanics, not AI business semantics.
 do not need to install a specific Rust version by hand — you only need rustup itself.
 
 **An OpenAI-compatible backend, reachable over HTTP.** `npu` speaks the OpenAI chat-completions
-protocol; version 0.1.0 supports the `chat` operation only. [OpenVINO Model
+protocol; every operation a backend declares is a `POST` under the hood, `chat` being the
+conventional name. [OpenVINO Model
 Server](https://github.com/openvinotoolkit/model_server) is the reference target, but anything
 exposing `POST /v1/chat/completions` (or an equivalent path you configure) will do.
 
@@ -87,9 +88,13 @@ Each `vX.Y.Z` tag publishes a stripped binary per target — `x86_64-unknown-lin
 `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc` — plus the Linux x86-64
 triple built on Fedora and on Arch (`x86_64-fedora`, `x86_64-arch`), on the
 [releases page](https://github.com/fmatsos/npu/releases), together with the changelog for that
-version. Unpack the archive and put `npu` anywhere on your `PATH`; there is nothing else to
-install. Future releases can then be installed in place with `npu update`, provided the directory
-containing the executable is writable by the current user.
+version. Each platform ships twice: an archive (`npu-vX.Y.Z-<platform>.tar.gz` or `.zip`)
+containing the executable and the README, and a raw, uncompressed executable
+(`npu-<platform>`, or `npu-<platform>.exe` on Windows) — the one `npu update` downloads itself,
+authenticated against the SHA-256 in the release's `npu-update.json` manifest. Either way, put
+`npu` (renaming the raw download and, on Linux and macOS, `chmod +x` it) anywhere on your `PATH`;
+there is nothing else to install. Future releases can then be installed in place with `npu
+update`, provided the directory containing the executable is writable by the current user.
 
 ### Linux and macOS
 
@@ -122,7 +127,7 @@ cargo install --path .
 ```
 
 > [!WARNING]
-> **Windows support is partial in 0.1.0.** Configuration scope resolution is written for
+> **Windows support is partial.** Configuration scope resolution is written for
 > Unix conventions: the system scope is the hard-coded path `/etc/npu`, and the user scope is read
 > from `$HOME`, never from `%USERPROFILE%`. In practice this means only the project-local `.\.npu`
 > scope works out of the box. To get a user-level scope, set `HOME` (or `XDG_CONFIG_HOME`)
@@ -238,17 +243,18 @@ See [Writing commands](docs/commands.md) for arguments, templating and input mod
 
 ## Built-in commands
 
-Nine commands ship with the binary. They are not AI commands, and their names are
-reserved — a command file called `doctor.md` is rejected at load time.
+Three groups (`backend`, `config`, `model`) plus `doctor`, `describe`, `update` and `help` ship
+with the binary. They are not AI commands, and their names are reserved — a command file called
+`doctor.md` is rejected at load time.
 
 ```console
 $ npu --version
-0.1.0
+npu 0.5.1
 ```
 
 ```console
 $ npu update
-updated npu from 0.1.0 to 0.2.0
+updated npu from 0.5.1 to 0.5.2
 ```
 
 ```console
@@ -323,10 +329,10 @@ structured response is an execution failure, never something `npu` quietly repai
 | [Configuration](docs/configuration.md) | scopes and precedence, backends, models, merge semantics |
 | [Writing commands](docs/commands.md) | command files, frontmatter, arguments, templating, input modes |
 | [Output contracts](docs/output.md) | text and JSON output, JSON Schema validation, fenced responses |
-| [Built-in commands](docs/cli.md) | `doctor`, `config`, `backend`, `describe`, degraded mode |
+| [Built-in commands](docs/cli.md) | `doctor`, `config`, `backend`, `model`, `describe`, `update`, degraded mode |
 | [Deploying on an Intel NPU](docs/intel-npu.md) | exporting a model with `optimum-cli`, quantization pitfalls, serving it with OVMS |
 | [Running on Apple Silicon](docs/apple-silicon.md) | serving a GGUF model with `llama-server` on Metal, started and stopped by `npu backend serve` |
-| [Claude Code skills](skills/README.md) | five skills that teach Claude Code to write and repair an `npu` configuration |
+| [Claude Code skills](skills/README.md) | seven skills that teach Claude Code to write and repair an `npu` configuration, find and export a model |
 
 ---
 

@@ -37,9 +37,9 @@ Options:
   -h, --help             Print help
 ```
 
-Six names are reserved by the built-ins and rejected at load time: `backend`, `config`, `doctor`,
-`describe`, `update` and `help`. The reservation applies to the **first segment only**, so
-`commands/git/describe.md` is perfectly valid.
+Seven names are reserved by the built-ins and rejected at load time: `backend`, `config`, `model`,
+`doctor`, `describe`, `update` and `help`. The reservation applies to the **first segment only**,
+so `commands/git/describe.md` is perfectly valid.
 
 ---
 

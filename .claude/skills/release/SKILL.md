@@ -65,6 +65,12 @@ version and describing the change.
    that invariant keeps `npu update` from repeatedly installing a binary that
    reports a different version from its release manifest.
 
+   Also update the quoted `$ npu --version` console blocks in `README.md` and
+   `docs/cli.md` to `npu X.Y.Z` — build the binary and paste what it actually
+   prints, never reconstruct it by hand. `tests/docs_quote_the_binary.rs`
+   enforces the README block against `CARGO_PKG_VERSION`; nothing enforces
+   the `docs/cli.md` one, so it only stays correct if this step is done.
+
 7. **Commit, tag, push.**
 
    ```sh
