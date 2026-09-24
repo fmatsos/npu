@@ -1,9 +1,10 @@
 # Built-in commands
 
-`npu` ships its built-in commands under six names: two groups, `backend` (the runtime lifecycle)
-and `config` (inspection), plus `doctor`, `describe`, `update` and `help`. They are not AI commands,
-and these six names are reserved: a command file whose first path segment is one of them is
-rejected at load time, naming the file. Any other name, `status` or `logs` included, is yours.
+`npu` ships its built-in commands under seven names: three groups, `backend` (the runtime
+lifecycle), `config` (inspection) and `model` (`discover`), plus `doctor`, `describe`, `update`
+and `help`. They are not AI commands, and these seven names are reserved: a command file whose
+first path segment is one of them is rejected at load time, naming the file. Any other name,
+`status` or `logs` included, is yours.
 
 `npu --help` lists your commands under `Commands:` and the built-ins under `Built-ins:`, `help`
 included: `npu help backend serve` is `npu backend serve --help`.
@@ -559,7 +560,7 @@ Prints the program name and the release number embedded from `Cargo.toml`:
 
 ```console
 $ npu --version
-npu 0.3.1
+npu 0.5.1
 ```
 
 It does not load or require a valid AI configuration.
@@ -572,14 +573,14 @@ Checks the latest GitHub Release and installs it over the currently running exec
 
 ```console
 $ npu update
-updated npu from 0.1.0 to 0.2.0
+updated npu from 0.5.1 to 0.5.2
 ```
 
 When no newer release exists, it reports that fact and leaves the executable untouched:
 
 ```console
 $ npu update
-npu 0.2.0 is already up to date
+npu 0.5.1 is already up to date
 ```
 
 The release publishes a `npu-update.json` manifest. It maps every supported platform to a raw

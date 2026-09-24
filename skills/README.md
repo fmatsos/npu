@@ -13,7 +13,7 @@ offers for installation.
 | Skill | Covers |
 | --- | --- |
 | [`npu-config`](npu-config/SKILL.md) | the `.npu/` layout, scope precedence, merge semantics, bootstrapping a project |
-| [`npu-backend`](npu-backend/SKILL.md) | `backends/*.toml` — `id`, `type`, `base_url`, `[operations.*]`, `[docker]` |
+| [`npu-backend`](npu-backend/SKILL.md) | `backends/*.toml` — `id`, `type`, `base_url`, `[operations.*]`, `[runtime]` (`type = "docker"` or `"process"`) |
 | [`npu-model`](npu-model/SKILL.md) | `models/*.toml` — `id`, `backend`, `operation`, `model`, `[generation]` |
 | [`npu-command`](npu-command/SKILL.md) | `commands/*.md` — frontmatter, input modes, `[args.*]`, templating, `[output]` |
 | [`npu-doctor`](npu-doctor/SKILL.md) | reading `npu doctor`, the exit-code contract, `--verbose`, degraded mode, symptom → cause |
