@@ -128,30 +128,31 @@ impl Backend {
 /// The backend types `backend.rs` knows how to talk to. `Backend.kind`
 /// stays a string for the error message; [`validate_backend`] parses it, so
 /// a new type is a variant here and a compile error wherever it must be
-/// handled, never a value `backend.rs` silently treats as another.
-enum BackendKind {
+/// handled, never a value `backend.rs` silently treats as another:
+/// `backend::chat` matches on it.
+pub(crate) enum BackendKind {
     OpenAiCompatible,
 }
 
 impl BackendKind {
     const SUPPORTED: &str = "openai-compatible";
 
-    fn parse(kind: &str) -> Option<Self> {
+    pub(crate) fn parse(kind: &str) -> Option<Self> {
         (kind == Self::SUPPORTED).then_some(Self::OpenAiCompatible)
     }
 }
 
-/// The HTTP methods `backend.rs` can send; it calls `client.post()`, so any
-/// other would be silently ignored. Parsed without regard to case, as
-/// `"post"` has always been accepted.
-enum Method {
+/// The HTTP methods `backend.rs` can send; `backend::chat` matches on it
+/// to pick the request builder. Parsed without regard to case, as `"post"`
+/// has always been accepted.
+pub(crate) enum Method {
     Post,
 }
 
 impl Method {
     const SUPPORTED: &str = "POST";
 
-    fn parse(method: &str) -> Option<Self> {
+    pub(crate) fn parse(method: &str) -> Option<Self> {
         method
             .eq_ignore_ascii_case(Self::SUPPORTED)
             .then_some(Self::Post)

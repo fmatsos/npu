@@ -22,7 +22,7 @@ pub use model::{Generation, Model};
 pub use port::Port;
 pub use runtime::{Docker, Process, Runtime};
 
-pub(crate) use backend::{is_valid_runtime_id, validate_backend};
+pub(crate) use backend::{BackendKind, Method, is_valid_runtime_id, validate_backend};
 pub(crate) use model::{extra_to_json, generation_errors};
 pub(crate) use port::substitute_port;
 pub(crate) use runtime::{docker_of, process_of};

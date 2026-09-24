@@ -34,6 +34,34 @@ fn effective_timeout(backend: &crate::config::Backend) -> Duration {
 /// message, to stay diagnosable without flooding stderr.
 const ERROR_BODY_TRUNCATE_AT: usize = 500;
 
+/// The request builder for `operation`. Type and method were validated at
+/// load time; these `match`es are what make a new type or method a compile
+/// error here rather than a request sent the wrong way.
+fn request_builder(
+    agent: &ureq::Agent,
+    url: &str,
+    backend: &crate::config::Backend,
+    operation: &crate::config::Operation,
+) -> crate::Result<ureq::RequestBuilder<ureq::typestate::WithBody>> {
+    let unvalidated = || {
+        crate::Error::Config(crate::error::ConfigError::bare(
+            Some(&backend.id),
+            format!(
+                "backend \"{}\": type \"{}\" or method \"{}\" was not validated",
+                backend.id, backend.kind, operation.method
+            ),
+        ))
+    };
+    match crate::config::BackendKind::parse(&backend.kind) {
+        Some(crate::config::BackendKind::OpenAiCompatible) => {}
+        None => return Err(unvalidated()),
+    }
+    match crate::config::Method::parse(&operation.method) {
+        Some(crate::config::Method::Post) => Ok(agent.post(url)),
+        None => Err(unvalidated()),
+    }
+}
+
 /// Executes the `chat` operation of the given `model` against `backend`, with `prompt`.
 ///
 /// `schema` is the command's output schema, if any: sent as
@@ -118,7 +146,7 @@ pub fn chat(
     ));
 
     let started = std::time::Instant::now();
-    let mut post = agent.post(&url);
+    let mut post = request_builder(&agent, &url, backend, operation)?;
     for (name, value) in headers {
         post = post.header(name.as_str(), value.as_str());
     }
