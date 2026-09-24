@@ -264,27 +264,14 @@ fn temporary_download_path() -> crate::Result<PathBuf> {
 }
 
 fn current_platform() -> crate::Result<String> {
-    let os_release = if std::env::consts::OS == "linux" {
-        std::fs::read_to_string("/etc/os-release").ok()
-    } else {
-        None
-    };
-    platform_for(
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-        os_release.as_deref(),
-    )
+    platform_for(std::env::consts::OS, std::env::consts::ARCH)
 }
 
-fn platform_for(os: &str, arch: &str, os_release: Option<&str>) -> crate::Result<String> {
+/// One build per OS and architecture: the Linux binary links only libc and
+/// runs on every distribution, so the distribution is never consulted.
+fn platform_for(os: &str, arch: &str) -> crate::Result<String> {
     let platform = match (os, arch) {
-        ("linux", "x86_64") => {
-            match linux_distribution(os_release.unwrap_or_default()).as_deref() {
-                Some("fedora") => "x86_64-fedora",
-                Some("arch") => "x86_64-arch",
-                _ => "x86_64-unknown-linux-gnu",
-            }
-        }
+        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
         ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
         ("macos", "x86_64") => "x86_64-apple-darwin",
         ("macos", "aarch64") => "aarch64-apple-darwin",
@@ -297,24 +284,6 @@ fn platform_for(os: &str, arch: &str, os_release: Option<&str>) -> crate::Result
         }
     };
     Ok(platform.to_string())
-}
-
-fn linux_distribution(os_release: &str) -> Option<String> {
-    for key in ["ID", "ID_LIKE"] {
-        let Some(value) = os_release.lines().find_map(|line| {
-            line.trim()
-                .strip_prefix(&format!("{key}="))
-                .map(|value| value.trim_matches(['\'', '"']))
-        }) else {
-            continue;
-        };
-        for id in value.split_whitespace() {
-            if id == "fedora" || id == "arch" {
-                return Some(id.to_string());
-            }
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -438,28 +407,16 @@ mod tests {
     }
 
     #[test]
-    fn platform_mapping_selects_distro_specific_linux_builds() {
+    fn every_linux_x86_64_host_maps_to_the_single_linux_build() {
         assert_eq!(
-            platform_for("linux", "x86_64", Some("ID=fedora\n")).expect("supported"),
-            "x86_64-fedora"
-        );
-        assert_eq!(
-            platform_for(
-                "linux",
-                "x86_64",
-                Some("ID=nobara\nID_LIKE=\"fedora rhel\"\n")
-            )
-            .expect("supported"),
-            "x86_64-fedora"
-        );
-        assert_eq!(
-            platform_for("linux", "x86_64", Some("ID=arch\n")).expect("supported"),
-            "x86_64-arch"
-        );
-        assert_eq!(
-            platform_for("linux", "x86_64", Some("ID=ubuntu\n")).expect("supported"),
+            platform_for("linux", "x86_64").expect("supported"),
             "x86_64-unknown-linux-gnu"
         );
+        assert_eq!(
+            platform_for("linux", "aarch64").expect("supported"),
+            "aarch64-unknown-linux-gnu"
+        );
+        assert!(platform_for("freebsd", "x86_64").is_err());
     }
 
     #[test]

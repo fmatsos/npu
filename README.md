@@ -89,10 +89,10 @@ all — it spawns the server the backend names directly on this machine.
 
 Each `vX.Y.Z` tag publishes a stripped binary per target — `x86_64-unknown-linux-gnu`,
 `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`,
-`x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc` — plus the Linux x86-64
-triple built on Fedora and on Arch (`x86_64-fedora`, `x86_64-arch`), on the
+`x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc` — on the
 [releases page](https://github.com/fmatsos/npu/releases), together with the changelog for that
-version. Each platform ships twice: an archive (`npu-vX.Y.Z-<platform>.tar.gz` or `.zip`)
+version. The Linux binaries link only glibc and run on any glibc-based distribution. Each platform ships
+twice: an archive (`npu-vX.Y.Z-<platform>.tar.gz` or `.zip`)
 containing the executable and the README, and a raw, uncompressed executable
 (`npu-<platform>`, or `npu-<platform>.exe` on Windows) — the one `npu update` downloads itself,
 authenticated against the SHA-256 in the release's `npu-update.json` manifest. Either way, put
