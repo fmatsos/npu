@@ -4,7 +4,9 @@
 
 /// One line of the [`status`] report: a backend declaring a runtime, and
 /// the state that runtime is in.
-struct RuntimeStatus {
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct RuntimeStatus {
     backend: String,
     /// Which runtime family manages it — `npu status` reports every family
     /// in one table, so a line that did not say which one it belongs to
@@ -173,6 +175,17 @@ pub fn status(
     runner: &dyn Fn(&[String]) -> crate::Result<String>,
     host: &crate::runtime::process::Host<'_>,
 ) -> crate::Result<String> {
+    Ok(format_status(&status_rows(config, runner, host)))
+}
+
+/// The rows [`status`] formats, built separately so `--json` (`cli::builtins`)
+/// can serialize them directly instead of parsing `status`'s own text table
+/// back apart.
+pub(crate) fn status_rows(
+    config: &crate::config::Config,
+    runner: &dyn Fn(&[String]) -> crate::Result<String>,
+    host: &crate::runtime::process::Host<'_>,
+) -> Vec<RuntimeStatus> {
     let mut ids: Vec<&String> = config.backends.keys().collect();
     ids.sort_unstable();
 
@@ -218,7 +231,7 @@ pub fn status(
         })
         .collect();
 
-    Ok(format_status(&rows))
+    rows
 }
 
 /// Formats the [`status`] table, columns sized to the content like

@@ -843,3 +843,116 @@ fn tune_writes_the_graph_and_max_tokens_unless_dry_run() {
     let model = std::fs::read_to_string(&model_file).expect("model");
     assert!(model.contains("[generation]") && model.contains("max_tokens = "));
 }
+
+// -- JSON reports, describe's index, --error-format --------------------------
+
+/// `npu doctor --json`: exit code unchanged, stdout is a JSON array whose
+/// entries carry a machine-readable `kind`/`status` (never the label text).
+#[test]
+fn healthy_config_doctor_json_is_a_parsable_array_naming_kind_and_status() {
+    let xdg = fixture_dir("json-doctor-xdg");
+    let cwd = fixture_dir("json-doctor-cwd");
+    write_healthy_scope(&xdg, "http://127.0.0.1:1");
+
+    let output = run_npu(&cwd, &xdg, &["doctor", "--json"]);
+    let stdout = stdout_of(&output);
+    let checks: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("doctor --json must be valid JSON");
+    let checks = checks.as_array().expect("doctor --json is an array");
+    assert!(!checks.is_empty());
+    assert!(checks.iter().any(|c| c["kind"] == "config"));
+}
+
+/// `npu config models --json`: a JSON array of objects with the same
+/// fields the table shows.
+#[test]
+fn healthy_config_models_json_lists_the_configured_model_as_an_object() {
+    let xdg = fixture_dir("json-models-xdg");
+    let cwd = fixture_dir("json-models-cwd");
+    write_healthy_scope(&xdg, "http://127.0.0.1:1");
+
+    let output = run_npu(&cwd, &xdg, &["config", "models", "--json"]);
+    assert!(output.status.success(), "stderr: {}", stderr_of(&output));
+    let stdout = stdout_of(&output);
+    let rows: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("config models --json must be valid JSON");
+    let rows = rows.as_array().expect("config models --json is an array");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["name"], "qwen-fast");
+    assert_eq!(rows[0]["backend"], "ovms");
+}
+
+/// `npu backend status --json`: a JSON array, empty when no backend
+/// declares a runtime (same content as the text table's header-only case).
+#[test]
+fn healthy_config_status_json_is_an_empty_array_without_a_runtime() {
+    let xdg = fixture_dir("json-status-xdg");
+    let cwd = fixture_dir("json-status-cwd");
+    write_healthy_scope(&xdg, "http://127.0.0.1:1");
+
+    let output = run_npu(&cwd, &xdg, &["backend", "status", "--json"]);
+    assert!(output.status.success(), "stderr: {}", stderr_of(&output));
+    let stdout = stdout_of(&output);
+    let rows: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("backend status --json must be valid JSON");
+    assert_eq!(rows.as_array().expect("array").len(), 0);
+}
+
+/// `npu describe` with no argument: exit 0, a JSON array covering both a
+/// known built-in path and the configured business command.
+#[test]
+fn healthy_config_describe_with_no_argument_returns_the_index() {
+    let xdg = fixture_dir("json-describe-index-xdg");
+    let cwd = fixture_dir("json-describe-index-cwd");
+    write_healthy_scope(&xdg, "http://127.0.0.1:1");
+
+    let output = run_npu(&cwd, &xdg, &["describe"]);
+    assert!(output.status.success(), "stderr: {}", stderr_of(&output));
+    let stdout = stdout_of(&output);
+    let entries: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("describe index must be valid JSON");
+    let entries = entries.as_array().expect("describe index is an array");
+    assert!(
+        entries
+            .iter()
+            .any(|e| e["path"] == "doctor" && e["kind"] == "builtin")
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|e| e["path"] == "commit-message" && e["kind"] == "business")
+    );
+}
+
+/// `--error-format json` on a genuine clap usage error: exit 2, empty
+/// stdout, stderr is a single-line JSON envelope naming `"kind":"usage"`.
+#[test]
+fn unknown_subcommand_with_error_format_json_is_a_one_line_envelope_on_stderr() {
+    let xdg = fixture_dir("json-error-format-xdg");
+    let cwd = fixture_dir("json-error-format-cwd");
+    write_healthy_scope(&xdg, "http://127.0.0.1:1");
+
+    let output = run_npu(&cwd, &xdg, &["does-not-exist", "--error-format", "json"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = stderr_of(&output);
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 1, "got: {stderr}");
+    let envelope: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("stderr must be one line of valid JSON");
+    assert_eq!(envelope["kind"], "usage");
+}
+
+/// `--help` is unaffected by `--error-format json`: still exit 0, still on
+/// stdout, never enveloped.
+#[test]
+fn help_is_unaffected_by_error_format_json() {
+    let xdg = fixture_dir("json-error-format-help-xdg");
+    let cwd = fixture_dir("json-error-format-help-cwd");
+    write_healthy_scope(&xdg, "http://127.0.0.1:1");
+
+    let output = run_npu(&cwd, &xdg, &["--error-format", "json", "--help"]);
+    assert!(output.status.success());
+    assert!(!stdout_of(&output).is_empty());
+    assert!(output.stderr.is_empty());
+}

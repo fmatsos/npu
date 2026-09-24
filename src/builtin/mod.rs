@@ -39,7 +39,9 @@ mod net;
 pub use describe::{describe, describe_builtin};
 pub use doctor::{Probes, doctor, doctor_exit_code, format_doctor};
 pub use lifecycle::{logs, serve, status, stop};
-pub use models::format_models;
+
+pub(crate) use lifecycle::status_rows;
+pub use models::{format_models, format_models_json};
 pub use net::tcp_probe;
 
 pub(crate) use net::parse_host_port;
@@ -48,7 +50,14 @@ pub(crate) use net::parse_host_port;
 pub(crate) use lifecycle::NOT_STARTED;
 
 /// Outcome of a [`doctor::doctor`] check.
-#[derive(Debug)]
+///
+/// Adjacently tagged (`status`/`message`) rather than internally tagged: a
+/// newtype variant's payload (`Failed(String)`) cannot serialize under
+/// internal tagging (`serde` would need it to be a map). Flattened into
+/// [`Check`], this produces `{"status":"ok"}` or
+/// `{"status":"failed","message":"..."}` at the check's own level.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "status", content = "message", rename_all = "snake_case")]
 pub enum Status {
     /// The check succeeded.
     Ok,
@@ -64,7 +73,8 @@ pub enum Status {
 /// display — it can be reworded, translated, or given a new
 /// suffix without notice; the category is a machine contract and must
 /// survive that.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CheckKind {
     /// Checks (a), (c), (d), (e): configuration, models, commands.
     Config,
@@ -73,13 +83,14 @@ pub enum CheckKind {
 }
 
 /// One line of the [`doctor::doctor`] report.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct Check {
     /// Category of this check, used by [`doctor::doctor_exit_code`].
     pub kind: CheckKind,
     /// What was checked (e.g. `backend "ovms" reachable`).
     pub label: String,
     /// The result of this check.
+    #[serde(flatten)]
     pub status: Status,
 }
 
