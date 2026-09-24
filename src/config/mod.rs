@@ -925,6 +925,7 @@ mod tests {
 
     /// Everything the family reads, in one declaration, arriving intact.
     #[test]
+    #[cfg(unix)] // the process runtime is rejected on Windows
     fn load_accepts_a_process_runtime() {
         let root = fixture_dir("process-tagged");
         write_runtime_backend(
@@ -955,6 +956,7 @@ mod tests {
     /// The optional keys have to have a value the code actually uses, or
     /// the default is a fiction.
     #[test]
+    #[cfg(unix)] // the process runtime is rejected on Windows
     fn a_process_runtime_reduced_to_its_command_gets_the_default_budget() {
         let root = fixture_dir("process-minimal");
         write_runtime_backend(
@@ -1020,6 +1022,7 @@ mod tests {
     /// `{{ backend.port }}` works in the two places the family renders, and
     /// nowhere else: one template engine, not a second one.
     #[test]
+    #[cfg(unix)] // the process runtime is rejected on Windows
     fn a_process_runtime_substitutes_the_port_in_arguments_and_env_values() {
         let root = fixture_dir("process-port");
         write(
@@ -1059,6 +1062,7 @@ mod tests {
     /// A port read ONLY by the environment overlay still counts as read:
     /// rejecting it would make a legitimate declaration impossible.
     #[test]
+    #[cfg(unix)] // the process runtime is rejected on Windows
     fn a_port_read_only_by_the_environment_overlay_is_not_reported_as_unused() {
         let root = fixture_dir("process-port-env-only");
         write(
@@ -1128,6 +1132,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // the process runtime is rejected on Windows
     fn a_process_runtime_referencing_an_unknown_argument_is_rejected() {
         let root = fixture_dir("process-unknown-arg");
         write_runtime_backend(
@@ -1172,6 +1177,7 @@ mod tests {
     /// Honoured literally, a zero budget makes every start fail; clamped, it
     /// would be a key read and silently ignored.
     #[test]
+    #[cfg(unix)] // the process runtime is rejected on Windows
     fn a_zero_startup_budget_is_rejected() {
         let root = fixture_dir("process-zero-budget");
         write_runtime_backend(
@@ -1195,6 +1201,7 @@ mod tests {
     /// time — exit `101` instead of the exit-code contract. Rejected at load
     /// time naming the file, like the zero case.
     #[test]
+    #[cfg(unix)] // the process runtime is rejected on Windows
     fn an_unrepresentable_startup_budget_is_rejected() {
         let root = fixture_dir("process-huge-budget");
         write_runtime_backend(
@@ -1222,6 +1229,7 @@ mod tests {
     /// FILE: left to `serve`, it burns the whole budget and then kills a
     /// perfectly working server, blaming a timeout key that is correct.
     #[test]
+    #[cfg(unix)] // the process runtime is rejected on Windows
     fn a_process_runtime_whose_base_url_cannot_be_parsed_is_rejected() {
         let root = fixture_dir("process-unparseable-url");
         write(
