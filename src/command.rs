@@ -242,7 +242,7 @@ fn collect_command_files(
 /// reserved by `clap` itself).
 ///
 /// Without this rejection, `commands/doctor.md` would be silently
-/// shadowed by the `doctor` built-in built in `lib.rs` (or, depending on
+/// shadowed by the `doctor` built-in built in `cli::builtins` (or, depending on
 /// the clap tree's build order, would shadow it instead) — a naming
 /// conflict that would only surface at execution time, confusingly,
 /// rather than being caught at load time like any other configuration
@@ -346,29 +346,29 @@ fn collect_markdown_files(
     Ok(())
 }
 
-/// Argument names reserved by `clap` or by `lib.rs`: building the command
+/// Argument names reserved by `clap` or by `cli::mod`: building the command
 /// tree with an argument named `help` or `version` would collide with the
 /// flags `clap` handles itself; an argument named `FILE` would collide
-/// with the positional `FILE` argument that `lib.rs` (`build_clap_node`)
+/// with the positional `FILE` argument that `cli::mod` (`build_clap_node`)
 /// already adds for commands whose input mode accepts a file
 /// (`InputMode::File`/`StdinOrFile`). Reject here, at load time,
 /// rather than letting the error surface (much less clearly, or even
 /// panicking `clap::Command::arg` on a duplicate id) from the clap tree's
-/// construction downstream, in `lib.rs`.
+/// construction downstream, in `cli::mod`.
 const RESERVED_ARG_NAMES: [&str; 4] = ["help", "version", "FILE", "verbose"];
 
 /// Short letter reserved by `clap`: every `Command` gets an automatic
 /// `-h`/`--help` flag, whether or not `disable_help_flag` is called —
-/// verified in `lib.rs`, which does not call it. `-V`/`--version` is
-/// declared by `lib.rs` (`cli.version(updater::VERSION)`), but only on the
+/// verified in `cli::mod`, which does not call it. `-V`/`--version` is
+/// declared by `cli::builtins` (`cli.version(updater::VERSION)`), but only on the
 /// ROOT command: `propagate_version` is never called, so subcommands (the
 /// only place a declared `[args.*]` argument lives) never get an automatic
 /// `-V`. We therefore do not reserve `V` here, so as
 /// not to reject a configuration that collides with nothing actually
-/// built. If `lib.rs` ever starts propagating the version flag to
+/// built. If `cli::builtins` ever starts propagating the version flag to
 /// subcommands, this list will need to follow.
 ///
-/// `v` is reserved for a different reason: `lib.rs` declares a GLOBAL
+/// `v` is reserved for a different reason: `cli::mod` declares a GLOBAL
 /// `--verbose`/`-v` argument on the root command, inherited by every
 /// subcommand. A declared `short = "v"` would collide with it at build time,
 /// which `clap` reports by panicking — unacceptable for a configuration
@@ -520,7 +520,7 @@ fn convert_args(raw: BTreeMap<String, RawArgSpec>) -> crate::Result<BTreeMap<Str
 /// existence, readability nor validity of the resulting file — it's a
 /// simple, infallible path composition. Checking existence here, i.e. as
 /// early as `discover_scopes`/`discover`, before even the
-/// clap tree is built in `build_cli` (see `lib.rs::run`), would make a schema
+/// clap tree is built in `build_cli` (see `cli::mod`), would make a schema
 /// missing for a SINGLE command, even a general command nobody ever
 /// invokes, make `npu --help` fail for the whole CLI —
 /// strictly WORSE than a schema present but syntactically
@@ -1378,7 +1378,7 @@ mod tests {
 
     #[test]
     fn arg_named_file_is_config_error() {
-        // `FILE` is the id of the positional argument `lib.rs` adds for
+        // `FILE` is the id of the positional argument `cli::mod` adds for
         // commands accepting a file as input: an argument
         // declared with the same name would collide (duplicate clap id)
         // and must therefore be rejected here, at load time.

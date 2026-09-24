@@ -2,14 +2,14 @@
 //! reachability probe they share.
 //!
 //! This module NEVER writes to the console itself: [`doctor`] returns
-//! a report ([`Check`]) that the caller (`lib.rs::run`) formats with
-//! [`format_doctor`] before writing it to stdout (contract rule: stdout
+//! a report ([`Check`]) that the caller (`cli::builtins::doctor`) formats
+//! with [`format_doctor`] before writing it to stdout (contract rule: stdout
 //! is reserved for the RESULT of a built-in, which IS its report). This is
 //! what makes [`doctor`] fully testable without touching disk beyond
 //! check (e), nor the network: the reachability probe (`probe`) is
 //! injected by the caller rather than called directly, exactly like
 //! `prompt::render`/`prompt::preflight` inject their environment
-//! variable resolver (cf. `lib.rs::run`).
+//! variable resolver (cf. `exec::execute_business_command`).
 //!
 //! **Deliberate omission: "NPU available".** This CLI is deliberately
 //! agnostic of the inference runtime (the core only knows named backend
@@ -69,7 +69,7 @@ pub struct Check {
 /// Bundled rather than passed one by one for the reason the report itself
 /// exists: each family of checks reaches a different part of the outside
 /// world, and a fifth one must not reopen every signature between here and
-/// `lib.rs`. Nothing here is ever called directly by `doctor`'s tests — they
+/// `cli::builtins`. Nothing here is ever called directly by `doctor`'s tests — they
 /// hand it their own closures, which is why no test in the suite needs a
 /// network, Docker or an inference server.
 pub struct Probes<'a> {
@@ -102,7 +102,7 @@ impl std::fmt::Debug for Probes<'_> {
 /// any command file whose FIRST path segment matches one of these
 /// values: without this
 /// rejection, `commands/doctor.md` would be silently shadowed by (or
-/// would shadow) the `doctor` built-in built in `lib.rs`.
+/// would shadow) the `doctor` built-in built in `cli::builtins`.
 pub const RESERVED: &[&str] = &[
     "backend", "config", "doctor", "describe", "update", "help", "model",
 ];
@@ -609,8 +609,9 @@ impl DescribeSource {
     }
 }
 
-/// A built-in, described from the `clap` tree `lib.rs` builds — the only
-/// place built-ins are declared, so this description cannot drift from it.
+/// A built-in, described from the `clap` tree `cli::builtins` builds — the
+/// only place built-ins are declared, so this description cannot drift from
+/// it.
 #[derive(Serialize)]
 struct DescribeBuiltin<'a> {
     name: String,
@@ -690,8 +691,8 @@ struct Describe<'a> {
 ///
 /// Does NO resolution by name: this signature takes
 /// an already-resolved `CommandSpec` — it is up to the caller
-/// (`lib.rs::run`) to look up this `CommandSpec` (with its own
-/// `find_command`, already written and tested there) before calling
+/// (`lib.rs::run`) to look up this `CommandSpec` (with `cli::find_command`,
+/// already written and tested there) before calling
 /// this function. "describe on an unknown command" is therefore not a
 /// behavior this module can produce or test, for lack of receiving a
 /// name to resolve.
