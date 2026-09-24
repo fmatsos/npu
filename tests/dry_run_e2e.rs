@@ -140,6 +140,12 @@ fn dry_run_never_resolves_the_runtime_and_leaves_the_port_placeholder() {
         "the port placeholder must be left unresolved"
     );
     assert_eq!(report["body"]["model"], "test-model");
+    assert!(
+        report["body"]["stream"].is_null(),
+        "stdout is piped, not a terminal: a real invocation would not stream, and neither \
+         must the dry-run report, got: {}",
+        report["body"]
+    );
     assert_eq!(
         report["body"]["messages"][0]["content"], "hello",
         "the request body is the same one `chat` would send"
