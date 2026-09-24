@@ -37,8 +37,8 @@ pub enum Status {
     Failed(String),
 }
 
-/// Category of a [`Check`], in the sense of the exit code from [`doctor_exit_code`]
-/// (point 5 of the shared contract, spec §23): it is this value, and
+/// Category of a [`Check`], in the sense of the exit code from [`doctor_exit_code`]:
+/// it is this value, and
 /// NEVER the text of [`Check::label`], that distinguishes a
 /// configuration failure ("fix your files") from a reachability failure
 /// ("start your runtime") for a calling agent. A label is
@@ -101,7 +101,7 @@ impl std::fmt::Debug for Probes<'_> {
 /// `clap` itself (every `clap::Command` gets an automatic `-h`/`--help`
 /// flag). `command.rs` (`reject_reserved_path`) rejects at load time
 /// any command file whose FIRST path segment matches one of these
-/// values (phase 5, point 2 of the shared contract): without this
+/// values: without this
 /// rejection, `commands/doctor.md` would be silently shadowed by (or
 /// would shadow) the `doctor` built-in built in `lib.rs`.
 pub const RESERVED: &[&str] = &[
@@ -346,12 +346,11 @@ fn check_commands_model(
 /// Check (e): for each command declaring an output schema
 /// (`[output].schema`), in ALL scopes, is that schema present,
 /// readable, valid JSON, and a compilable JSON Schema? This is the
-/// EXHAUSTIVE work that phase 4 deliberately deferred to `doctor` (cf.
+/// EXHAUSTIVE work deliberately deferred to `doctor` (cf.
 /// `output.rs`, `command::resolve_schema_path`: a schema's existence and
 /// compilation are only checked, outside `doctor`, at the moment the
 /// command that requires it is actually invoked). Reuses
-/// `output::compile_schema` — made `pub(crate)` for this phase (the only
-/// change allowed in `output.rs`, cf. the report) — rather than
+/// `output::compile_schema` — `pub(crate)` for this purpose — rather than
 /// writing a second implementation of schema compilation: the three
 /// distinct error messages (absent/unreadable, invalid JSON, schema
 /// syntactically invalid) it already produces are exactly the ones
@@ -394,21 +393,20 @@ fn check_commands_output_schema(commands: &[crate::command::CommandSpec]) -> Vec
         .collect()
 }
 
-/// Runs all `npu doctor` checks (point 3 of the shared contract) and
+/// Runs all `npu doctor` checks and
 /// returns the report — without ever writing to the console or touching
 /// the network (`probe` is injected); only check (e) touches disk, by
 /// reading the declared schema files.
 ///
 /// `config`/`commands` and `load_error` reflect the degraded mode of
-/// `lib.rs::run` (shared-contract decision 1, corollary of the debt
-/// tracked since phase 1): when loading fails, `run` KEEPS the error
+/// `lib.rs::run`: when loading fails, `run` KEEPS the error
 /// instead of propagating it, so that `doctor` can still run and
 /// report it as a failed check (a). This function does not assume that
 /// `config`/`commands`/`load_error` vary as a block, though: each
 /// family of checks (b/c, then d/e) only runs if the data it needs is
 /// actually available, which stays correct whether the caller treats
 /// loading as a single atomic operation (the case expected in
-/// practice, cf. the report) or distinguishes a genuine configuration
+/// practice) or distinguishes a genuine configuration
 /// failure from a command discovery failure.
 #[must_use]
 pub fn doctor(
@@ -438,7 +436,7 @@ pub fn doctor(
     checks
 }
 
-/// Formats the `doctor` report for stdout (point 6 of the shared contract):
+/// Formats the `doctor` report for stdout:
 /// a checkmark (`✓`) followed by the label for each successful check, a
 /// cross (`✗`) followed by the label THEN the message for each failure —
 /// never the reverse, or the message explaining the failure would end up
@@ -463,7 +461,7 @@ pub fn format_doctor(checks: &[Check]) -> String {
         .join("\n")
 }
 
-/// Exit code of the `doctor` report (point 5 of the shared contract):
+/// Exit code of the `doctor` report:
 /// - `0` if all checks pass;
 /// - `2` if at least one CONFIGURATION check (a, c, d, e) fails —
 ///   configuration takes priority, including when a reachability check
@@ -473,7 +471,7 @@ pub fn format_doctor(checks: &[Check]) -> String {
 /// Distinguishes the two failure families via [`Check::kind`], never via
 /// the text of [`Check::label`]: a label is display — it can be
 /// reworded, translated, or given a new suffix without notice — while
-/// the category is a machine contract (spec §23) that this exit code
+/// the category is a machine contract that this exit code
 /// must keep honoring no matter what happens to the label.
 #[must_use]
 pub fn doctor_exit_code(checks: &[Check]) -> i32 {
@@ -499,8 +497,8 @@ pub fn doctor_exit_code(checks: &[Check]) -> i32 {
     }
 }
 
-/// Formats the `npu models` table (point 6 of the shared contract, spec
-/// §16): NAME/BACKEND/OPERATION columns, sorted by name to stay
+/// Formats the `npu models` table:
+/// NAME/BACKEND/OPERATION columns, sorted by name to stay
 /// deterministic regardless of the underlying `HashMap`'s iteration
 /// order, aligned to the ACTUAL width of the content (never a hardcoded
 /// width: a model name longer than "NAME" widens its column). A
@@ -683,20 +681,19 @@ struct Describe<'a> {
     output: DescribeOutput<'a>,
 }
 
-/// Describes a dynamically configured command (point 6 of the shared
-/// contract, spec §16): produces JSON on stdout, serialized by
+/// Describes a dynamically configured command: produces JSON on stdout,
+/// serialized by
 /// `serde_json` (never built by hand — a manual `format!` could not
-/// correctly escape a description or a prompt containing quotes).
-/// Extends the §16 example with what phases 3 and 4 added: the declared
+/// correctly escape a description or a prompt containing quotes),
+/// including the declared
 /// arguments (`args`) and the output contract (`output`, with its
 /// format, its schema if any, and its line limit if any).
 ///
-/// Does NO resolution by name: the shared contract fixes this signature
-/// to an already-resolved `CommandSpec` — it is up to the caller
+/// Does NO resolution by name: this signature takes
+/// an already-resolved `CommandSpec` — it is up to the caller
 /// (`lib.rs::run`) to look up this `CommandSpec` (with its own
 /// `find_command`, already written and tested there) before calling
-/// this function. See the report for the explicit decision behind this
-/// choice: "describe on an unknown command" is therefore not a
+/// this function. "describe on an unknown command" is therefore not a
 /// behavior this module can produce or test, for lack of receiving a
 /// name to resolve.
 pub fn describe(
@@ -751,15 +748,15 @@ pub fn describe(
         .map_err(|err| crate::Error::Config(format!("description serialization failed: {err}")))
 }
 
-/// Extracts `(host, port)` from a base URL "http(s)://host[:port][/...]"
-/// (point 4 of the shared contract). Falls back to the scheme's implicit
+/// Extracts `(host, port)` from a base URL "http(s)://host[:port][/...]".
+/// Falls back to the scheme's implicit
 /// port (80 for `http`, 443 for `https`) when no explicit port is
 /// present. PURELY SYNTACTIC: never touches the network, only the
 /// `base_url` string itself — it's [`tcp_probe`] that opens the
 /// connection.
 ///
 /// **Bracketed IPv6 notation** (`[::1]` or `[::1]:8000`, RFC 3986
-/// §3.2.2) handled separately, BEFORE the general `rsplit_once(':')`: a
+/// section 3.2.2) handled separately, BEFORE the general `rsplit_once(':')`: a
 /// bare IPv6 address itself contains `:` characters, so a plain
 /// `rsplit_once(':')` would cut `[::1]:8000` on the last `:` inside the
 /// brackets rather than on the host/port separator. `host` is returned
@@ -848,7 +845,7 @@ fn parse_ipv6_authority(
 }
 
 /// Tests a backend's reachability with a TCP connection to its
-/// `base_url` (point 4 of the shared contract), with a short timeout
+/// `base_url`, with a short timeout
 /// ([`PROBE_TIMEOUT`]), then closes it immediately. NO HTTP request: a
 /// `POST` on the `chat` operation would actually invoke the model, an
 /// unacceptable side effect for a diagnostic command — this function
@@ -1614,7 +1611,7 @@ mod tests {
         assert_eq!(
             doctor_exit_code(&checks),
             2,
-            "configuration must take priority over reachability (point 5 of the shared contract)"
+            "configuration must take priority over reachability"
         );
     }
 

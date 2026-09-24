@@ -5,23 +5,21 @@
 //! validation if a schema is declared → compact serialization → stdout. For
 //! text format: trim, then optional `max_lines` check.
 //!
-//! Exit code distinction (rule 1 of the shared contract, §23 — the machine
-//! contract a calling agent depends on): a model response that does not
-//! honor the declared contract is a [`crate::Error::Output`] (code 4, the
-//! configuration is valid, it's the model that misbehaved); a schema file
-//! that is not found, unreadable, or syntactically invalid is a
-//! [`crate::Error::Config`] (code 2, it's the configuration that is broken).
-//! An invalid output is NEVER repaired nor retried here (§15: it's an
-//! execution failure, not something to catch — reformulation/retry belongs
-//! to phase 5, out of scope).
+//! Exit code distinction — the machine contract a calling agent depends
+//! on: a model response that does not honor the declared contract is a
+//! [`crate::Error::Output`] (code 4, the configuration is valid, it's the
+//! model that misbehaved); a schema file that is not found, unreadable, or
+//! syntactically invalid is a [`crate::Error::Config`] (code 2, it's the
+//! configuration that is broken). An invalid output is NEVER repaired nor
+//! retried here: it's an execution failure, not something to catch.
 //!
-//! Schema path resolution (rule 3 of the shared contract): `OutputSpec.
+//! Schema path resolution: `OutputSpec.
 //! schema` carries a path that is ALREADY resolved (absolute, or relative to
 //! the cwd) by the time it reaches this module — resolution relative to the
-//! command's scope root (§4/§6: `schemas/` is a sibling directory of
+//! command's scope root (`schemas/` is a sibling directory of
 //! `commands/`) is the caller's responsibility (`command.rs`), not
 //! `output.rs`'s, which only opens the path it is given. This resolution
-//! (`command::resolve_schema_path`) is PURELY SYNTACTIC (L3 review): it
+//! (`command::resolve_schema_path`) is PURELY SYNTACTIC: it
 //! never touches disk. So it is THIS module, in `compile_schema`, that first
 //! discovers — and only at the moment the command that requires it is
 //! actually invoked — that a schema is absent, unreadable, or syntactically
@@ -55,7 +53,7 @@ impl Format {
 /// Output contract resolved for a command.
 ///
 /// Built by the caller (`command.rs`) from the `[output]` frontmatter —
-/// forbidden combinations (rule 2 of the shared contract: `schema` with
+/// forbidden combinations (`schema` with
 /// `format = "text"`, or `max_lines` with `format = "json"`) are already
 /// rejected before this value exists. `finalize` therefore does not
 /// revalidate these combinations: it only reads the field relevant to the
@@ -69,8 +67,8 @@ pub struct OutputSpec {
 }
 
 /// Maximum number of characters kept in the response excerpt quoted by a
-/// JSON parsing error message (rule 6 of the shared contract: a truncated
-/// excerpt, not the whole response). Counted in characters, not bytes, to
+/// JSON parsing error message: a truncated
+/// excerpt, not the whole response. Counted in characters, not bytes, to
 /// never cut in the middle of a multi-byte character.
 const EXCERPT_MAX_CHARS: usize = 200;
 
@@ -88,8 +86,8 @@ fn excerpt(text: &str) -> String {
 
 /// Removes a Markdown fence surrounding the model's response, if present.
 ///
-/// Models very often wrap their JSON in ` ``` ` or ` ```json ` (rule 5 of
-/// the shared contract). This function removes at most ONE opening fence at
+/// Models very often wrap their JSON in ` ``` ` or ` ```json `. This
+/// function removes at most ONE opening fence at
 /// the start and its matching closing fence at the end, with an optional
 /// language label on the opening line, tolerating whitespace/newlines
 /// around the whole thing (`str::trim` before analysis). It touches
@@ -166,12 +164,12 @@ pub fn finalize(spec: &OutputSpec, raw: &str, command_file: &Path) -> crate::Res
     }
 }
 
-/// Applies the `format = "text"` contract (rule 7 of the shared contract):
+/// Applies the `format = "text"` contract:
 /// no fence removed, no parsing. The response is trimmed of leading and
 /// trailing whitespace. If `max_lines` is declared and the response has
 /// more NON-EMPTY lines (after trim) than this limit, failure —
 /// `Error::Output` stating the expected count and the received count, never
-/// a silent truncation (§15: failure, not repair). Empty lines (whitespace
+/// a silent truncation: failure, not repair. Empty lines (whitespace
 /// only, or fully empty) do not count towards the total compared to the
 /// limit, but remain in the returned text: only the global trim
 /// (leading/trailing) modifies the response itself.
@@ -194,14 +192,14 @@ fn finalize_text(max_lines: Option<usize>, raw: &str) -> crate::Result<String> {
     Ok(trimmed.to_string())
 }
 
-/// Applies the `format = "json"` contract (rules 5/6 of the shared
-/// contract): extraction of an optional Markdown fence ([`strip_fences`]),
+/// Applies the `format = "json"` contract: extraction of an optional
+/// Markdown fence ([`strip_fences`]),
 /// parsing (`serde_json` — failure => `Error::Output` citing the parsing
 /// error and a truncated excerpt of the response), then validation against
 /// the schema if there is one (failure => `Error::Output` listing EVERY
 /// violation, never just the first). The value returned on stdout is the
 /// COMPACT serialization of the parsed value, so stdout stays valid JSON
-/// regardless of the wrapping the model put around it (§22: `npu classify |
+/// regardless of the wrapping the model put around it (e.g. `npu classify |
 /// jq .`).
 fn finalize_json(schema: Option<&Path>, raw: &str, command_file: &Path) -> crate::Result<String> {
     let candidate = strip_fences(raw);
@@ -214,15 +212,14 @@ fn finalize_json(schema: Option<&Path>, raw: &str, command_file: &Path) -> crate
     })?;
 
     if let Some(schema_path) = schema {
-        // LAZY BY DESIGN (rule 4 of the shared contract): this schema is
+        // LAZY BY DESIGN: this schema is
         // only compiled because the command actually invoked declares it,
         // never at configuration load time nor for schemas of other
-        // commands in the same scope. Same lesson as the phase 2 L3 review
-        // (a broken backend/model shadowed by a more local scope is never
-        // read): a broken schema belonging to a command that nobody invokes
+        // commands in the same scope: a broken schema belonging to a
+        // command that nobody invokes
         // must not make the CLI unusable. Exhaustively checking all schemas
-        // is `npu doctor`'s job (phase 5, out of scope here). Since this
-        // phase's L3 review, the EXISTENCE of the schema is lazy in the
+        // is `npu doctor`'s job, not this module's. The EXISTENCE of the
+        // schema is lazy in the
         // same way as its compilation (cf. `command::resolve_schema_path`'s
         // doc): it is HERE, and only here, that `compile_schema` can
         // discover a file that is absent, unreadable, or syntactically
@@ -239,12 +236,12 @@ fn finalize_json(schema: Option<&Path>, raw: &str, command_file: &Path) -> crate
 ///
 /// A file that is not found or unreadable, or a JSON Schema that is
 /// syntactically invalid, is an `Error::Config`: the CONFIGURATION is
-/// broken, not the model's response (rule 1 of the shared contract). `path`
+/// broken, not the model's response. `path`
 /// is already resolved by the caller (cf. module doc): opened as-is,
 /// relative to the process's cwd if not absolute — like any other file read
 /// by this crate (`std::fs::read_to_string`).
 ///
-/// `command_file` (L3 review, fix 1) is the command file that declared this
+/// `command_file` is the command file that declared this
 /// schema (`CommandSpec.file`, cf. `command.rs`): named in each of the
 /// three error messages below, IN ADDITION TO the resolved schema path.
 /// Since `command::resolve_schema_path` no longer checks anything on disk,
@@ -295,7 +292,7 @@ pub(crate) fn read_schema(path: &Path, command_file: &Path) -> crate::Result<ser
 
 /// Validates `value` against `validator` and returns an `Error::Output`
 /// listing EVERY violation (offending JSON path + reason), never just the
-/// first (rule 6 of the shared contract): a user should be able to fix
+/// first: a user should be able to fix
 /// their prompt in a single pass rather than rerunning the command for
 /// every violation discovered one at a time. Same actionable style as
 /// `config::validate_backend`/`error::format_available`: path in quotes,

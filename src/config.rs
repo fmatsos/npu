@@ -541,7 +541,7 @@ pub struct Model {
 /// load time rather than ignore the value (cf. review L3).
 const SUPPORTED_BACKEND_KIND: &str = "openai-compatible";
 
-/// Only HTTP method supported in phase 1: `backend.rs` hardcodes
+/// Only HTTP method currently supported: `backend.rs` hardcodes
 /// `client.post()`. A different `Operation.method`
 /// would therefore be silently ignored without this validation (cf. review
 /// L3).
@@ -771,21 +771,21 @@ fn validate_process(backend: &Backend, source: &Path) -> crate::Result<()> {
     Ok(())
 }
 
-/// Validates that a loaded backend only declares properties honored in
-/// phase 1: `type = "openai-compatible"` and `method = "POST"` for each of
+/// Validates that a loaded backend only declares currently supported
+/// properties: `type = "openai-compatible"` and `method = "POST"` for each of
 /// its operations. Any other value is a configuration error detected at
 /// load time, not a feature to implement.
 ///
 /// Runs AFTER scope merging (cf. `load_scopes`), on surviving entries only:
 /// an invalid backend from a general scope, entirely replaced by a more
-/// local scope, must never reach this function (cf. review L3, phase 2).
+/// local scope, must never reach this function.
 /// `source` is the path of the file the surviving entry comes from, so that
 /// the message names the file the user must actually fix.
 fn validate_backend(backend: &Backend, source: &Path) -> crate::Result<()> {
     if backend.kind != SUPPORTED_BACKEND_KIND {
         return Err(crate::Error::Config(format!(
             "{}: backend \"{}\": type \"{}\" not supported (only \"{SUPPORTED_BACKEND_KIND}\" \
-             is supported in phase 1)",
+             is supported)",
             source.display(),
             backend.id,
             backend.kind
@@ -796,7 +796,7 @@ fn validate_backend(backend: &Backend, source: &Path) -> crate::Result<()> {
         if !operation.method.eq_ignore_ascii_case(SUPPORTED_METHOD) {
             return Err(crate::Error::Config(format!(
                 "{}: backend \"{}\", operation \"{operation_name}\": method \"{}\" not \
-                 supported (only \"{SUPPORTED_METHOD}\" is supported in phase 1)",
+                 supported (only \"{SUPPORTED_METHOD}\" is supported)",
                 source.display(),
                 backend.id,
                 operation.method
@@ -873,10 +873,10 @@ pub struct Config {
 /// mentions the path of the offending file — this PARSING error remains
 /// fatal in every scope, unlike semantic validation: before `key_of` could
 /// be called, the entry's identity (and thus the question "is it
-/// shadowed?") is not knowable (cf. review L3, phase 2).
+/// shadowed?") is not knowable.
 ///
 /// Two files in `dir` declaring the same `id` are a configuration
-/// ambiguity, not an intention (cf. review L3): `Error::Config` names the
+/// ambiguity, not an intention: `Error::Config` names the
 /// duplicated identifier and both file paths involved. The directory's
 /// entries are sorted before reading so that this diagnostic (which file is
 /// "the first", which file is "the duplicate") is deterministic rather than
@@ -948,8 +948,7 @@ where
 /// Loads `<root>/backends/*.toml` and `<root>/models/*.toml`: a simple
 /// single scope, in `load_scopes` terms. This is not duplicated into a
 /// separate loading path: single-scope and multi-scope loading can
-/// therefore never diverge on when semantic validation runs (cf. review L3,
-/// phase 2).
+/// therefore never diverge on when semantic validation runs.
 ///
 /// The key of each table is the file's `id` field.
 pub fn load(root: &Path) -> crate::Result<Config> {
@@ -968,10 +967,10 @@ pub fn load(root: &Path) -> crate::Result<Config> {
 ///
 /// Semantic validation (`validate_backend`) runs AFTER this merge, and only
 /// on surviving entries: an invalid backend from a general scope, entirely
-/// shadowed by a more local scope, must never make loading fail (cf. review
-/// L3, phase 2 — unlike a TOML PARSING error, which remains fatal in every
+/// shadowed by a more local scope, must never make loading fail —
+/// unlike a TOML PARSING error, which remains fatal in every
 /// scope since the identity of an unreadable file is not knowable, and thus
-/// neither is whether it is shadowed: cf. `load_toml_dir`).
+/// neither is whether it is shadowed: cf. `load_toml_dir`.
 ///
 /// A root in `roots` that does not exist on disk is not an error:
 /// `load_toml_dir` already returns empty tables in that case (a `NotFound`
@@ -2693,7 +2692,7 @@ mod tests {
 
     #[test]
     fn load_scopes_invalid_backend_fully_masked_by_local_scope_resolves_successfully() {
-        // Review L3 (phase 2): an invalid backend from a general scope,
+        // An invalid backend from a general scope,
         // entirely replaced by a valid local scope, must never reach
         // semantic validation.
         let general = fixture_dir("scopes-invalid-backend-masked-general");
@@ -2772,7 +2771,7 @@ mod tests {
     fn load_scopes_toml_parse_error_in_general_scope_remains_fatal_even_when_masked() {
         // Unlike semantic validation, a PARSING error remains fatal in
         // every scope: an unreadable file has no knowable identity, so we
-        // cannot know whether it is shadowed (cf. review L3, phase 2). This
+        // cannot know whether it is shadowed. This
         // is not a bug.
         let general = fixture_dir("scopes-parse-error-masked-general");
         write(&general, "backends/ovms.toml", "not = [valid");

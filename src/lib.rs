@@ -62,8 +62,8 @@ fn build_command_tree(specs: &[command::CommandSpec]) -> CommandNode<'_> {
 /// (`[args.*]`): `.long(name)`, `.short(letter)` if present,
 /// `.required(required)`, `.help(description)` if non-empty, `.value_name(name
 /// in UPPERCASE)` and the single-value action (`ArgAction::Set`, an
-/// argument expects a single value — no multi-values, no boolean flag,
-/// cf. §11/§25). The argument's id is `name` itself: this is what
+/// argument expects a single value — no multi-values, no boolean flag).
+/// The argument's id is `name` itself: this is what
 /// `collect_arg_values` reads back from the leaf command's `ArgMatches`.
 fn build_declared_arg(name: &str, arg_spec: &command::ArgSpec) -> clap::Arg {
     let mut arg = clap::Arg::new(name.to_string())
@@ -85,7 +85,7 @@ fn build_declared_arg(name: &str, arg_spec: &command::ArgSpec) -> clap::Arg {
 /// Recursively builds the `clap` subtree corresponding to `node`, named
 /// `name`. A leaf command receives its description, an optional `FILE`
 /// positional argument if it accepts a file as input, then a `clap::Arg`
-/// per declared argument (`[args.*]`, phase 3 — cf. [`build_declared_arg`]).
+/// per declared argument (`[args.*]` — cf. [`build_declared_arg`]).
 /// Iterating over `spec.args` (a `BTreeMap`) is sorted by name, so the order
 /// of arguments in `--help` is deterministic regardless of the order the
 /// TOML frontmatter was written in. `command::parse` already reserves the
@@ -682,11 +682,11 @@ fn find_command<'a>(
 /// `BTreeMap<String, String>` expected by `prompt::render`.
 ///
 /// A declared argument absent from `leaf_matches` (not required and not
-/// supplied on the command line) is simply omitted from the map: phase 3
-/// does not introduce a default value. If the
+/// supplied on the command line) is simply omitted from the map: there is
+/// no default value. If the
 /// prompt still references this argument via `{{ args.NAME }}`,
-/// `prompt::render` fails with an `Error::Config` naming the argument (rule
-/// 6 of the shared contract) rather than substituting an unrequested empty
+/// `prompt::render` fails with an `Error::Config` naming the argument
+/// rather than substituting an unrequested empty
 /// string.
 fn collect_arg_values(
     spec: &command::CommandSpec,
@@ -822,11 +822,11 @@ fn chat_with_fallback(
 /// `run` has propagated any load error before reaching this function) and
 /// the `ArgMatches` of the selected leaf command.
 ///
-/// Extracted from `run` as-is (phase 5, degraded-mode wiring): the only
-/// change from the version before this phase is where this sequence is
-/// called from, never its content nor its internal order.
+/// Extracted from `run` as-is, for the degraded-mode wiring: where this
+/// sequence is called from can change, never its content nor its internal
+/// order.
 ///
-/// INVARIANT (L3 review, fix 1, phase 3) — preserved IDENTICALLY: nothing
+/// INVARIANT — preserved IDENTICALLY: nothing
 /// that is knowable without the input must be checked after reading the
 /// input. An argument referenced by the prompt and an environment variable
 /// referenced by the prompt are both knowable even before knowing what
@@ -924,8 +924,7 @@ fn execute_business_command(
     // code 4: the CONFIGURATION is valid, it is the model's response that
     // does not respect the declared contract — cf. `output.rs`'s module
     // doc). No reformulation or retry here: an invalid output is an
-    // execution failure, not something to recover from (§15, out of scope
-    // for this phase).
+    // execution failure, not something to recover from.
     // Streamed only where nothing can reject the answer after it is shown
     // — free text, no `max_lines` — and only to a terminal: a pipe keeps
     // receiving the answer in one piece, byte for byte as before.
@@ -1015,8 +1014,7 @@ fn answer_header(answered_by: &str) -> String {
 /// never a field-by-field merge; a root
 /// absent from disk is simply not taken into account.
 ///
-/// **Degraded mode (phase 5, point 1 of the shared contract — paying off
-/// the debt tracked since phase 1).** Loading (`config::load_scopes` THEN
+/// **Degraded mode.** Loading (`config::load_scopes` THEN
 /// `command::discover_scopes`) can fail (malformed TOML, broken
 /// frontmatter, unknown reference). Its error is now KEPT
 /// (`loaded: Result<(Config, Vec<CommandSpec>)>`) rather than immediately
@@ -1034,10 +1032,9 @@ fn answer_header(answered_by: &str) -> String {
 /// - `--version` and `update` run without the configuration, just like `doctor`;
 /// - any OTHER invocation (business command, `models`, `serve`, `stop`,
 ///   `status`, `logs`, `describe`)
-///   propagates the kept load error via `loaded?`, exit code 2 — unchanged
-///   from before this phase.
+///   propagates the kept load error via `loaded?`, exit code 2.
 ///
-/// When loading SUCCEEDS, the behavior is identical to before this phase,
+/// When loading SUCCEEDS, the pipeline behaves as normal,
 /// invariant included (cf. [`execute_business_command`]'s doc).
 ///
 /// Exit code carried by the return type: `Ok(0)` (ordinary success,
@@ -1458,8 +1455,7 @@ mod tests {
             input,
             prompt: "{{ input }}".to_string(),
             args,
-            // Phase 4 (`command::CommandSpec.output`, field added by the
-            // shared API contract): these `lib.rs` tests bear on the
+            // `command::CommandSpec.output`: these `lib.rs` tests bear on the
             // construction of the `clap` tree, never on the output
             // contract — `OutputSpec::default()` (text format, no schema,
             // no limit) is neutral for them.
@@ -1610,7 +1606,7 @@ mod tests {
         assert!(git.is_arg_required_else_help_set());
     }
 
-    // -- declared CLI arguments (phase 3) --------------------------------------
+    // -- declared CLI arguments --------------------------------------------
 
     #[test]
     fn declared_arg_becomes_clap_arg_with_short_required_help_and_value_name() {
@@ -1733,7 +1729,7 @@ mod tests {
         assert!(
             !collected.contains_key("unused"),
             "an argument that is not supplied and not required must not appear in the map, \
-             no default value (§11/§25)"
+             no default value"
         );
     }
 

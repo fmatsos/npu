@@ -3,7 +3,7 @@
 //! - `discovers_commit_message_fixture`: checks that `command::discover`
 //!   finds the `.npu/commands/commit-message.md` fixture with the correct model
 //!   and the correct input mode.
-//! - `layered_scopes_local_wins_over_general` (phase 2): builds two
+//! - `layered_scopes_local_wins_over_general`: builds two
 //!   temporary scope roots under `target/` (a "general" one and a
 //!   "local" one, both distinct from the versioned `.npu/` fixture) and
 //!   checks that `discover_scopes` and `load_scopes` correctly keep the
@@ -38,7 +38,7 @@ fn discovers_commit_message_fixture() {
 /// that the `language` argument is declared with
 /// the correct short letter and the correct `required` flag, and that its prompt
 /// (which references `{{ args.language }}`) correctly passes the static
-/// placeholder validation (§12). Does not call the network: `command::discover`
+/// placeholder validation. Does not call the network: `command::discover`
 /// only reads and parses local files.
 #[test]
 fn discovers_translate_fixture_with_declared_language_arg() {

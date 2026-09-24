@@ -248,8 +248,9 @@ fn run_npu(scope: &Path, args: &[&str], stdin_data: &str) -> Output {
 /// containing a `never-invoked` command whose `[output].schema` points at
 /// `schemas/broken-or-missing.json` — cf. `src/scope.rs::candidate_roots`:
 /// `$XDG_CONFIG_HOME/npu` is a scope root in its own right, more general
-/// than `<cwd>/.npu`, exactly the level targeted by the L3 review, fix 1
-/// ("broken schema belonging to a command nobody invokes").
+/// than `<cwd>/.npu`, exactly the level where a
+/// broken schema belonging to a command nobody invokes must not disable
+/// the whole CLI.
 ///
 /// If `schema_body` is `Some`, the schema file is written with that content
 /// (used to simulate syntactically broken JSON); if `None`, it is never
@@ -342,8 +343,8 @@ fn fixture_cwd_without_local_scope(name: &str) -> PathBuf {
     dir
 }
 
-/// L3 review, fix 1, proof (a): a MISSING schema, declared by a command in
-/// a general scope that nobody invokes, must no longer disable
+/// Proof (a): a MISSING schema, declared by a command in
+/// a general scope that nobody invokes, must not disable
 /// `npu --help` for the whole CLI (lazy existence resolution, aligned with
 /// lazy compilation — cf. `command::resolve_schema_path`).
 #[test]
@@ -370,10 +371,9 @@ fn help_survives_a_missing_schema_declared_by_an_uninvoked_command_in_the_genera
     );
 }
 
-/// L3 review, fix 1, proof (b): a schema that IS PRESENT but syntactically
+/// Proof (b): a schema that IS PRESENT but syntactically
 /// BROKEN, declared by a command in a general scope that nobody invokes,
-/// must not disable `npu --help` either — schema compilation stays lazy
-/// (rule 4 of the shared contract), unchanged by this fix.
+/// must not disable `npu --help` either — schema compilation stays lazy.
 #[test]
 fn help_survives_a_syntactically_broken_schema_declared_by_an_uninvoked_command_in_the_general_scope()
  {
@@ -396,7 +396,7 @@ fn help_survives_a_syntactically_broken_schema_declared_by_an_uninvoked_command_
     );
 }
 
-/// L3 review, fix 1, proof (c): actually invoking the command whose schema
+/// Proof (c): actually invoking the command whose schema
 /// is missing must fail with `Error::Config` (exit 2), naming both the
 /// schema's resolved path AND the command file that requires it.
 #[test]
@@ -434,7 +434,7 @@ fn invoking_the_command_with_a_missing_schema_fails_with_exit_code_two_naming_bo
     );
 }
 
-/// L3 review, fix 1, proof (d): same requirement as (c), for a schema that
+/// Proof (d): same requirement as (c), for a schema that
 /// IS PRESENT but syntactically BROKEN.
 #[test]
 fn invoking_the_command_with_a_broken_schema_fails_with_exit_code_two_naming_both_paths() {
@@ -510,7 +510,7 @@ fn json_wrapped_in_fence_and_schema_satisfied_succeeds_end_to_end() {
     assert_eq!(
         stdout, "{\"category\":\"bug\",\"confidence\":0.9}\n",
         "stdout must contain EXACTLY the COMPACT JSON serialization followed by a single \
-         trailing newline (added by `run()`, §14/§22: npu classify | jq .), regardless of \
+         trailing newline (added by `run()`; e.g. npu classify | jq .), regardless of \
          the Markdown wrapping returned by the model — nothing before, nothing after"
     );
 }
@@ -569,7 +569,7 @@ fn non_json_response_with_json_format_fails_with_exit_code_four_end_to_end() {
     let (addr, server) = spawn_stub_server("this is not JSON at all".to_string());
 
     let scope = fixture_scope("non-json-response");
-    // No schema declared: rule 2 of the shared contract — format = "json"
+    // No schema declared: format = "json"
     // without a schema is allowed, we then only validate that the output is
     // well-formed JSON.
     write_scope(&scope, addr, "format = \"json\"");
@@ -602,7 +602,7 @@ fn text_exceeding_max_lines_fails_with_exit_code_four_end_to_end() {
         output.status.code(),
         Some(4),
         "a text response exceeding max_lines must fail with code 4, never be silently \
-         truncated (§15); stderr: {}",
+         truncated; stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(output.stdout.is_empty());

@@ -5,8 +5,8 @@
 /// carries the exit code of a REPORT (`npu doctor` — cf. `npu::run`'s doc),
 /// already written to stdout by `run` itself before returning here — this
 /// is not an engine failure, so `main` must neither write it a second time
-/// nor write it to stderr. `Err` remains a pipeline failure (§14: message
-/// on stderr, code via `Error::exit_code`).
+/// nor write it to stderr. `Err` remains a pipeline failure: message
+/// on stderr, code via `Error::exit_code`.
 fn main() {
     match npu::run() {
         Ok(0) => {}

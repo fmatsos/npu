@@ -5,10 +5,10 @@
 //! A CLOSED placeholder (`{{ ... }}`) whose name matches none of these four
 //! forms is a configuration error, never copied through as-is: a
 //! misspelled `{{ args.langauge }}` must fail loudly rather than being
-//! sent to the model as literal text (cf. L3 review of phases 1 and
-//! 2: a key read then ignored is a defect). An `{{` never closed remains
-//! copied through as-is, as in phase 1: an intention cannot be distinguished
-//! from a typo (§12, §25 — no heuristic).
+//! sent to the model as literal text: a key read then ignored is a defect.
+//! An `{{` never closed remains
+//! copied through as-is: an intention cannot be distinguished
+//! from a typo — no heuristic.
 //!
 //! The three public functions ([`placeholders`], [`validate`], [`render`])
 //! share a single scanner (`scan`) rather than duplicating the
@@ -91,8 +91,8 @@ fn scan(template: &str) -> Vec<Token<'_>> {
 /// never accepts in an `{{ args.<name> }}` placeholder: without this
 /// sharing, such an argument would load silently (name never referenced
 /// in the prompt) or fail with a message pointing at the placeholder
-/// rather than at the faulty declaration — exactly the defect targeted by
-/// the L3 review architecture rule ("a key read then silently
+/// rather than at the faulty declaration — exactly the defect the
+/// architecture rule targets ("a key read then silently
 /// ignored is a defect"), moved from the placeholder key to the
 /// declared argument name.
 pub(crate) fn is_valid_name_char(c: char) -> bool {
@@ -243,7 +243,7 @@ fn resolve_schema<'a>(
 /// `{{ args.NAME }}`, an environment variable `{{ env.NAME }}`) is indeed
 /// available.
 ///
-/// INVARIANT (L3 review, fix 1): nothing that is knowable without
+/// INVARIANT: nothing that is knowable without
 /// the input must be checked after the input has been read. `input::resolve`
 /// may drain a non-replayable stream (a pipe, a one-shot command): if a
 /// missing optional argument or an undefined
@@ -578,8 +578,8 @@ mod tests {
         // `scan` only slices `template` at positions returned by
         // `str::find("{{"/"}}")`, so always on a valid character
         // boundary (guaranteed by `str::find`, never a manual byte
-        // count) — but the L3 review of phases 1/2 asks for an
-        // explicit test rather than implicit reasoning. This template places
+        // count) — an explicit test is preferred over implicit reasoning
+        // here. This template places
         // multi-byte characters (accents, emoji) immediately touching the
         // `{{`/`}}` delimiters, with no space, the case most likely to
         // hit a character boundary if the splitting were done by
@@ -654,11 +654,11 @@ mod tests {
         assert!(err.to_string().contains("report"));
     }
 
-    // -- preflight() (L3 review, fix 1) -----------------------------------
+    // -- preflight() --------------------------------------------------------
 
     #[test]
     fn preflight_detects_missing_env_var_without_needing_input() {
-        // This is the check explicitly requested by the L3 review:
+        // This check operates
         // at the level of the preflight function itself, without going through
         // the full process (whose proof is the timing measurement on the
         // real binary, cf. report). A missing environment variable
