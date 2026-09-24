@@ -18,9 +18,9 @@ pub fn resolve(
         (crate::command::InputMode::Stdin, _) | (crate::command::InputMode::StdinOrFile, None) => {
             read_capped(std::io::stdin().lock(), "stdin")
         }
-        (crate::command::InputMode::File, None) => Err(crate::Error::Config(
-            "this command expects a file argument".to_string(),
-        )),
+        (crate::command::InputMode::File, None) => {
+            Err(crate::Error::config("this command expects a file argument"))
+        }
         (_, Some(path)) => {
             let source = path.display().to_string();
             let reader = std::fs::File::open(path).map_err(|e| named(&source, &e))?;

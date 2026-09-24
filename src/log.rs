@@ -61,7 +61,7 @@ impl std::str::FromStr for Level {
             "error" => Ok(Level::Error),
             "warn" => Ok(Level::Warn),
             "info" => Ok(Level::Info),
-            other => Err(crate::Error::Config(format!(
+            other => Err(crate::Error::config(format!(
                 "unknown verbosity level \"{other}\" (accepted levels: {})",
                 Level::NAMES.join(", ")
             ))),

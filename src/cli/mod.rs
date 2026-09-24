@@ -219,9 +219,12 @@ pub(crate) fn find_command<'a>(
         .iter()
         .find(|spec| spec.path.join("/") == key)
         .ok_or_else(|| {
-            crate::Error::Config(format!(
-                "unknown command: \"{key}\" (available commands: {})",
-                crate::error::format_available(specs.iter().map(|s| s.path.join("/")))
+            crate::Error::Config(crate::error::ConfigError::bare(
+                Some(key),
+                format!(
+                    "unknown command: \"{key}\" (available commands: {})",
+                    crate::error::format_available(specs.iter().map(|s| s.path.join("/")))
+                ),
             ))
         })
 }

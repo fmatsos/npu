@@ -86,12 +86,15 @@ pub(crate) fn chat_with_fallback(
 
     let primary = match call(backend, model) {
         Ok(output) => return Ok((output, model.id.clone())),
-        Err(crate::Error::Backend(message)) if !emitted.get() => message,
+        Err(crate::Error::Backend(err)) if !emitted.get() => err.message,
         Err(other) => return Err(other),
     };
 
     let Some(fallback_id) = model.fallback.as_deref() else {
-        return Err(crate::Error::Backend(primary));
+        return Err(crate::Error::Backend(crate::error::BackendError::at(
+            &backend.id,
+            primary,
+        )));
     };
 
     // `info`, not `warn`: the fallback is the designed path for a primary
@@ -111,10 +114,13 @@ pub(crate) fn chat_with_fallback(
     call(fallback_backend, fallback_model)
         .map(|output| (output, fallback_id.to_string()))
         .map_err(|err| match err {
-            crate::Error::Backend(second) => crate::Error::Backend(format!(
-                "model \"{}\" failed ({primary}), and its fallback \"{fallback_id}\" failed too: \
-             {second}",
-                model.id
+            crate::Error::Backend(second) => crate::Error::Backend(crate::error::BackendError::at(
+                fallback_id,
+                format!(
+                    "model \"{}\" failed ({primary}), and its fallback \"{fallback_id}\" \
+                         failed too: {}",
+                    model.id, second.message
+                ),
             )),
             other => other,
         })

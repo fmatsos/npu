@@ -660,7 +660,7 @@ pub fn describe_builtin(
         degraded_mode,
     };
     serde_json::to_string(&dto)
-        .map_err(|err| crate::Error::Config(format!("description serialization failed: {err}")))
+        .map_err(|err| crate::Error::config(format!("description serialization failed: {err}")))
 }
 
 /// The complete JSON description of a command, as serialized by
@@ -745,7 +745,7 @@ pub fn describe(
     };
 
     serde_json::to_string(&dto)
-        .map_err(|err| crate::Error::Config(format!("description serialization failed: {err}")))
+        .map_err(|err| crate::Error::config(format!("description serialization failed: {err}")))
 }
 
 /// Extracts `(host, port)` from a base URL `http(s)://host[:port][/...]`.
@@ -923,10 +923,13 @@ fn lifecycle_target<'a>(
     let (model, backend) = config.resolve(model_id)?;
 
     let Some(runtime) = backend.runtime() else {
-        return Err(crate::Error::Config(format!(
-            "backend \"{}\" (used by model \"{model_id}\") declares no [runtime] table: \
-             npu only manages the runtimes it starts",
-            backend.id
+        return Err(crate::Error::Config(crate::error::ConfigError::bare(
+            Some(&backend.id),
+            format!(
+                "backend \"{}\" (used by model \"{model_id}\") declares no [runtime] table: \
+                 npu only manages the runtimes it starts",
+                backend.id
+            ),
         )));
     };
 
@@ -1396,7 +1399,7 @@ mod tests {
 
     #[test]
     fn doctor_load_error_fails_configuration_check_only_and_exit_code_is_two() {
-        let err = crate::Error::Config("broken command file".to_string());
+        let err = crate::Error::config("broken command file");
 
         let checks = doctor(
             None,
@@ -2026,7 +2029,7 @@ mod tests {
     #[test]
     fn serve_propagates_the_runner_failure() {
         let config = containerized_config();
-        let failing = |_args: &[String]| Err(crate::Error::Backend("docker absent".to_string()));
+        let failing = |_args: &[String]| Err(crate::Error::backend("docker absent"));
 
         let err = serve(&config, "qwen", &test_env, &failing, &test_host())
             .expect_err("a failing runner must fail the command");
@@ -2254,7 +2257,7 @@ mod tests {
     #[test]
     fn status_survives_a_runtime_that_cannot_be_asked() {
         let config = containerized_config();
-        let runner = |_args: &[String]| Err(crate::Error::Backend("docker absent".to_string()));
+        let runner = |_args: &[String]| Err(crate::Error::backend("docker absent"));
 
         let report = status(&config, &runner, &test_host())
             .expect("a report must not die on its first bad line");

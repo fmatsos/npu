@@ -16,9 +16,8 @@ pub(crate) fn model_discover(
         Some(name) => Some(discover_engine(name, config)?),
     };
     if npu && engine != Some(crate::discover::Engine::OpenVino) {
-        return Err(crate::Error::Config(
-            "--npu runs models through OpenVINO: it cannot be combined with another --backend"
-                .to_string(),
+        return Err(crate::Error::config(
+            "--npu runs models through OpenVINO: it cannot be combined with another --backend",
         ));
     }
     let words: Vec<&str> = leaf_matches
@@ -79,25 +78,31 @@ fn discover_engine(
         return Ok(engine);
     }
     let config = config.map_err(|err| {
-        crate::Error::Config(format!(
+        crate::Error::config(format!(
             "--backend \"{name}\" is no engine ({}), and the configuration that could \
              name such a backend failed to load: {err}",
             crate::discover::Engine::NAMES
         ))
     })?;
     let Some(backend) = config.backends.get(name) else {
-        return Err(crate::Error::Config(format!(
-            "--backend \"{name}\" is neither an engine ({}) nor a configured backend \
-             (available backends: {})",
-            crate::discover::Engine::NAMES,
-            crate::error::format_available(config.backends.keys())
+        return Err(crate::Error::Config(crate::error::ConfigError::bare(
+            Some(name),
+            format!(
+                "--backend \"{name}\" is neither an engine ({}) nor a configured backend \
+                 (available backends: {})",
+                crate::discover::Engine::NAMES,
+                crate::error::format_available(config.backends.keys())
+            ),
         )));
     };
     crate::discover::Engine::of_backend(backend).ok_or_else(|| {
-        crate::Error::Config(format!(
-            "backend \"{name}\" starts no runtime npu recognizes as an engine: \
-             pass --backend {}",
-            crate::discover::Engine::NAMES.replace(", ", "|")
+        crate::Error::Config(crate::error::ConfigError::bare(
+            Some(name),
+            format!(
+                "backend \"{name}\" starts no runtime npu recognizes as an engine: \
+                 pass --backend {}",
+                crate::discover::Engine::NAMES.replace(", ", "|")
+            ),
         ))
     })
 }
@@ -352,9 +357,10 @@ pub(crate) fn backend_tune(
 ) -> crate::Result<String> {
     let models_dir = match leaf_matches.get_one::<std::path::PathBuf>("models-dir") {
         Some(dir) => dir.clone(),
-        None => std::path::PathBuf::from(env("HOME").ok_or_else(|| {
-            crate::Error::Config("HOME is not set: pass --models-dir".to_string())
-        })?)
+        None => std::path::PathBuf::from(
+            env("HOME")
+                .ok_or_else(|| crate::Error::config("HOME is not set: pass --models-dir"))?,
+        )
         .join("models"),
     };
     let mut system = sysinfo::System::new();
@@ -503,7 +509,7 @@ pub(crate) fn update(logger: crate::log::Logger) -> crate::Result<i32> {
         let rejected = std::env::current_exe()
             .ok()
             .and_then(|exe| crate::runtime::exit_code_of(&exe, POST_UPDATE_CHECK))
-            == Some(crate::Error::Config(String::new()).exit_code());
+            == Some(crate::error::CONFIG_EXIT);
         if rejected {
             logger.warn(&format!(
                 "your configuration is not valid for npu {current}; see the changelog \

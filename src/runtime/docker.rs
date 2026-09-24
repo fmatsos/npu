@@ -72,11 +72,14 @@ pub fn resolve_base_url(
     let output = runner(&["port".to_string(), container.clone()]).unwrap_or_default();
 
     let port = published_port(&output).ok_or_else(|| {
-        crate::Error::Backend(format!(
-            "backend \"{}\" (port = \"auto\"): no published port readable for container \
-             \"{container}\" — it is not running, publishes nothing, or the container runtime \
-             is unavailable",
-            backend.id
+        crate::Error::Backend(crate::error::BackendError::at(
+            &backend.id,
+            format!(
+                "backend \"{}\" (port = \"auto\"): no published port readable for container \
+                 \"{container}\" — it is not running, publishes nothing, or the container runtime \
+                 is unavailable",
+                backend.id
+            ),
         ))
     })?;
 
@@ -191,10 +194,13 @@ pub fn serve(
     // that is perfectly correct sends them to fix a file that is not broken.
     let container = container_name(&backend.id);
     if container_exists(&container, runner) {
-        return Err(crate::Error::Backend(format!(
-            "backend \"{}\" is already served by container \"{container}\" — `npu status` to \
-             see it, `npu stop {}` to remove it",
-            backend.id, model.id
+        return Err(crate::Error::Backend(crate::error::BackendError::at(
+            &backend.id,
+            format!(
+                "backend \"{}\" is already served by container \"{container}\" — `npu status` to \
+                 see it, `npu stop {}` to remove it",
+                backend.id, model.id
+            ),
         )));
     }
 
@@ -206,11 +212,14 @@ pub fn serve(
     if let Some(crate::config::Port::Fixed(port)) = &backend.port
         && !super::port_is_free(*port)
     {
-        return Err(crate::Error::Backend(format!(
-            "backend \"{}\": port {port} is already in use by something else — change its \
-             \"port\" key, stop what is listening on it, or use port = \"auto\" to let Docker \
-             allocate one",
-            backend.id
+        return Err(crate::Error::Backend(crate::error::BackendError::at(
+            &backend.id,
+            format!(
+                "backend \"{}\": port {port} is already in use by something else — change its \
+                 \"port\" key, stop what is listening on it, or use port = \"auto\" to let Docker \
+                 allocate one",
+                backend.id
+            ),
         )));
     }
 
@@ -330,11 +339,11 @@ pub fn runner(args: &[String]) -> crate::Result<String> {
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|err| {
-            crate::Error::Backend(format!("cannot run \"{CONTAINER_RUNTIME}\": {err}"))
+            crate::Error::backend(format!("cannot run \"{CONTAINER_RUNTIME}\": {err}"))
         })?;
 
     if !output.status.success() {
-        return Err(crate::Error::Backend(format!(
+        return Err(crate::Error::backend(format!(
             "\"{CONTAINER_RUNTIME} {}\" failed ({}): {}",
             args.join(" "),
             output.status,
@@ -362,11 +371,11 @@ pub fn streamer(args: &[String]) -> crate::Result<()> {
         .stdin(std::process::Stdio::null())
         .status()
         .map_err(|err| {
-            crate::Error::Backend(format!("cannot run \"{CONTAINER_RUNTIME}\": {err}"))
+            crate::Error::backend(format!("cannot run \"{CONTAINER_RUNTIME}\": {err}"))
         })?;
 
     if !status.success() {
-        return Err(crate::Error::Backend(format!(
+        return Err(crate::Error::backend(format!(
             "\"{CONTAINER_RUNTIME} {}\" failed ({status})",
             args.join(" ")
         )));
@@ -513,7 +522,7 @@ mod tests {
     #[test]
     fn resolve_base_url_on_a_stopped_container_is_a_backend_error_naming_it() {
         let backend = auto_port_backend("gpu");
-        let runner = |_args: &[String]| Err(crate::Error::Backend("no such container".to_string()));
+        let runner = |_args: &[String]| Err(crate::Error::backend("no such container"));
 
         let err = resolve_base_url(&backend, &runner).expect_err("a stopped container must fail");
 
@@ -561,8 +570,8 @@ mod tests {
     #[test]
     fn state_of_an_unreachable_runtime_carries_the_runtime_message() {
         let state = state("ovms", &|_args| {
-            Err(crate::Error::Backend(
-                "cannot reach the daemon serving \"npu-ovms\"".to_string(),
+            Err(crate::Error::backend(
+                "cannot reach the daemon serving \"npu-ovms\"",
             ))
         })
         .expect("an unreachable runtime must still produce a state");

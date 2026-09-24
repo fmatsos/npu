@@ -93,21 +93,27 @@ pub(crate) fn resolve_port(backend: &mut Backend, source: &Path) -> crate::Resul
     let port = match &backend.port {
         None => {
             if references_port(backend) {
-                return Err(crate::Error::Config(format!(
-                    "{}: backend \"{}\": references {{{{ {BACKEND_PLACEHOLDER} }}}} but \
-                     declares no \"port\" key",
-                    source.display(),
-                    backend.id
+                return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+                    source,
+                    Some(&backend.id),
+                    format!(
+                        "backend \"{}\": references {{{{ {BACKEND_PLACEHOLDER} }}}} but \
+                         declares no \"port\" key",
+                        backend.id
+                    ),
                 )));
             }
             return Ok(());
         }
         Some(Port::Fixed(0)) => {
-            return Err(crate::Error::Config(format!(
-                "{}: backend \"{}\": port 0 is not a port (\"{PORT_AUTO}\" lets Docker \
-                 allocate one instead)",
-                source.display(),
-                backend.id
+            return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+                source,
+                Some(&backend.id),
+                format!(
+                    "backend \"{}\": port 0 is not a port (\"{PORT_AUTO}\" lets Docker \
+                     allocate one instead)",
+                    backend.id
+                ),
             )));
         }
         Some(Port::Fixed(number)) => *number,
@@ -116,12 +122,15 @@ pub(crate) fn resolve_port(backend: &mut Backend, source: &Path) -> crate::Resul
             // halves must exist: something to start, and a base URL whose
             // port can be filled in afterwards.
             if docker_of(backend).is_none() {
-                return Err(crate::Error::Config(format!(
-                    "{}: backend \"{}\": port = \"{PORT_AUTO}\" requires a Docker runtime \
-                     ([runtime] type = \"{RUNTIME_DOCKER}\") — npu can only read back a port it \
-                     asked Docker to allocate",
-                    source.display(),
-                    backend.id
+                return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+                    source,
+                    Some(&backend.id),
+                    format!(
+                        "backend \"{}\": port = \"{PORT_AUTO}\" requires a Docker runtime \
+                         ([runtime] type = \"{RUNTIME_DOCKER}\") — npu can only read back a port it \
+                         asked Docker to allocate",
+                        backend.id
+                    ),
                 )));
             }
             // BOTH sides must read the placeholder, for the same reason:
@@ -132,22 +141,28 @@ pub(crate) fn resolve_port(backend: &mut Backend, source: &Path) -> crate::Resul
             // serve") that could never work.
             let in_docker = docker_of(backend).is_some_and(docker_reads_port);
             if !substitute_port(&backend.base_url, 0).1 || !in_docker {
-                return Err(crate::Error::Config(format!(
-                    "{}: backend \"{}\": port = \"{PORT_AUTO}\" requires \
-                     {{{{ {BACKEND_PLACEHOLDER} }}}} in BOTH base_url and [docker], otherwise \
-                     the allocated port is never published or never reached",
-                    source.display(),
-                    backend.id
+                return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+                    source,
+                    Some(&backend.id),
+                    format!(
+                        "backend \"{}\": port = \"{PORT_AUTO}\" requires \
+                         {{{{ {BACKEND_PLACEHOLDER} }}}} in BOTH base_url and [docker], otherwise \
+                         the allocated port is never published or never reached",
+                        backend.id
+                    ),
                 )));
             }
             DOCKER_EPHEMERAL_PORT
         }
         Some(Port::Keyword(keyword)) => {
-            return Err(crate::Error::Config(format!(
-                "{}: backend \"{}\": port \"{keyword}\" is neither a number nor \
-                 \"{PORT_AUTO}\"",
-                source.display(),
-                backend.id
+            return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+                source,
+                Some(&backend.id),
+                format!(
+                    "backend \"{}\": port \"{keyword}\" is neither a number nor \
+                     \"{PORT_AUTO}\"",
+                    backend.id
+                ),
             )));
         }
     };
@@ -186,11 +201,14 @@ pub(crate) fn resolve_port(backend: &mut Backend, source: &Path) -> crate::Resul
     }
 
     if !used {
-        return Err(crate::Error::Config(format!(
-            "{}: backend \"{}\": declares \"port\" but never references \
-             {{{{ {BACKEND_PLACEHOLDER} }}}}, so the value would be ignored",
-            source.display(),
-            backend.id
+        return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            Some(&backend.id),
+            format!(
+                "backend \"{}\": declares \"port\" but never references \
+                 {{{{ {BACKEND_PLACEHOLDER} }}}}, so the value would be ignored",
+                backend.id
+            ),
         )));
     }
 

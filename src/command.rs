@@ -220,9 +220,10 @@ fn collect_command_files(
     let mut result = Vec::with_capacity(files.len());
     for file in files {
         let relative = file.strip_prefix(&commands_root).map_err(|_| {
-            crate::Error::Config(format!(
-                "command path outside commands/: {}",
-                file.display()
+            crate::Error::Config(crate::error::ConfigError::in_file(
+                &file,
+                None::<String>,
+                "command path outside commands/",
             ))
         })?;
         let path = relative
@@ -270,12 +271,15 @@ fn reject_reserved_path(path: &[String], file: &std::path::Path) -> crate::Resul
     };
 
     if crate::builtin::RESERVED.contains(&first.as_str()) {
-        return Err(crate::Error::Config(format!(
-            "{}: \"{first}\" is reserved for the CLI's built-in commands ({}); rename the \
-             file or move it under a subdirectory (only the first segment of the command \
-             path is reserved, e.g. \"git/{first}.md\" would remain valid)",
-            file.display(),
-            crate::builtin::RESERVED.join(", ")
+        return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+            file,
+            None::<String>,
+            format!(
+                "\"{first}\" is reserved for the CLI's built-in commands ({}); rename the \
+                 file or move it under a subdirectory (only the first segment of the command \
+                 path is reserved, e.g. \"git/{first}.md\" would remain valid)",
+                crate::builtin::RESERVED.join(", ")
+            ),
         )));
     }
 
@@ -291,25 +295,29 @@ fn reject_reserved_path(path: &[String], file: &std::path::Path) -> crate::Resul
 /// first segment is rejected based on the path alone, without ever
 /// needing to open the file.
 ///
-/// Wraps the MESSAGE of a parsing error with the offending file's path,
-/// never the already-formatted error: `parse` returns an `Error::Config`
-/// whose `Display` already carries the "configuration error: " prefix;
-/// re-wrapping this error (rather than its message) in a new
-/// `Error::Config` would duplicate that prefix.
+/// Fills in the offending file's path on a `parse` error that does not
+/// already carry one: `parse` and the modules it calls into (`prompt::*`,
+/// `output::*`) validate a template or a schema, not a file, so their own
+/// errors carry `file: None` — this is the one place that knows which file
+/// it was reading, and `InFile::in_file` attaches it without re-formatting
+/// the message (which would risk a duplicated path if `parse` already named
+/// one itself).
 fn read_and_parse(
     path: Vec<String>,
     file: &std::path::Path,
     scope_root: &std::path::Path,
 ) -> crate::Result<CommandSpec> {
+    use crate::error::InFile;
     reject_reserved_path(&path, file)?;
 
     let source = std::fs::read_to_string(file).map_err(|err| {
-        crate::Error::Config(format!("cannot read file {}: {err}", file.display()))
+        crate::Error::Config(crate::error::ConfigError::in_file(
+            file,
+            None::<String>,
+            format!("cannot read file: {err}"),
+        ))
     })?;
-    let mut spec = parse(&source, path, scope_root).map_err(|err| match err {
-        crate::Error::Config(msg) => crate::Error::Config(format!("{}: {msg}", file.display())),
-        other => other,
-    })?;
+    let mut spec = parse(&source, path, scope_root).in_file(file)?;
     spec.file = file.to_path_buf();
     Ok(spec)
 }
@@ -393,24 +401,24 @@ const RESERVED_SHORT_LETTERS: [char; 2] = ['h', 'v'];
 /// reference.
 fn validate_arg_name(name: &str) -> crate::Result<()> {
     if name.is_empty() {
-        return Err(crate::Error::Config(
-            "an argument has an empty name (`[args.\"\"]`): arguments must be named".to_string(),
+        return Err(crate::Error::config(
+            "an argument has an empty name (`[args.\"\"]`): arguments must be named",
         ));
     }
     if !name.chars().all(crate::prompt::is_valid_name_char) {
-        return Err(crate::Error::Config(format!(
+        return Err(crate::Error::config(format!(
             "argument \"{name}\": an argument name may only contain ASCII letters and \
              digits, \"_\" or \"-\" (the same characters a valid placeholder {{{{ \
              args.<name> }}}} accepts on the prompt side)"
         )));
     }
     if name.starts_with('-') {
-        return Err(crate::Error::Config(format!(
+        return Err(crate::Error::config(format!(
             "argument \"{name}\": an argument name cannot start with \"-\""
         )));
     }
     if RESERVED_ARG_NAMES.contains(&name) {
-        return Err(crate::Error::Config(format!(
+        return Err(crate::Error::config(format!(
             "argument \"{name}\": name reserved by clap ({}); choose another name",
             RESERVED_ARG_NAMES.join("/")
         )));
@@ -430,7 +438,7 @@ fn convert_short(name: &str, raw: Option<String>) -> crate::Result<Option<char>>
 
     let mut chars = raw.chars();
     let (Some(c), None) = (chars.next(), chars.next()) else {
-        return Err(crate::Error::Config(format!(
+        return Err(crate::Error::config(format!(
             "argument \"{name}\": \"short\" must be a single character, got \"{raw}\" \
              ({} character(s))",
             raw.chars().count()
@@ -438,7 +446,7 @@ fn convert_short(name: &str, raw: Option<String>) -> crate::Result<Option<char>>
     };
 
     if RESERVED_SHORT_LETTERS.contains(&c) {
-        return Err(crate::Error::Config(format!(
+        return Err(crate::Error::config(format!(
             "argument \"{name}\": short letter \"{c}\" is reserved ({}); \
              choose another one",
             RESERVED_SHORT_LETTERS
@@ -459,7 +467,7 @@ fn convert_short(name: &str, raw: Option<String>) -> crate::Result<Option<char>>
     // closes both: no dependency on the compilation profile for correct
     // behavior.
     if c == '-' {
-        return Err(crate::Error::Config(format!(
+        return Err(crate::Error::config(format!(
             "argument \"{name}\": the short letter cannot be \"-\" (confused with the option \
              prefix itself); choose another one"
         )));
@@ -488,7 +496,7 @@ fn convert_args(raw: BTreeMap<String, RawArgSpec>) -> crate::Result<BTreeMap<Str
         if let Some(c) = short
             && let Some(existing) = shorts_used.insert(c, name.clone())
         {
-            return Err(crate::Error::Config(format!(
+            return Err(crate::Error::config(format!(
                 "arguments \"{existing}\" and \"{name}\" share the same short letter \"{c}\""
             )));
         }
@@ -593,11 +601,10 @@ fn convert_output(
     match raw.format {
         crate::output::Format::Text => {
             if raw.schema.is_some() {
-                return Err(crate::Error::Config(
+                return Err(crate::Error::config(
                     "[output]: \"schema\" only makes sense with format = \"json\" (a JSON \
                      Schema cannot validate anything on plain text); remove \"schema\" or set \
-                     format = \"json\""
-                        .to_string(),
+                     format = \"json\"",
                 ));
             }
             Ok(crate::output::OutputSpec {
@@ -608,11 +615,10 @@ fn convert_output(
         }
         crate::output::Format::Json => {
             if raw.max_lines.is_some() {
-                return Err(crate::Error::Config(
+                return Err(crate::Error::config(
                     "[output]: \"max_lines\" only makes sense with format = \"text\" (the \
                      command declares format = \"json\", counted in structure, not lines); \
-                     remove \"max_lines\" or set format = \"text\""
-                        .to_string(),
+                     remove \"max_lines\" or set format = \"text\"",
                 ));
             }
             let schema = raw
@@ -638,7 +644,7 @@ fn convert_schemas(
     raw.into_iter()
         .map(|(id, declared)| {
             if id.is_empty() || !id.chars().all(crate::prompt::is_valid_name_char) {
-                return Err(crate::Error::Config(format!(
+                return Err(crate::Error::config(format!(
                     "[schemas]: invalid schema id \"{id}\": only ASCII letters, digits, '_' \
                      and '-' are accepted"
                 )));
@@ -687,13 +693,13 @@ pub fn parse(
         // own message: "missing frontmatter" would send the author looking
         // for a missing line that is right there, only spelled differently.
         Some(LEGACY_FRONTMATTER_DELIMITER) => {
-            return Err(crate::Error::Config(format!(
+            return Err(crate::Error::config(format!(
                 "frontmatter delimited by '{LEGACY_FRONTMATTER_DELIMITER}': the delimiter is \
                  now '{FRONTMATTER_DELIMITER}' (opening and closing lines both)"
             )));
         }
         _ => {
-            return Err(crate::Error::Config(format!(
+            return Err(crate::Error::config(format!(
                 "missing frontmatter: the file must start with a '{FRONTMATTER_DELIMITER}' line"
             )));
         }
@@ -710,7 +716,7 @@ pub fn parse(
         header_lines.push(line);
     }
     if !closed {
-        return Err(crate::Error::Config(format!(
+        return Err(crate::Error::config(format!(
             "unterminated frontmatter: missing closing '{FRONTMATTER_DELIMITER}' line"
         )));
     }
@@ -718,7 +724,7 @@ pub fn parse(
 
     let header = header_lines.join("\n");
     let frontmatter: Frontmatter = toml::from_str(&header)
-        .map_err(|err| crate::Error::Config(format!("invalid frontmatter: {err}")))?;
+        .map_err(|err| crate::Error::config(format!("invalid frontmatter: {err}")))?;
 
     let prompt = rest_lines.join("\n");
     let prompt = prompt.trim_start_matches('\n').to_string();
@@ -766,7 +772,7 @@ pub fn parse(
             // above would already have failed otherwise.
             let spec = &args[&name];
             if !spec.required {
-                return Err(crate::Error::Config(format!(
+                return Err(crate::Error::config(format!(
                     "argument \"{name}\" referenced by {{{{ args.{name} }}}} but declared \
                      required = false: an argument referenced by the prompt must be \
                      required = true (no default value exists yet for \
