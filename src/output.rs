@@ -463,7 +463,7 @@ mod tests {
         assert_eq!(strip_fences(text), text);
     }
 
-    // -- strip_reasoning (B4) ------------------------------------------
+    // -- strip_reasoning ------------------------------------------
 
     #[test]
     fn strip_reasoning_removes_a_leading_block() {

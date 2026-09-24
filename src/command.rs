@@ -2075,7 +2075,7 @@ mod tests {
         assert_eq!(commit_message.output.schema, None);
     }
 
-    // -- system / [[examples]] (B2) -----------------------------------
+    // -- system / [[examples]] -----------------------------------
 
     #[test]
     fn system_and_examples_parse() {

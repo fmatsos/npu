@@ -203,7 +203,7 @@ fn spawn_stub_server(content: String) -> (std::net::SocketAddr, std::thread::Joi
 }
 
 /// Same idiom as [`spawn_stub_server`], but the `chat/completions` response
-/// also carries `finish_reason`, to exercise the A4 truncation contract.
+/// also carries `finish_reason`, to exercise the truncation contract.
 fn spawn_stub_server_with_finish_reason(
     content: String,
     finish_reason: &'static str,
@@ -691,7 +691,7 @@ fn text_exceeding_max_lines_fails_with_exit_code_four_end_to_end() {
     );
 }
 
-/// e) spec A4: a model answering with `finish_reason = "length"` fails with
+/// e) a model answering with `finish_reason = "length"` fails with
 /// exit code 4, stdout stays EMPTY (never the truncated answer), and stderr
 /// names the model.
 #[test]

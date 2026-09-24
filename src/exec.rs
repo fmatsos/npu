@@ -13,7 +13,7 @@ pub(crate) struct Ask<'a> {
     pub(crate) schema: Option<&'a serde_json::Value>,
     pub(crate) stream: Option<TokenSink<'a>>,
     /// The command's own `[generation]` override, if declared — merged
-    /// (B3, key by key, command wins) onto EACH candidate model's own
+    /// (key by key, command wins) onto EACH candidate model's own
     /// `[generation]` inside `chat_with_fallback`'s `call`: the fallback
     /// model uses its own base `[generation]` merged with this SAME
     /// override, never the primary's merged result.
@@ -81,7 +81,7 @@ pub(crate) fn chat_with_fallback(
         };
         let on_token: Option<&dyn Fn(&str)> = stream.map(|_| &on_token as &dyn Fn(&str));
         let headers = crate::config::resolve_headers(backend, env)?;
-        // B3: this model's OWN `[generation]` merged with the command's
+        // This model's OWN `[generation]` merged with the command's
         // override — recomputed per candidate, never precomputed once for
         // the primary and reused for the fallback (see `Ask`'s doc).
         let generation = crate::config::Generation::merged(&model.generation, command_generation);
@@ -141,17 +141,7 @@ pub(crate) fn chat_with_fallback(
         })
 }
 
-/// Builds the full `messages` array for `spec`: `[system?] +
-/// examples×[user, assistant] + [user: prompt]`, in file order. Split out
-/// of `execute_business_command` only to keep it under the crate's
-/// line-count lint — no behavior is different from what used to be
-/// inlined there (same convention as
-/// `backend::handle_non_streamed_response`).
-///
-/// With neither `system` nor `examples` declared, the result is exactly
-/// today's single-element array (pinned by
-/// `backend::tests::build_chat_request_without_system_or_examples_is_byte_identical_to_the_pre_b2_body`).
-/// B4: strips one leading `<think>...</think>` block from `content` (when
+/// Strips one leading `<think>...</think>` block from `content` (when
 /// `enabled`) BEFORE the rest of the output pipeline (fences, parsing,
 /// schema, trim/`max_lines`) runs, and logs the removed length — never its
 /// content. Split out of `execute_business_command` only to keep it under
@@ -166,6 +156,16 @@ fn strip_reasoning_and_log(content: &str, enabled: bool, logger: crate::log::Log
     stripped.to_string()
 }
 
+/// Builds the full `messages` array for `spec`: `[system?] +
+/// examples×[user, assistant] + [user: prompt]`, in file order. Split out
+/// of `execute_business_command` only to keep it under the crate's
+/// line-count lint — no behavior is different from what used to be
+/// inlined there (same convention as
+/// `backend::handle_non_streamed_response`).
+///
+/// With neither `system` nor `examples` declared, the result is exactly
+/// today's single-element array (pinned by
+/// `backend::tests::build_chat_request_without_system_or_examples_is_byte_identical_to_the_plain_body`).
 fn build_messages(
     spec: &crate::command::CommandSpec,
     prompt: &str,
@@ -342,7 +342,7 @@ pub(crate) fn execute_business_command(
     // Streamed only where nothing can reject the answer after it is shown
     // — free text, no `max_lines` — and only to a terminal: a pipe keeps
     // receiving the answer in one piece, byte for byte as before.
-    // B4: `strip_reasoning` disables streaming even on a terminal — printing
+    // `strip_reasoning` disables streaming even on a terminal — printing
     // tokens as they arrive would show the reasoning block before it can be
     // stripped, defeating the whole point. The answer then arrives in one
     // piece, exactly as for a JSON contract.
@@ -381,7 +381,7 @@ pub(crate) fn execute_business_command(
     // `chat_with_fallback`'s doc), and it must be checked before anything is
     // written to stdout on a pipe. On a terminal in streaming mode, tokens
     // already reached the screen through `print_token` — that is accepted
-    // (cf. this crate's CLAUDE.md, spec A4); the exit code is still 4 and
+    // (cf. this crate's CLAUDE.md); the exit code is still 4 and
     // stdout (the byte stream a calling agent reads) never receives the
     // framed/closing output below.
     if answer.finish_reason.as_deref() == Some("length") && !spec.output.allow_truncated {
@@ -502,7 +502,7 @@ mod tests {
 
     /// Same idiom as [`stub_backend`], but hands the raw request body it
     /// received back to the caller through the returned channel, so a test
-    /// can assert on the exact `messages` array `npu` sent (B2).
+    /// can assert on the exact `messages` array `npu` sent.
     fn stub_backend_capturing_body(
         body: &'static str,
     ) -> (
@@ -769,7 +769,7 @@ mod tests {
 
     /// Same invariant as above, but for a backend `[headers]` value
     /// referencing an undefined environment variable: preflight must
-    /// resolve headers (B1) before `input::resolve` runs, exactly like the
+    /// resolve headers before `input::resolve` runs, exactly like the
     /// prompt's own placeholders.
     #[test]
     #[allow(clippy::panic)] // the panic is the assertion: read_input must not run.
@@ -888,7 +888,7 @@ mod tests {
         primary_server.join().expect("primary stub thread");
     }
 
-    /// Spec A4: a streamed answer whose stream ends with
+    /// A streamed answer whose stream ends with
     /// `finish_reason = "length"` must fail with `Error::Output` (exit 4)
     /// even when tokens already reached a terminal (`stdout_is_terminal =
     /// true`), naming the model id; `allow_truncated` is left at its
@@ -954,7 +954,7 @@ mod tests {
         server.join().expect("stub server thread");
     }
 
-    /// B2: a command declaring `system` and `[[examples]]` must send them,
+    /// A command declaring `system` and `[[examples]]` must send them,
     /// in order, ahead of the rendered body as the final `user` message.
     #[test]
     fn system_and_examples_are_sent_in_order_ahead_of_the_body() {
@@ -1026,7 +1026,7 @@ mod tests {
         server.join().expect("stub server thread");
     }
 
-    /// B2 preflight: an undefined environment variable referenced only by
+    /// An undefined environment variable referenced only by
     /// `system` must be rejected BEFORE `read_input` is ever called, same
     /// invariant as the prompt's own placeholders.
     #[test]
@@ -1081,7 +1081,7 @@ mod tests {
         assert!(err.to_string().contains("NPU_TEST_UNSET_SYSTEM_VAR"));
     }
 
-    /// B4: `strip_reasoning = true` must disable streaming even when
+    /// `strip_reasoning = true` must disable streaming even when
     /// `stdout_is_terminal = true` — the condition that would otherwise
     /// enable it (cf. the `streaming` computation in
     /// `execute_business_command`). Asserted on the REQUEST the stub

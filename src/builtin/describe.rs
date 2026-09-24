@@ -131,7 +131,7 @@ struct Describe<'a> {
     /// data an agent listing commands should not have to receive.
     examples: usize,
     /// The EFFECTIVE generation table: the model's own `[generation]`
-    /// merged with this command's override (B3), so an agent sees what
+    /// merged with this command's override, so an agent sees what
     /// will actually be sent. `null` when the model does not resolve
     /// (unknown id — `describe` reports rather than fails, see `backend`
     /// above).

@@ -679,12 +679,12 @@ mod tests {
         assert!(body.get("max_tokens").is_none());
     }
 
-    /// B2 invariant: a command declaring neither `system` nor `examples`
+    /// A command declaring neither `system` nor `examples`
     /// must produce a request body BYTE-IDENTICAL to what `npu` sent
-    /// before B2 existed — a single-element `messages` array holding only
+    /// before `system` and `examples` existed — a single-element `messages` array holding only
     /// the rendered body as a `user` message.
     #[test]
-    fn build_chat_request_without_system_or_examples_is_byte_identical_to_the_pre_b2_body() {
+    fn build_chat_request_without_system_or_examples_is_byte_identical_to_the_plain_body() {
         let body = build_chat_request(
             "qwen-2.5-1.5b",
             &[Message::user("hello")],
@@ -697,7 +697,7 @@ mod tests {
         );
     }
 
-    /// B2: `system`, then each example's `[user, assistant]` pair in file
+    /// `system`, then each example's `[user, assistant]` pair in file
     /// order, then the rendered body as the final `user` message.
     #[test]
     fn build_chat_request_orders_system_then_examples_then_body() {
@@ -767,7 +767,7 @@ mod tests {
         assert_eq!(body["max_tokens"], 512);
     }
 
-    /// B3: `seed`, `top_p` and `stop` appear in the body when set, absent
+    /// `seed`, `top_p` and `stop` appear in the body when set, absent
     /// otherwise (same "no key sent when unset" rule as `temperature`).
     #[test]
     fn build_chat_request_sends_seed_top_p_and_stop_when_set() {
@@ -822,7 +822,7 @@ mod tests {
         );
     }
 
-    /// B3: `[generation.extra]` is forwarded verbatim, at the top level,
+    /// `[generation.extra]` is forwarded verbatim, at the top level,
     /// alongside the typed keys.
     #[test]
     fn build_chat_request_forwards_extra_verbatim_alongside_typed_keys() {
