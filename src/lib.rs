@@ -123,6 +123,7 @@ pub fn run() -> Result<i32> {
 
     let (path, leaf_matches) = cli::selected_path(&matches);
     let route_path: Vec<&str> = path.iter().map(String::as_str).collect();
+    let cfg_dir = config_dir_override.as_deref();
     let route = dispatch::route_for(&route_path);
 
     // These routes depend only on the binary itself, the host and GitHub
@@ -139,10 +140,8 @@ pub fn run() -> Result<i32> {
                 leaf_matches.get_flag("json"),
             ));
         }
-        dispatch::Route::Help => {
-            return cli::builtins::help(help_cli, leaf_matches, error_format);
-        }
-        dispatch::Route::Update => return cli::builtins::update(logger),
+        dispatch::Route::Help => return cli::builtins::help(help_cli, leaf_matches, error_format),
+        dispatch::Route::Update => return cli::builtins::update(logger, cfg_dir),
         #[cfg(feature = "hardware-tooling")]
         dispatch::Route::ModelDiscover => {
             let config = loaded.as_ref().map(|(config, _)| config);

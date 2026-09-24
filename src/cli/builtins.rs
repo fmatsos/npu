@@ -617,9 +617,28 @@ pub(crate) fn help(
 /// network, so its only failure is a configuration error.
 pub(crate) const POST_UPDATE_CHECK: &[&str] = &["--verbose", "error", "config", "models"];
 
+/// [`POST_UPDATE_CHECK`], with `--config-dir <dir>` appended when the
+/// running invocation carried one: the new binary must judge the SAME
+/// scope this one resolved, not fall back to its own default walk-up,
+/// which would run `config models` in degraded mode's shadow — checking
+/// the wrong `.npu` and reporting nothing about the one actually in use.
+/// A pure function (owns no process) so it is testable without spawning
+/// the freshly installed binary.
+fn post_update_check_args(config_dir: Option<&std::path::Path>) -> Vec<String> {
+    let mut args: Vec<String> = POST_UPDATE_CHECK.iter().map(ToString::to_string).collect();
+    if let Some(dir) = config_dir {
+        args.push("--config-dir".to_string());
+        args.push(dir.display().to_string());
+    }
+    args
+}
+
 /// Runs `npu update`, then asks the NEW binary whether it accepts the
 /// configuration and, if not, points the user at the changelog and the docs.
-pub(crate) fn update(logger: crate::log::Logger) -> crate::Result<i32> {
+pub(crate) fn update(
+    logger: crate::log::Logger,
+    config_dir: Option<&std::path::Path>,
+) -> crate::Result<i32> {
     let outcome = crate::updater::update()?;
     println!("{outcome}");
     if let crate::updater::Outcome::Updated { current, .. } = &outcome {
@@ -627,9 +646,11 @@ pub(crate) fn update(logger: crate::log::Logger) -> crate::Result<i32> {
         // this one: a key added in the new release must not look invalid,
         // and a key it dropped must not look valid. Only a configuration
         // error (`2`) is reported; the update itself has already succeeded.
+        let args = post_update_check_args(config_dir);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let rejected = std::env::current_exe()
             .ok()
-            .and_then(|exe| crate::runtime::exit_code_of(&exe, POST_UPDATE_CHECK))
+            .and_then(|exe| crate::runtime::exit_code_of(&exe, &args))
             == Some(crate::error::CONFIG_EXIT);
         if rejected {
             logger.warn(&format!(
@@ -646,6 +667,28 @@ pub(crate) fn update(logger: crate::log::Logger) -> crate::Result<i32> {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn post_update_check_args_appends_config_dir_when_given() {
+        let args = post_update_check_args(Some(std::path::Path::new("/custom/.npu")));
+        assert_eq!(
+            args,
+            vec![
+                "--verbose",
+                "error",
+                "config",
+                "models",
+                "--config-dir",
+                "/custom/.npu",
+            ]
+        );
+    }
+
+    #[test]
+    fn post_update_check_args_is_unchanged_without_a_config_dir() {
+        let args = post_update_check_args(None);
+        assert_eq!(args, vec!["--verbose", "error", "config", "models"]);
+    }
 
     /// `describe_index` with no configured commands: a group built-in
     /// (`backend`, `config`) is itself describable (`describe_builtin`
