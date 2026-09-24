@@ -191,7 +191,15 @@ pub fn run() -> Result<i32> {
     let key = path.join("/");
     let spec = cli::find_command(&specs, &key)?;
 
-    exec::execute_business_command(spec, &config, leaf_matches, logger)?;
+    exec::execute_business_command(
+        spec,
+        &config,
+        leaf_matches,
+        logger,
+        &env,
+        &input::resolve,
+        std::io::IsTerminal::is_terminal(&std::io::stdout()),
+    )?;
 
     Ok(0)
 }

@@ -137,11 +137,20 @@ pub(crate) fn chat_with_fallback(
 /// argument or an undefined environment variable — a silent loss, and on a
 /// non-replayable stream an irreversible one, of the work already produced
 /// upstream.
+#[allow(clippy::too_many_arguments)] // env, read_input and stdout_is_terminal are the
+// injected outside world; splitting them into a struct would only move the
+// count, not reduce it.
 pub(crate) fn execute_business_command(
     spec: &crate::command::CommandSpec,
     config: &crate::config::Config,
     leaf_matches: &clap::ArgMatches,
     logger: crate::log::Logger,
+    env: &dyn Fn(&str) -> Option<String>,
+    read_input: &dyn Fn(
+        &crate::command::InputMode,
+        Option<&std::path::Path>,
+    ) -> crate::Result<String>,
+    stdout_is_terminal: bool,
 ) -> crate::Result<()> {
     let (model, backend) = config.resolve(&spec.model)?;
     logger.info(&format!(
@@ -154,23 +163,15 @@ pub(crate) fn execute_business_command(
     ));
 
     let args = crate::cli::collect_arg_values(spec, leaf_matches);
-    // `std::env::var` returns `Err` both for a missing variable and for a
-    // variable containing invalid UTF-8; `.ok()` reduces both cases to
-    // `None`, exactly the semantics expected by
-    // `prompt::render`/`prompt::preflight` (contract rule 5: presence
+    // `env` is injected by the caller (`std::env::var(name).ok()` in
+    // production): `Err` (missing variable, or invalid UTF-8) and a variable
+    // defined but empty both flow through it exactly as `std::env::var`
+    // would produce them, which is the semantics
+    // `prompt::render`/`prompt::preflight` expect (contract rule 5: presence
     // checked at render time — and now at preflight time —, not at load
-    // time). A variable that is defined but empty stays `Ok(String::new())`
-    // on the `std::env::var` side (it is neither missing nor invalid), so
-    // `Some(String::new())` here, never `None` — guaranteed by `std`,
-    // exercised by `prompt::render`'s tests
+    // time). Exercised by `prompt::render`'s tests
     // (`render_env_var_defined_but_empty_is_not_an_error`) via this same
-    // injected closure. This point cannot be checked directly by a test
-    // HERE without mutating the real environment, forbidden by
-    // `unsafe_code = "forbid"` in edition 2024 (the same constraint
-    // documented on `prompt::render`): the closure itself therefore remains
-    // the smallest untestable unit, the rest of the semantics is validated
-    // on the `prompt.rs` side.
-    let env = |name: &str| std::env::var(name).ok();
+    // shape of closure.
 
     // Schemas are configuration, knowable without the input: read here,
     // before `input::resolve`, for the same reason as `preflight` (see
@@ -190,7 +191,7 @@ pub(crate) fn execute_business_command(
         })
         .collect::<crate::Result<std::collections::BTreeMap<_, _>>>()?;
 
-    crate::prompt::preflight(&spec.prompt, &args, &env, &schemas)?;
+    crate::prompt::preflight(&spec.prompt, &args, env, &schemas)?;
 
     // The `FILE` argument is only declared (cf. `build_clap_node`) for the
     // modes that accept a file: reproducing the same condition here avoids
@@ -202,7 +203,7 @@ pub(crate) fn execute_business_command(
             .map(std::path::Path::new),
         crate::command::InputMode::Stdin => None,
     };
-    let input_text = crate::input::resolve(&spec.input, file_arg)?;
+    let input_text = read_input(&spec.input, file_arg)?;
     logger.info(&format!(
         "input: {} characters read from {}",
         input_text.chars().count(),
@@ -212,7 +213,7 @@ pub(crate) fn execute_business_command(
         }
     ));
 
-    let prompt = crate::prompt::render(&spec.prompt, &input_text, &args, &env, &schemas)?;
+    let prompt = crate::prompt::render(&spec.prompt, &input_text, &args, env, &schemas)?;
     logger.info(&format!(
         "prompt rendered: {} characters",
         prompt.chars().count()
@@ -229,7 +230,7 @@ pub(crate) fn execute_business_command(
     // Streamed only where nothing can reject the answer after it is shown
     // — free text, no `max_lines` — and only to a terminal: a pipe keeps
     // receiving the answer in one piece, byte for byte as before.
-    let streaming = std::io::IsTerminal::is_terminal(&std::io::stdout())
+    let streaming = stdout_is_terminal
         && spec.output.format == crate::output::Format::Text
         && spec.output.max_lines.is_none();
     let started = std::cell::Cell::new(false);
@@ -273,7 +274,7 @@ pub(crate) fn execute_business_command(
                 "\n\n"
             }
         );
-    } else if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+    } else if stdout_is_terminal {
         anstream::print!("{}", framed_answer(&output, &answered_by));
     } else {
         println!("{output}");
@@ -513,5 +514,58 @@ mod tests {
 
         assert_eq!(err.exit_code(), 3);
         primary_server.join().expect("primary stub thread");
+    }
+
+    /// The preflight check (a missing environment variable the prompt
+    /// references) must reject the command BEFORE `read_input` is ever
+    /// called: `read_input` panicking here proves it, since a passing test
+    /// means the panic never fired.
+    #[test]
+    #[allow(clippy::panic)] // the panic is the assertion: read_input must not run.
+    fn a_missing_env_var_is_rejected_before_read_input_is_called() {
+        let mut config = config::Config::default();
+        config.backends.insert(
+            "b".to_string(),
+            backend_at("b", "http://127.0.0.1:9".to_string()),
+        );
+        config
+            .models
+            .insert("qwen-fast".to_string(), model_on("qwen-fast", "b", None));
+
+        let specs = vec![crate::command::CommandSpec {
+            path: vec!["x".to_string()],
+            description: "desc x".to_string(),
+            model: "qwen-fast".to_string(),
+            input: crate::command::InputMode::Stdin,
+            prompt: "{{ env.NPU_TEST_UNSET }} {{ input }}".to_string(),
+            args: std::collections::BTreeMap::new(),
+            output: crate::output::OutputSpec::default(),
+            schemas: std::collections::BTreeMap::new(),
+            file: std::path::PathBuf::new(),
+        }];
+        let cli = crate::cli::build_cli(&specs);
+        let matches = cli
+            .try_get_matches_from(["npu", "x"])
+            .expect("the command line must be accepted");
+        let (_, leaf_matches) = crate::cli::selected_path(&matches);
+
+        let env = |_: &str| None;
+        let read_input = |_: &crate::command::InputMode, _: Option<&std::path::Path>| {
+            panic!("read_input must not be called when preflight already fails")
+        };
+
+        let err = execute_business_command(
+            &specs[0],
+            &config,
+            leaf_matches,
+            log::Logger::new(log::Level::Error),
+            &env,
+            &read_input,
+            false,
+        )
+        .expect_err("a prompt referencing an undefined environment variable must be rejected");
+
+        assert!(matches!(err, Error::Config(_)));
+        assert!(err.to_string().contains("NPU_TEST_UNSET"));
     }
 }
