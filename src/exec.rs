@@ -101,16 +101,16 @@ pub(crate) fn chat_with_fallback(
 
     let primary = match call(backend, model) {
         Ok(output) => return Ok((output, model.id.clone())),
-        Err(crate::Error::Backend(err)) if !emitted.get() => err.message,
+        Err(crate::Error::Backend(err)) if !emitted.get() => err,
         Err(other) => return Err(other),
     };
 
+    // Without a fallback the primary's error is returned as is, URL and
+    // status included.
     let Some(fallback_id) = model.fallback.as_deref() else {
-        return Err(crate::Error::Backend(crate::error::BackendError::at(
-            &backend.id,
-            primary,
-        )));
+        return Err(crate::Error::Backend(primary));
     };
+    let primary = primary.message;
 
     // `info`, not `warn`: the fallback is the designed path for a primary
     // that is down or refuses the prompt, and the command still succeeds.
@@ -129,14 +129,16 @@ pub(crate) fn chat_with_fallback(
     call(fallback_backend, fallback_model)
         .map(|output| (output, fallback_id.to_string()))
         .map_err(|err| match err {
-            crate::Error::Backend(second) => crate::Error::Backend(crate::error::BackendError::at(
-                fallback_id,
-                format!(
+            // The fallback's own error, backend, URL and status kept; only
+            // the message is widened to tell both failures.
+            crate::Error::Backend(mut second) => {
+                second.message = format!(
                     "model \"{}\" failed ({primary}), and its fallback \"{fallback_id}\" \
-                         failed too: {}",
+                     failed too: {}",
                     model.id, second.message
-                ),
-            )),
+                );
+                crate::Error::Backend(second)
+            }
             other => other,
         })
 }
@@ -197,6 +199,43 @@ fn build_messages(
     Ok(messages)
 }
 
+/// Fails with `Error::Output` when the answer was cut at `max_tokens` and
+/// the command does not accept a truncated answer.
+fn reject_truncation(
+    answer: &crate::backend::ChatAnswer,
+    answered_by: &str,
+    spec: &crate::command::CommandSpec,
+    config: &crate::config::Config,
+    model: &crate::config::Model,
+) -> crate::Result<()> {
+    use crate::error::InFile;
+
+    if answer.finish_reason.as_deref() == Some("length") && !spec.output.allow_truncated {
+        // Named after the model that ANSWERED — the fallback, when it took
+        // over — with the limit in effect for it (its own `[generation]`
+        // under the command's override).
+        let answering = if answered_by == model.id {
+            model
+        } else {
+            config.resolve(answered_by)?.0
+        };
+        let generation =
+            crate::config::Generation::merged(&answering.generation, spec.generation.as_ref());
+        let max_tokens = generation.max_tokens.map_or_else(
+            || "server default".to_string(),
+            |max_tokens| max_tokens.to_string(),
+        );
+        return Err(crate::Error::output(format!(
+            "model \"{}\" answered with finish_reason \"length\" (truncated at max_tokens = \
+             {max_tokens}); set [output].allow_truncated = true to accept a truncated answer",
+            answering.id
+        )))
+        .in_file(&spec.file);
+    }
+
+    Ok(())
+}
+
 /// Executes the pipeline of an already-resolved BUSINESS command (`spec`),
 /// with the loaded configuration (`config`, necessarily `Ok` at this point:
 /// `run` has propagated any load error before reaching this function) and
@@ -230,8 +269,6 @@ pub(crate) fn execute_business_command(
     ) -> crate::Result<String>,
     stdout_is_terminal: bool,
 ) -> crate::Result<()> {
-    use crate::error::InFile;
-
     let (model, backend) = config.resolve(&spec.model)?;
     logger.info(&format!(
         "command \"{}\" -> model \"{}\" (backend \"{}\", operation \"{}\") from {}",
@@ -384,18 +421,7 @@ pub(crate) fn execute_business_command(
     // (cf. this crate's CLAUDE.md); the exit code is still 4 and
     // stdout (the byte stream a calling agent reads) never receives the
     // framed/closing output below.
-    if answer.finish_reason.as_deref() == Some("length") && !spec.output.allow_truncated {
-        let max_tokens = model.generation.max_tokens.map_or_else(
-            || "server default".to_string(),
-            |max_tokens| max_tokens.to_string(),
-        );
-        return Err(crate::Error::output(format!(
-            "model \"{}\" answered with finish_reason \"length\" (truncated at max_tokens = \
-             {max_tokens}); set [output].allow_truncated = true to accept a truncated answer",
-            model.id
-        )))
-        .in_file(&spec.file);
-    }
+    reject_truncation(&answer, &answered_by, spec, config, model)?;
 
     let raw_output = strip_reasoning_and_log(&answer.content, spec.output.strip_reasoning, logger);
     let output = crate::output::finalize(&spec.output, &raw_output, &spec.file)?;
@@ -674,8 +700,59 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("small"), "got: {message}");
         assert!(message.contains("big"), "got: {message}");
+        let Error::Backend(backend_err) = &err else {
+            unreachable!("expected a backend error, got {err:?}");
+        };
+        // The fallback's backend, not its model id, with its own status.
+        assert_eq!(backend_err.backend.as_deref(), Some("gpu"));
+        assert_eq!(backend_err.status, Some(500));
         primary_server.join().expect("primary stub thread");
         fallback_server.join().expect("fallback stub thread");
+    }
+
+    /// A truncation by the fallback names the fallback and ITS limit, not
+    /// the primary's.
+    #[test]
+    fn a_truncation_by_the_fallback_names_the_fallback_and_its_limit() {
+        let mut config = config::Config::default();
+        let mut small = model_on("small", "npu", Some("big"));
+        small.generation.max_tokens = Some(111);
+        let mut big = model_on("big", "gpu", None);
+        big.generation.max_tokens = Some(222);
+        config.models.insert("small".to_string(), small);
+        config.models.insert("big".to_string(), big);
+        config.backends.insert(
+            "gpu".to_string(),
+            backend_at("gpu", "http://127.0.0.1:9".to_string()),
+        );
+        let spec = crate::command::CommandSpec {
+            path: vec!["x".to_string()],
+            description: String::new(),
+            model: "small".to_string(),
+            input: crate::command::InputMode::Stdin,
+            prompt: "{{ input }}".to_string(),
+            args: std::collections::BTreeMap::new(),
+            output: crate::output::OutputSpec::default(),
+            schemas: std::collections::BTreeMap::new(),
+            system: None,
+            examples: Vec::new(),
+            generation: None,
+            file: std::path::PathBuf::from("x.md"),
+        };
+        let answer = crate::backend::ChatAnswer {
+            content: "cut".to_string(),
+            finish_reason: Some("length".to_string()),
+            usage: None,
+        };
+
+        let err = reject_truncation(&answer, "big", &spec, &config, &config.models["small"])
+            .expect_err("a truncated answer must be rejected");
+
+        assert_eq!(err.exit_code(), 4);
+        let message = err.to_string();
+        assert!(message.contains("\"big\""), "got: {message}");
+        assert!(message.contains("222"), "got: {message}");
+        assert!(!message.contains("111"), "got: {message}");
     }
 
     #[test]
@@ -708,6 +785,11 @@ mod tests {
         .expect_err("a backend failure without fallback must stay a failure");
 
         assert_eq!(err.exit_code(), 3);
+        let Error::Backend(backend_err) = &err else {
+            unreachable!("expected a backend error, got {err:?}");
+        };
+        assert_eq!(backend_err.status, Some(400));
+        assert!(backend_err.url.is_some());
         primary_server.join().expect("primary stub thread");
     }
 
