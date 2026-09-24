@@ -534,18 +534,38 @@ pub struct Model {
     pub source: PathBuf,
 }
 
-/// Only backend type supported so far.
-///
-/// A backend declaring a different `type` would, absent validation, be
-/// silently treated as `openai-compatible` by `backend.rs`: we reject it at
-/// load time rather than ignore the value (cf. review L3).
-const SUPPORTED_BACKEND_KIND: &str = "openai-compatible";
+/// The backend types `backend.rs` knows how to talk to. `Backend.kind`
+/// stays a string for the error message; [`validate_backend`] parses it, so
+/// a new type is a variant here and a compile error wherever it must be
+/// handled, never a value `backend.rs` silently treats as another.
+enum BackendKind {
+    OpenAiCompatible,
+}
 
-/// Only HTTP method currently supported: `backend.rs` hardcodes
-/// `client.post()`. A different `Operation.method`
-/// would therefore be silently ignored without this validation (cf. review
-/// L3).
-const SUPPORTED_METHOD: &str = "POST";
+impl BackendKind {
+    const SUPPORTED: &str = "openai-compatible";
+
+    fn parse(kind: &str) -> Option<Self> {
+        (kind == Self::SUPPORTED).then_some(Self::OpenAiCompatible)
+    }
+}
+
+/// The HTTP methods `backend.rs` can send; it calls `client.post()`, so any
+/// other would be silently ignored. Parsed without regard to case, as
+/// `"post"` has always been accepted.
+enum Method {
+    Post,
+}
+
+impl Method {
+    const SUPPORTED: &str = "POST";
+
+    fn parse(method: &str) -> Option<Self> {
+        method
+            .eq_ignore_ascii_case(Self::SUPPORTED)
+            .then_some(Self::Post)
+    }
+}
 
 /// The only `{{ args.<name> }}` placeholder a `[runtime]` template may
 /// reference: `npu serve` takes a model identifier and nothing else, so
@@ -782,26 +802,28 @@ fn validate_process(backend: &Backend, source: &Path) -> crate::Result<()> {
 /// `source` is the path of the file the surviving entry comes from, so that
 /// the message names the file the user must actually fix.
 fn validate_backend(backend: &Backend, source: &Path) -> crate::Result<()> {
-    if backend.kind != SUPPORTED_BACKEND_KIND {
+    let Some(BackendKind::OpenAiCompatible) = BackendKind::parse(&backend.kind) else {
         return Err(crate::Error::Config(format!(
-            "{}: backend \"{}\": type \"{}\" not supported (only \"{SUPPORTED_BACKEND_KIND}\" \
+            "{}: backend \"{}\": type \"{}\" not supported (only \"{}\" \
              is supported)",
             source.display(),
             backend.id,
-            backend.kind
+            backend.kind,
+            BackendKind::SUPPORTED
         )));
-    }
+    };
 
     for (operation_name, operation) in &backend.operations {
-        if !operation.method.eq_ignore_ascii_case(SUPPORTED_METHOD) {
+        let Some(Method::Post) = Method::parse(&operation.method) else {
             return Err(crate::Error::Config(format!(
                 "{}: backend \"{}\", operation \"{operation_name}\": method \"{}\" not \
-                 supported (only \"{SUPPORTED_METHOD}\" is supported)",
+                 supported (only \"{}\" is supported)",
                 source.display(),
                 backend.id,
-                operation.method
+                operation.method,
+                Method::SUPPORTED
             )));
-        }
+        };
     }
 
     if let Some(timeouts) = &backend.timeouts

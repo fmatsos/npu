@@ -22,11 +22,19 @@ jobs:
     # macOS (arm64) runs the same gate: it is the primary target of the
     # process runtime, and the only place sysinfo's `start_time` is exercised
     # on Darwin. No Metal inference here — the suite needs no accelerator.
+    #
+    # Windows is a release target, so it runs the gate too. It is allowed to
+    # fail until its first runs have been inventoried and fixed; drop
+    # `continue-on-error` then.
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v5
 

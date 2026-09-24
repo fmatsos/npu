@@ -8,7 +8,8 @@ fmt:
 
 lint:
 	cargo clippy --all-targets --all-features -- -D warnings
-	@! grep -rnE 'L3 review|[Pp]hase [0-9]|§ ?[0-9]|[Ff]ix [0-9]|shared contract' src tests Cargo.toml \
+	RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" cargo doc --no-deps --document-private-items --all-features
+	@! grep -rnE 'L[0-9] review|review L[0-9]|[Pp]hase [0-9]|§ ?[0-9]|[Ff]ix [0-9]|shared contract' src tests Cargo.toml \
 		|| { echo 'historical reference in a comment: state the rule, not where it came from'; exit 1; }
 
 test:

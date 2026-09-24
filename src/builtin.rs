@@ -17,9 +17,8 @@
 //! check the presence or availability of an NPU, unlike the
 //! reachability of a backend (a TCP connection) or the validity of a
 //! schema (a disk file read). Showing a checkmark for a check that
-//! wasn't actually performed would be exactly the flaw that the L3
-//! review architecture rule forbids ("a report that lies is worse than
-//! no report"): [`doctor`] therefore NEVER produces a [`Check`] for
+//! wasn't actually performed would be a report that lies, which is worse
+//! than no report: [`doctor`] therefore NEVER produces a [`Check`] for
 //! this line. This is not an oversight.
 
 use std::net::ToSocketAddrs;
@@ -748,7 +747,7 @@ pub fn describe(
         .map_err(|err| crate::Error::Config(format!("description serialization failed: {err}")))
 }
 
-/// Extracts `(host, port)` from a base URL "http(s)://host[:port][/...]".
+/// Extracts `(host, port)` from a base URL `http(s)://host[:port][/...]`.
 /// Falls back to the scheme's implicit
 /// port (80 for `http`, 443 for `https`) when no explicit port is
 /// present. PURELY SYNTACTIC: never touches the network, only the
