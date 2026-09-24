@@ -79,11 +79,11 @@ the version is the root `--version` flag. Every other name belongs to the
 user's commands: do not add a top-level built-in, grow a group instead.
 
 `npu --help` shows the configured commands and the built-ins in two
-sections through a `help_template` (`lib.rs::sectioned_help`): `clap` has
+sections through a `help_template` (`cli::sectioned_help`): `clap` has
 no per-subcommand heading, so the built-ins are HIDDEN from its list and
 rendered by hand — they parse as before. `clap`'s generated `help`
 subcommand is disabled and replaced by a `help` built-in of ours
-(`lib.rs::help`, which re-parses `<path> --help`), listed with the others.
+(`cli::builtins::help`, which re-parses `<path> --help`), listed with the others.
 
 Colours live in `style.rs`, and every styled byte goes out through
 `anstream`, which strips them when the stream is not a terminal and honours
@@ -209,7 +209,7 @@ both delimiters — never diagnosed as "missing frontmatter", which would send
 the author looking for a line that is right there.
 
 Reserved argument names: `help`, `version`, `FILE`, `verbose`. Reserved short
-letters: `-h`, `-v`. `verbose`/`-v` are reserved because `lib.rs` declares a
+letters: `-h`, `-v`. `verbose`/`-v` are reserved because `cli::mod` declares a
 GLOBAL `--verbose` on the root command, and a collision makes `clap` panic at
 build time — which is not an acceptable way to report a configuration error.
 

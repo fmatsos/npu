@@ -76,7 +76,7 @@ pub(crate) fn port_is_free(port: u16) -> bool {
 /// Completes `backend`'s `base_url` when its port was allocated by its
 /// runtime, and hands back the declared one otherwise.
 ///
-/// The dispatch point every caller goes through — `lib.rs` before a request,
+/// The dispatch point every caller goes through — `exec.rs` before a request,
 /// `builtin::status` before a report — so that a backend with no runtime at
 /// all (the common case: a server someone else started) costs nothing and
 /// asks nobody.

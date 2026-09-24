@@ -149,7 +149,7 @@ pub fn strip_fences(raw: &str) -> &str {
 
 /// Applies the output contract `spec` to the model's raw response `raw` and
 /// returns the EXACT text to write to stdout, without a trailing newline
-/// (the caller adds it — cf. `lib.rs`, `println!("{output}")`).
+/// (the caller adds it — cf. `exec.rs`, `println!("{output}")`).
 ///
 /// `command_file` is the path of the command file (`CommandSpec.file`, cf.
 /// `command.rs`) that produced `spec` — used ONLY to name the offending

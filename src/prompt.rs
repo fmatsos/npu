@@ -249,8 +249,9 @@ fn resolve_schema<'a>(
 /// missing optional argument or an undefined
 /// environment variable only fail at render time, AFTER this read,
 /// the work already produced upstream of the pipe is lost, and on a
-/// non-replayable stream it is lost for good. The caller (`lib.rs::run`) must
-/// therefore call `preflight` before `input::resolve`, never after.
+/// non-replayable stream it is lost for good. The caller
+/// (`exec::execute_business_command`) must therefore call `preflight`
+/// before `input::resolve`, never after.
 ///
 /// `{{ input }}` itself is NOT checked here: by construction, its
 /// value can only be known after the input has been read — that is

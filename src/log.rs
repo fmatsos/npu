@@ -31,8 +31,9 @@ pub enum Level {
 
 impl Level {
     /// The accepted values, in the order `--help` should list them. Shared
-    /// with `lib.rs`, which builds the `--verbose` argument from it: the CLI
-    /// cannot accept a value this module does not know, nor the reverse.
+    /// with `cli::mod`, which builds the `--verbose` argument from it: the
+    /// CLI cannot accept a value this module does not know, nor the
+    /// reverse.
     pub const NAMES: [&'static str; 3] = ["error", "warn", "info"];
 
     /// The default threshold, applied when `--verbose` is absent.
