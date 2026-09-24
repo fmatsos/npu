@@ -2150,4 +2150,21 @@ mod tests {
         assert!(matches!(err, crate::Error::Config(_)));
         assert!(err.to_string().contains("Authorization"));
     }
+
+    #[test]
+    fn resolve_headers_rejects_any_control_byte_but_keeps_htab() {
+        let root = fixture_dir("headers-resolve-control");
+        write_headers_backend(&root, r#"X-Token = "{{ env.NPU_TEST_TOKEN }}""#);
+        let config = load(&root).expect("must load");
+        let backend = config.backends.get("h").expect("backend h");
+
+        for bad in ["a\u{b}b", "a\u{c}b", "a\u{7f}b", "a\rb"] {
+            let env = |_: &str| Some(bad.to_string());
+            let err = backend::resolve_headers(backend, &env).expect_err("a control byte");
+            assert!(matches!(err, crate::Error::Config(_)));
+            assert!(err.to_string().contains("X-Token"));
+        }
+        let env = |_: &str| Some("a\tb".to_string());
+        assert!(backend::resolve_headers(backend, &env).is_ok());
+    }
 }

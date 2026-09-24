@@ -602,13 +602,16 @@ pub fn resolve_headers(
                 }
                 other => other,
             })?;
-        if value.contains(['\r', '\n', '\0']) {
+        // RFC 9110 field-value: visible characters, space and HTAB; every
+        // other control byte (CR, LF, NUL, VT, DEL...) is refused here, as
+        // a configuration error, rather than by the HTTP client later.
+        if value.chars().any(|c| c != '\t' && c.is_ascii_control()) {
             return Err(crate::Error::Config(crate::error::ConfigError::in_file(
                 &backend.source,
                 Some(&backend.id),
                 format!(
                     "backend \"{}\": [headers].{name} resolves to a value containing a \
-                     control character (CR, LF or NUL), which is not a legal HTTP header value",
+                     control character, which is not a legal HTTP header value",
                     backend.id
                 ),
             )));
