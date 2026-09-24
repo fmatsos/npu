@@ -53,9 +53,10 @@ fn shape_of(config: &serde_json::Value, source: &Path) -> crate::Result<Shape> {
     let field = |name: &str| config.get(name).and_then(serde_json::Value::as_u64);
     let required = |name: &str| {
         field(name).ok_or_else(|| {
-            crate::Error::Config(format!(
-                "{}: missing or non-integer \"{name}\"",
-                source.display()
+            crate::Error::Config(crate::error::ConfigError::in_file(
+                source,
+                None::<String>,
+                format!("missing or non-integer \"{name}\""),
             ))
         })
     };
@@ -115,9 +116,10 @@ fn set_node_option(graph: &str, key: &str, value: &str, source: &Path) -> crate:
             .iter()
             .position(|l| holds(l, "models_path"))
             .ok_or_else(|| {
-                crate::Error::Config(format!(
-                    "{}: no models_path in node_options",
-                    source.display()
+                crate::Error::Config(crate::error::ConfigError::in_file(
+                    source,
+                    None::<String>,
+                    "no models_path in node_options",
                 ))
             })?;
         let line = entry(&lines[anchor]);
@@ -137,7 +139,13 @@ fn edit_plugin_config(
     edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
 ) -> crate::Result<String> {
     const OPEN: &str = "plugin_config: '";
-    let malformed = |why: &str| crate::Error::Config(format!("{}: {why}", source.display()));
+    let malformed = |why: &str| {
+        crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            None::<String>,
+            why,
+        ))
+    };
     let current = match graph.find(OPEN) {
         Some(at) => {
             let start = at + OPEN.len();
@@ -194,15 +202,17 @@ fn set_max_tokens(text: &str, max_tokens: u64, source: &Path) -> crate::Result<S
     let edited = lines.join("\n") + "\n";
 
     let parsed: crate::config::Model = toml::from_str(&edited).map_err(|e| {
-        crate::Error::Config(format!(
-            "{}: cannot set [generation].max_tokens in this layout: {e}",
-            source.display()
+        crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            None::<String>,
+            format!("cannot set [generation].max_tokens in this layout: {e}"),
         ))
     })?;
     if parsed.generation.max_tokens != Some(u32::try_from(max_tokens).unwrap_or(u32::MAX)) {
-        return Err(crate::Error::Config(format!(
-            "{}: cannot set [generation].max_tokens in this layout",
-            source.display()
+        return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            None::<String>,
+            "cannot set [generation].max_tokens in this layout",
         )));
     }
     Ok(edited)
@@ -223,8 +233,13 @@ fn replace_file(path: &Path, text: &str) -> crate::Result<()> {
 }
 
 fn read_export(path: &Path) -> crate::Result<String> {
-    std::fs::read_to_string(path)
-        .map_err(|e| crate::Error::Config(format!("{}: {e}", path.display())))
+    std::fs::read_to_string(path).map_err(|e| {
+        crate::Error::Config(crate::error::ConfigError::in_file(
+            path,
+            None::<String>,
+            e.to_string(),
+        ))
+    })
 }
 
 /// `12_345_678_901` -> `"12.3"`: gigabytes with one decimal, in integers.
@@ -386,11 +401,23 @@ pub fn tune(
             continue;
         };
         let config_json = export.join("config.json");
-        let json: serde_json::Value = serde_json::from_str(&read_export(&config_json)?)
-            .map_err(|e| crate::Error::Config(format!("{}: {e}", config_json.display())))?;
+        let json: serde_json::Value =
+            serde_json::from_str(&read_export(&config_json)?).map_err(|e| {
+                crate::Error::Config(crate::error::ConfigError::in_file(
+                    &config_json,
+                    None::<String>,
+                    e.to_string(),
+                ))
+            })?;
         let weights_file = export.join("openvino_model.bin");
         let weights = std::fs::metadata(&weights_file)
-            .map_err(|e| crate::Error::Config(format!("{}: {e}", weights_file.display())))?
+            .map_err(|e| {
+                crate::Error::Config(crate::error::ConfigError::in_file(
+                    &weights_file,
+                    None::<String>,
+                    e.to_string(),
+                ))
+            })?
             .len();
         planned.push(Planned {
             id: id.clone(),
@@ -406,7 +433,7 @@ pub fn tune(
         _ => "NPU or GPU",
     };
     if planned.is_empty() {
-        return Err(crate::Error::Config(format!(
+        return Err(crate::Error::config(format!(
             "no configured model has an {devices} export under {}",
             models_dir.display()
         )));
@@ -511,7 +538,10 @@ mod tests {
     #[test]
     fn a_config_missing_a_field_is_a_config_error_naming_the_file() {
         let err = shape_of(&serde_json::json!({}), path()).err();
-        assert!(matches!(&err, Some(crate::Error::Config(m)) if m.contains("models/x.toml")));
+        assert!(matches!(
+            &err,
+            Some(crate::Error::Config(e)) if e.file.as_deref() == Some(Path::new("models/x.toml"))
+        ));
     }
 
     #[test]

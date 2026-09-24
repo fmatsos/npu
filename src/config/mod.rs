@@ -75,9 +75,10 @@ where
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
         Err(err) => {
-            return Err(crate::Error::Config(format!(
-                "cannot read directory {}: {err}",
-                dir.display()
+            return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+                dir,
+                None::<String>,
+                format!("cannot read directory: {err}"),
             )));
         }
     };
@@ -85,9 +86,10 @@ where
     let mut paths = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|err| {
-            crate::Error::Config(format!(
-                "cannot read a directory entry from {}: {err}",
-                dir.display()
+            crate::Error::Config(crate::error::ConfigError::in_file(
+                dir,
+                None::<String>,
+                format!("cannot read a directory entry: {err}"),
             ))
         })?;
         let path = entry.path();
@@ -99,20 +101,32 @@ where
 
     for path in paths {
         let contents = std::fs::read_to_string(&path).map_err(|err| {
-            crate::Error::Config(format!("cannot read file {}: {err}", path.display()))
+            crate::Error::Config(crate::error::ConfigError::in_file(
+                &path,
+                None::<String>,
+                format!("cannot read file: {err}"),
+            ))
         })?;
         let value: T = toml::from_str(&contents).map_err(|err| {
-            crate::Error::Config(format!("invalid TOML in {}: {err}", path.display()))
+            crate::Error::Config(crate::error::ConfigError::in_file(
+                &path,
+                None::<String>,
+                format!("invalid TOML: {err}"),
+            ))
         })?;
         let key = key_of(&value);
 
         if let Some(previous_path) = sources.get(&key) {
-            return Err(crate::Error::Config(format!(
-                "identifier \"{key}\" defined multiple times in the same scope: {} and {} \
-                 (within a single scope, each identifier must be unique; across scopes, \
-                 redefinition is the expected feature)",
-                previous_path.display(),
-                path.display()
+            return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+                &path,
+                Some(&key),
+                format!(
+                    "identifier \"{key}\" defined multiple times in the same scope: {} and {} \
+                     (within a single scope, each identifier must be unique; across scopes, \
+                     redefinition is the expected feature)",
+                    previous_path.display(),
+                    path.display()
+                ),
             )));
         }
 
@@ -213,17 +227,23 @@ impl Config {
     /// not exist; in both cases the message lists the available identifiers.
     pub fn resolve(&self, model_id: &str) -> crate::Result<(&Model, &Backend)> {
         let Some(model) = self.models.get(model_id) else {
-            return Err(crate::Error::Config(format!(
-                "unknown model: \"{model_id}\" (available models: {})",
-                crate::error::format_available(self.models.keys())
+            return Err(crate::Error::Config(crate::error::ConfigError::bare(
+                Some(model_id),
+                format!(
+                    "unknown model: \"{model_id}\" (available models: {})",
+                    crate::error::format_available(self.models.keys())
+                ),
             )));
         };
 
         let Some(backend) = self.backends.get(&model.backend) else {
-            return Err(crate::Error::Config(format!(
-                "unknown backend: \"{}\" (referenced by model \"{model_id}\", available backends: {})",
-                model.backend,
-                crate::error::format_available(self.backends.keys())
+            return Err(crate::Error::Config(crate::error::ConfigError::bare(
+                Some(&model.backend),
+                format!(
+                    "unknown backend: \"{}\" (referenced by model \"{model_id}\", available backends: {})",
+                    model.backend,
+                    crate::error::format_available(self.backends.keys())
+                ),
             )));
         };
 

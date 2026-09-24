@@ -352,14 +352,17 @@ fn foreign(
     let record = state::state_path(&host.state, &backend.id, &backend.source)
         .map_or_else(|_| state.backend.clone(), |path| path.display().to_string());
 
-    crate::Error::Backend(format!(
-        "backend \"{}\" ({}): its state record {record} describes process {}, served from {} — \
-         npu will not act on another configuration's runtime; stop it where it was started, or \
-         rename this backend",
-        backend.id,
-        backend.source.display(),
-        state.pid,
-        state.source.display()
+    crate::Error::Backend(crate::error::BackendError::at(
+        &backend.id,
+        format!(
+            "backend \"{}\" ({}): its state record {record} describes process {}, served from \
+             {} — npu will not act on another configuration's runtime; stop it where it was \
+             started, or rename this backend",
+            backend.id,
+            backend.source.display(),
+            state.pid,
+            state.source.display()
+        ),
     ))
 }
 
@@ -446,9 +449,12 @@ pub fn resolve_command(
     env: &dyn Fn(&str) -> Option<String>,
 ) -> crate::Result<PathBuf> {
     find_command(command, env).ok_or_else(|| {
-        crate::Error::Backend(format!(
-            "backend \"{backend_id}\": command \"{command}\" not found (an absolute or relative \
-             path is used as-is, a bare name is looked up on PATH)"
+        crate::Error::Backend(crate::error::BackendError::at(
+            backend_id,
+            format!(
+                "backend \"{backend_id}\": command \"{command}\" not found (an absolute or \
+                 relative path is used as-is, a bare name is looked up on PATH)"
+            ),
         ))
     })
 }
@@ -549,10 +555,13 @@ pub fn serve(
     //    conflict sends its user to fix a `port` key that is correct.
     match presence(backend, host)? {
         Presence::Alive(state) => {
-            return Err(crate::Error::Backend(format!(
-                "backend \"{}\" is already served by process {} — `npu status` to see it, \
-                 `npu stop {}` to end it",
-                backend.id, state.pid, model.id
+            return Err(crate::Error::Backend(crate::error::BackendError::at(
+                &backend.id,
+                format!(
+                    "backend \"{}\" is already served by process {} — `npu status` to see it, \
+                     `npu stop {}` to end it",
+                    backend.id, state.pid, model.id
+                ),
             )));
         }
         // Refused BEFORE the log is truncated and before anything is
@@ -576,10 +585,13 @@ pub fn serve(
     if let Some(crate::config::Port::Fixed(port)) = &backend.port
         && !super::port_is_free(*port)
     {
-        return Err(crate::Error::Backend(format!(
-            "backend \"{}\": port {port} is already in use by something else — change its \
-             \"port\" key, or stop what is listening on it",
-            backend.id
+        return Err(crate::Error::Backend(crate::error::BackendError::at(
+            &backend.id,
+            format!(
+                "backend \"{}\": port {port} is already in use by something else — change its \
+                 \"port\" key, or stop what is listening on it",
+                backend.id
+            ),
         )));
     }
 
@@ -622,10 +634,13 @@ pub fn serve(
             // says; leaving a zero-byte file behind would make it exit `0`
             // printing nothing, indistinguishable from a silent server.
             drop(std::fs::remove_file(&log));
-            crate::Error::Backend(format!(
-                "backend \"{}\": cannot run \"{}\": {err}",
-                backend.id,
-                executable.display()
+            crate::Error::Backend(crate::error::BackendError::at(
+                &backend.id,
+                format!(
+                    "backend \"{}\": cannot run \"{}\": {err}",
+                    backend.id,
+                    executable.display()
+                ),
             ))
         })?;
 
@@ -826,11 +841,14 @@ fn start_failure(
     log: &Path,
     detail: &str,
 ) -> crate::Error {
-    crate::Error::Backend(format!(
-        "backend \"{}\": \"{}\" failed to serve: {detail} — its output was kept in {}",
-        backend.id,
-        executable.display(),
-        log.display()
+    crate::Error::Backend(crate::error::BackendError::at(
+        &backend.id,
+        format!(
+            "backend \"{}\": \"{}\" failed to serve: {detail} — its output was kept in {}",
+            backend.id,
+            executable.display(),
+            log.display()
+        ),
     ))
 }
 
@@ -915,10 +933,14 @@ pub fn stop(backend: &crate::config::Backend, host: &Host<'_>) -> crate::Result<
             if !stopped {
                 (host.signal)(state.pid, Signal::Kill);
                 if !ceases_within(&state, host, TERMINATION_GRACE) {
-                    return Err(crate::Error::Backend(format!(
-                        "backend \"{}\": process {} survived both signals — its state is kept, \
-                         since forgetting a running server would leave it unreachable to npu",
-                        backend.id, state.pid
+                    return Err(crate::Error::Backend(crate::error::BackendError::at(
+                        &backend.id,
+                        format!(
+                            "backend \"{}\": process {} survived both signals — its state is \
+                             kept, since forgetting a running server would leave it unreachable \
+                             to npu",
+                            backend.id, state.pid
+                        ),
                     )));
                 }
             }
@@ -1020,10 +1042,13 @@ pub fn logs(
     let mut file = match std::fs::File::open(&path) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Err(crate::Error::Backend(format!(
-                "backend \"{}\": no log to read at {} — nothing was served from this npu",
-                backend.id,
-                path.display()
+            return Err(crate::Error::Backend(crate::error::BackendError::at(
+                &backend.id,
+                format!(
+                    "backend \"{}\": no log to read at {} — nothing was served from this npu",
+                    backend.id,
+                    path.display()
+                ),
             )));
         }
         Err(err) => return Err(io_at(&path, &err)),

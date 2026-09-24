@@ -166,9 +166,12 @@ pub fn state_path(env: &StateEnv, backend_id: &str, source: &Path) -> crate::Res
 /// may not depend on someone else having validated it.
 fn file_name(backend_id: &str, source: &Path) -> crate::Result<String> {
     if !crate::config::is_valid_runtime_id(backend_id) {
-        return Err(crate::Error::Config(format!(
-            "backend \"{backend_id}\": identifier unusable as a state file name (ASCII \
-             letters, digits, \"_\", \".\" and \"-\", starting with a letter or a digit)"
+        return Err(crate::Error::Config(crate::error::ConfigError::bare(
+            Some(backend_id),
+            format!(
+                "backend \"{backend_id}\": identifier unusable as a state file name (ASCII \
+                 letters, digits, \"_\", \".\" and \"-\", starting with a letter or a digit)"
+            ),
         )));
     }
     Ok(format!("{backend_id}-{}.json", source_digest(source)))

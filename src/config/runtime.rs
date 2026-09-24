@@ -184,11 +184,14 @@ pub(crate) fn reject_double_runtime(
     source: &std::path::Path,
 ) -> crate::Result<()> {
     if backend.runtime.is_some() && backend.docker.is_some() {
-        return Err(crate::Error::Config(format!(
-            "{}: backend \"{}\": declares both [runtime] and the legacy [docker] table — \
-             keep [runtime] alone, npu will not guess which one wins",
-            source.display(),
-            backend.id
+        return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            Some(&backend.id),
+            format!(
+                "backend \"{}\": declares both [runtime] and the legacy [docker] table — \
+                 keep [runtime] alone, npu will not guess which one wins",
+                backend.id
+            ),
         )));
     }
     Ok(())

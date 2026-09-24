@@ -158,9 +158,12 @@ pub fn strip_fences(raw: &str) -> &str {
 /// moment of this invocation (`compile_schema`, below). Ignored by the text
 /// branch, which knows nothing of a schema.
 pub fn finalize(spec: &OutputSpec, raw: &str, command_file: &Path) -> crate::Result<String> {
+    use crate::error::InFile;
     match spec.format {
-        Format::Text => finalize_text(spec.max_lines, raw),
-        Format::Json => finalize_json(spec.schema.as_deref(), raw, command_file),
+        Format::Text => finalize_text(spec.max_lines, raw).in_file(command_file),
+        Format::Json => {
+            finalize_json(spec.schema.as_deref(), raw, command_file).in_file(command_file)
+        }
     }
 }
 
@@ -182,7 +185,7 @@ fn finalize_text(max_lines: Option<usize>, raw: &str) -> crate::Result<String> {
             .filter(|line| !line.trim().is_empty())
             .count();
         if non_empty_lines > limit {
-            return Err(crate::Error::Output(format!(
+            return Err(crate::Error::output(format!(
                 "text output: at most {limit} non-empty line(s) expected (max_lines), \
                  {non_empty_lines} received"
             )));
@@ -205,7 +208,7 @@ fn finalize_json(schema: Option<&Path>, raw: &str, command_file: &Path) -> crate
     let candidate = strip_fences(raw);
 
     let value: serde_json::Value = serde_json::from_str(candidate).map_err(|err| {
-        crate::Error::Output(format!(
+        crate::Error::output(format!(
             "invalid JSON output: {err}; response received (excerpt): \"{}\"",
             excerpt(candidate.trim())
         ))
@@ -229,7 +232,7 @@ fn finalize_json(schema: Option<&Path>, raw: &str, command_file: &Path) -> crate
     }
 
     serde_json::to_string(&value)
-        .map_err(|err| crate::Error::Output(format!("JSON output serialization failed: {err}")))
+        .map_err(|err| crate::Error::output(format!("JSON output serialization failed: {err}")))
 }
 
 /// Compiles the JSON schema located at `path` into a reusable validator.
@@ -255,12 +258,11 @@ pub(crate) fn compile_schema(
     let document = read_schema(path, command_file)?;
 
     jsonschema::validator_for(&document).map_err(|err| {
-        crate::Error::Config(format!(
-            "output schema \"{}\", declared by command file \"{}\", invalid: \
-             {err}",
-            path.display(),
-            command_file.display()
-        ))
+        crate::Error::Config(crate::error::ConfigError {
+            message: format!("output schema \"{}\" invalid: {err}", path.display()),
+            file: Some(command_file.to_path_buf()),
+            id: None,
+        })
     })
 }
 
@@ -272,21 +274,22 @@ pub(crate) fn compile_schema(
 /// three read the file with the same messages.
 pub(crate) fn read_schema(path: &Path, command_file: &Path) -> crate::Result<serde_json::Value> {
     let text = std::fs::read_to_string(path).map_err(|err| {
-        crate::Error::Config(format!(
-            "schema \"{}\", declared by command file \"{}\", not found \
-             or unreadable: {err}",
-            path.display(),
-            command_file.display()
-        ))
+        crate::Error::Config(crate::error::ConfigError {
+            message: format!(
+                "schema \"{}\" not found or unreadable: {err}",
+                path.display()
+            ),
+            file: Some(command_file.to_path_buf()),
+            id: None,
+        })
     })?;
 
     serde_json::from_str(&text).map_err(|err| {
-        crate::Error::Config(format!(
-            "schema \"{}\", declared by command file \"{}\": invalid \
-             JSON: {err}",
-            path.display(),
-            command_file.display()
-        ))
+        crate::Error::Config(crate::error::ConfigError {
+            message: format!("schema \"{}\": invalid JSON: {err}", path.display()),
+            file: Some(command_file.to_path_buf()),
+            id: None,
+        })
     })
 }
 
@@ -317,7 +320,7 @@ fn validate_against_schema(
         return Ok(());
     }
 
-    Err(crate::Error::Output(format!(
+    Err(crate::Error::output(format!(
         "invalid JSON output against schema ({} violation(s)):\n{}",
         violations.len(),
         violations.join("\n")

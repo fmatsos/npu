@@ -58,15 +58,25 @@ pub fn chat(
         on_token,
     } = *request;
     let operation = backend.operations.get(&model.operation).ok_or_else(|| {
-        crate::Error::Config(format!(
-            "backend \"{}\" does not expose operation \"{}\" (available operations: {})",
-            backend.id,
-            model.operation,
-            crate::error::format_available(backend.operations.keys())
+        crate::Error::Config(crate::error::ConfigError::bare(
+            Some(&backend.id),
+            format!(
+                "backend \"{}\" does not expose operation \"{}\" (available operations: {})",
+                backend.id,
+                model.operation,
+                crate::error::format_available(backend.operations.keys())
+            ),
         ))
     })?;
 
     let url = join_url(base_url, &operation.path);
+    let backend_err = |message: String| {
+        crate::Error::Backend(crate::error::BackendError::at_url(
+            &backend.id,
+            &url,
+            message,
+        ))
+    };
     let schema = schema.filter(|_| backend.structured_output);
     let mut body = build_chat_request(&model.model, prompt, &model.generation, schema);
     if on_token.is_some()
@@ -98,7 +108,7 @@ pub fn chat(
 
     let started = std::time::Instant::now();
     let mut response = agent.post(&url).send_json(&body).map_err(|err| {
-        crate::Error::Backend(format!(
+        backend_err(format!(
             "request to backend \"{}\" ({url}) failed: {err}",
             backend.id
         ))
@@ -107,7 +117,7 @@ pub fn chat(
     let status = response.status();
     if let (Some(on_token), true) = (on_token, status.is_success()) {
         let answer = read_stream(response.body_mut().as_reader(), on_token).map_err(|err| {
-            crate::Error::Backend(format!(
+            backend_err(format!(
                 "reading the streamed response from backend \"{}\" ({url}) failed: {err}",
                 backend.id
             ))
@@ -121,7 +131,7 @@ pub fn chat(
         return Ok(answer);
     }
     let response_text = response.body_mut().read_to_string().map_err(|err| {
-        crate::Error::Backend(format!(
+        backend_err(format!(
             "reading the response from backend \"{}\" ({url}) failed: {err}",
             backend.id
         ))
@@ -135,15 +145,22 @@ pub fn chat(
     ));
 
     if !status.is_success() {
-        return Err(crate::Error::Backend(format!(
-            "backend \"{}\" ({url}) responded with status {status}: {}",
-            backend.id,
-            truncate(&response_text, ERROR_BODY_TRUNCATE_AT)
-        )));
+        return Err(crate::Error::Backend(
+            crate::error::BackendError::at_status(
+                &backend.id,
+                &url,
+                status.as_u16(),
+                format!(
+                    "backend \"{}\" ({url}) responded with status {status}: {}",
+                    backend.id,
+                    truncate(&response_text, ERROR_BODY_TRUNCATE_AT)
+                ),
+            ),
+        ));
     }
 
     let response_json: Value = serde_json::from_str(&response_text).map_err(|err| {
-        crate::Error::Backend(format!(
+        backend_err(format!(
             "response from backend \"{}\" ({url}) unreadable as JSON: {err}; body received: {}",
             backend.id,
             truncate(&response_text, ERROR_BODY_TRUNCATE_AT)
@@ -151,7 +168,7 @@ pub fn chat(
     })?;
 
     extract_chat_content(&response_json).ok_or_else(|| {
-        crate::Error::Backend(format!(
+        backend_err(format!(
             "response from backend \"{}\" ({url}) has no usable content (expected \
              choices[0].message.content); body received: {}",
             backend.id,

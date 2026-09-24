@@ -114,7 +114,7 @@ fn parse_named(rest: &str) -> Option<String> {
 /// untrimmed content as found between `{{` and `}}`.
 fn unknown_placeholder(raw: &str) -> crate::Error {
     let name = raw.trim();
-    crate::Error::Config(format!(
+    crate::Error::config(format!(
         "unknown placeholder \"{{{{ {name} }}}}\": recognized forms: {ACCEPTED_FORMS}"
     ))
 }
@@ -179,14 +179,14 @@ pub fn validate(
     for placeholder in placeholders(template)? {
         match placeholder {
             Placeholder::Arg(name) if !declared_args.contains(&name) => {
-                return Err(crate::Error::Config(format!(
+                return Err(crate::Error::config(format!(
                     "unknown argument \"{name}\" referenced by {{{{ args.{name} }}}}: \
                      declared arguments: {}",
                     crate::error::format_available(declared_args.iter())
                 )));
             }
             Placeholder::Schema(id) if !declared_schemas.contains(&id) => {
-                return Err(crate::Error::Config(format!(
+                return Err(crate::Error::config(format!(
                     "unknown schema \"{id}\" referenced by {{{{ schemas.{id} }}}}: declared \
                      in [schemas]: {}",
                     crate::error::format_available(declared_schemas.iter())
@@ -204,7 +204,7 @@ pub fn validate(
 /// the same defect (defense in depth, cf. [`preflight`] doc).
 fn resolve_arg<'a>(name: &str, args: &'a BTreeMap<String, String>) -> crate::Result<&'a String> {
     args.get(name).ok_or_else(|| {
-        crate::Error::Config(format!(
+        crate::Error::config(format!(
             "argument \"{name}\" referenced by {{{{ args.{name} }}}} but missing from the \
              values provided"
         ))
@@ -216,7 +216,7 @@ fn resolve_arg<'a>(name: &str, args: &'a BTreeMap<String, String>) -> crate::Res
 /// [`resolve_arg`] for the reason it is shared with [`render`]/[`preflight`].
 fn resolve_env(name: &str, env: &dyn Fn(&str) -> Option<String>) -> crate::Result<String> {
     env(name).ok_or_else(|| {
-        crate::Error::Config(format!(
+        crate::Error::config(format!(
             "environment variable \"{name}\" referenced by {{{{ env.{name} }}}} but not \
              defined"
         ))
@@ -231,7 +231,7 @@ fn resolve_schema<'a>(
     schemas: &'a BTreeMap<String, String>,
 ) -> crate::Result<&'a String> {
     schemas.get(id).ok_or_else(|| {
-        crate::Error::Config(format!(
+        crate::Error::config(format!(
             "schema \"{id}\" referenced by {{{{ schemas.{id} }}}} but missing from the \
              schemas loaded"
         ))

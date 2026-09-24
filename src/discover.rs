@@ -681,14 +681,14 @@ pub fn discover(
     logger: crate::log::Logger,
 ) -> crate::Result<String> {
     if query.npu && !world.has_npu {
-        return Err(crate::Error::Backend(
-            "--npu: no Intel NPU on this host (no /dev/accel/accel* device)".to_string(),
+        return Err(crate::Error::backend(
+            "--npu: no Intel NPU on this host (no /dev/accel/accel* device)",
         ));
     }
     let architectures = if query.engine == Some(Engine::OpenVino) || query.npu {
         let found = exportable_architectures(&(world.fetch)(ARCHITECTURES_URL, None)?, &query.task);
         if found.is_empty() {
-            return Err(crate::Error::Backend(format!(
+            return Err(crate::Error::backend(format!(
                 "no architecture exportable for task \"{}\" found in {ARCHITECTURES_URL}",
                 query.task
             )));
@@ -709,7 +709,7 @@ pub fn discover(
 
     let body = (world.fetch)(&search_url(query), query.hf_token.as_deref())?;
     let hub: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| crate::Error::Backend(format!("unexpected answer from {HUB_API}: {e}")))?;
+        .map_err(|e| crate::Error::backend(format!("unexpected answer from {HUB_API}: {e}")))?;
 
     let llmfit = (world.llmfit)().map(|json| llmfit_index(&json));
     if llmfit.is_none() {
@@ -743,7 +743,7 @@ pub fn fetch(url: &str, token: Option<&str>) -> crate::Result<String> {
         request = request.header("Authorization", format!("Bearer {token}"));
     }
     let failed =
-        |e: &dyn std::fmt::Display| crate::Error::Backend(format!("GET {url} failed: {e}"));
+        |e: &dyn std::fmt::Display| crate::Error::backend(format!("GET {url} failed: {e}"));
     request
         .call()
         .map_err(|e| failed(&e))?
@@ -955,7 +955,7 @@ class LlamaConfig(Base):
     #[test]
     fn npu_on_a_host_without_one_is_a_backend_error_before_any_request() {
         let fetch = |_: &str, _: Option<&str>| -> crate::Result<String> {
-            Err(crate::Error::Config("must not be called".into()))
+            Err(crate::Error::config("must not be called"))
         };
         let world = World {
             fetch: &fetch,

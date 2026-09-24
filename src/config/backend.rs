@@ -185,12 +185,13 @@ fn validate_runtime_template(template: &str, backend_id: &str, source: &Path) ->
         // Its own message, not its `Display`: the latter re-prefixes
         // "configuration error:", which the caller already prints.
         let detail = match err {
-            crate::Error::Config(message) => message,
+            crate::Error::Config(config_err) => config_err.message,
             other => other.to_string(),
         };
-        crate::Error::Config(format!(
-            "{}: backend \"{backend_id}\": [runtime]: {detail}",
-            source.display()
+        crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            Some(backend_id),
+            format!("backend \"{backend_id}\": [runtime]: {detail}"),
         ))
     })?;
 
@@ -199,24 +200,33 @@ fn validate_runtime_template(template: &str, backend_id: &str, source: &Path) ->
             crate::prompt::Placeholder::Env(_) => {}
             crate::prompt::Placeholder::Arg(name) if name == RUNTIME_PLACEHOLDER_ARG => {}
             crate::prompt::Placeholder::Arg(name) => {
-                return Err(crate::Error::Config(format!(
-                    "{}: backend \"{backend_id}\": [runtime] references unknown argument \
-                     \"{name}\" (only \"{RUNTIME_PLACEHOLDER_ARG}\" is available here)",
-                    source.display()
+                return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+                    source,
+                    Some(backend_id),
+                    format!(
+                        "backend \"{backend_id}\": [runtime] references unknown argument \
+                         \"{name}\" (only \"{RUNTIME_PLACEHOLDER_ARG}\" is available here)"
+                    ),
                 )));
             }
             crate::prompt::Placeholder::Input => {
-                return Err(crate::Error::Config(format!(
-                    "{}: backend \"{backend_id}\": [runtime] references {{{{ input }}}}, which \
-                     has no meaning for a runtime start",
-                    source.display()
+                return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+                    source,
+                    Some(backend_id),
+                    format!(
+                        "backend \"{backend_id}\": [runtime] references {{{{ input }}}}, which \
+                         has no meaning for a runtime start"
+                    ),
                 )));
             }
             crate::prompt::Placeholder::Schema(id) => {
-                return Err(crate::Error::Config(format!(
-                    "{}: backend \"{backend_id}\": [runtime] references {{{{ schemas.{id} }}}}, \
-                     which has no meaning for a runtime start",
-                    source.display()
+                return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+                    source,
+                    Some(backend_id),
+                    format!(
+                        "backend \"{backend_id}\": [runtime] references {{{{ schemas.{id} }}}}, \
+                         which has no meaning for a runtime start"
+                    ),
                 )));
             }
         }
@@ -253,12 +263,15 @@ fn validate_docker(backend: &Backend, source: &Path) -> crate::Result<()> {
     };
 
     if !is_valid_runtime_id(&backend.id) {
-        return Err(crate::Error::Config(format!(
-            "{}: backend \"{}\": declaring [docker] requires an identifier usable as a \
-             container name (ASCII letters, digits, \"_\", \".\" and \"-\", starting with a \
-             letter or a digit)",
-            source.display(),
-            backend.id
+        return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            Some(&backend.id),
+            format!(
+                "backend \"{}\": declaring [docker] requires an identifier usable as a \
+                 container name (ASCII letters, digits, \"_\", \".\" and \"-\", starting with a \
+                 letter or a digit)",
+                backend.id
+            ),
         )));
     }
 
@@ -296,14 +309,17 @@ fn validate_process(backend: &Backend, source: &Path) -> crate::Result<()> {
     // $HOME is set"), the I/O code, which tells a calling program its disk
     // is broken. Exit `2` naming the file says what is actually true.
     if cfg!(target_os = "windows") {
-        return Err(crate::Error::Config(format!(
-            "{}: backend \"{}\": [runtime] type = \"{}\" is not supported on Windows (no state \
-             directory convention, and no SIGTERM to stop a server with) — use type = \"{}\", \
-             or start the server outside npu",
-            source.display(),
-            backend.id,
-            crate::runtime::process::NAME,
-            crate::runtime::docker::NAME
+        return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            Some(&backend.id),
+            format!(
+                "backend \"{}\": [runtime] type = \"{}\" is not supported on Windows (no state \
+                 directory convention, and no SIGTERM to stop a server with) — use type = \"{}\", \
+                 or start the server outside npu",
+                backend.id,
+                crate::runtime::process::NAME,
+                crate::runtime::docker::NAME
+            ),
         )));
     }
 
@@ -314,21 +330,27 @@ fn validate_process(backend: &Backend, source: &Path) -> crate::Result<()> {
     // process and blames the budget. Rejected here, it is exit `2` naming
     // the file, before anything is started.
     if let Err(detail) = crate::builtin::parse_host_port(&backend.base_url) {
-        return Err(crate::Error::Config(format!(
-            "{}: backend \"{}\": {detail} — a process runtime is started only once its \
-             base_url answers, so an address npu cannot parse can never be satisfied",
-            source.display(),
-            backend.id
+        return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            Some(&backend.id),
+            format!(
+                "backend \"{}\": {detail} — a process runtime is started only once its \
+                 base_url answers, so an address npu cannot parse can never be satisfied",
+                backend.id
+            ),
         )));
     }
 
     if !is_valid_runtime_id(&backend.id) {
-        return Err(crate::Error::Config(format!(
-            "{}: backend \"{}\": declaring a process runtime requires an identifier usable as a \
-             state file name (ASCII letters, digits, \"_\", \".\" and \"-\", starting with a \
-             letter or a digit)",
-            source.display(),
-            backend.id
+        return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            Some(&backend.id),
+            format!(
+                "backend \"{}\": declaring a process runtime requires an identifier usable as a \
+                 state file name (ASCII letters, digits, \"_\", \".\" and \"-\", starting with a \
+                 letter or a digit)",
+                backend.id
+            ),
         )));
     }
 
@@ -336,11 +358,14 @@ fn validate_process(backend: &Backend, source: &Path) -> crate::Result<()> {
     // literally, so `serve` could never succeed — and a key read then
     // clamped would be a key silently ignored.
     if process.startup_timeout_secs == 0 {
-        return Err(crate::Error::Config(format!(
-            "{}: backend \"{}\": [runtime].startup_timeout_secs must be greater than 0 — \
-             a zero budget leaves no time for anything to start",
-            source.display(),
-            backend.id
+        return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            Some(&backend.id),
+            format!(
+                "backend \"{}\": [runtime].startup_timeout_secs must be greater than 0 — \
+                 a zero budget leaves no time for anything to start",
+                backend.id
+            ),
         )));
     }
 
@@ -350,13 +375,15 @@ fn validate_process(backend: &Backend, source: &Path) -> crate::Result<()> {
     // the exit-code contract this CLI is driven by. A day is already longer
     // than any start worth waiting for.
     if process.startup_timeout_secs > MAX_STARTUP_TIMEOUT_SECS {
-        return Err(crate::Error::Config(format!(
-            "{}: backend \"{}\": [runtime].startup_timeout_secs must be at most \
-             {MAX_STARTUP_TIMEOUT_SECS} (a day); npu cannot build a deadline out of \
-             {}",
-            source.display(),
-            backend.id,
-            process.startup_timeout_secs
+        return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            Some(&backend.id),
+            format!(
+                "backend \"{}\": [runtime].startup_timeout_secs must be at most \
+                 {MAX_STARTUP_TIMEOUT_SECS} (a day); npu cannot build a deadline out of \
+                 {}",
+                backend.id, process.startup_timeout_secs
+            ),
         )));
     }
 
@@ -384,25 +411,31 @@ fn validate_process(backend: &Backend, source: &Path) -> crate::Result<()> {
 /// the message names the file the user must actually fix.
 pub(crate) fn validate_backend(backend: &Backend, source: &Path) -> crate::Result<()> {
     let Some(BackendKind::OpenAiCompatible) = BackendKind::parse(&backend.kind) else {
-        return Err(crate::Error::Config(format!(
-            "{}: backend \"{}\": type \"{}\" not supported (only \"{}\" \
-             is supported)",
-            source.display(),
-            backend.id,
-            backend.kind,
-            BackendKind::SUPPORTED
+        return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            Some(&backend.id),
+            format!(
+                "backend \"{}\": type \"{}\" not supported (only \"{}\" \
+                 is supported)",
+                backend.id,
+                backend.kind,
+                BackendKind::SUPPORTED
+            ),
         )));
     };
 
     for (operation_name, operation) in &backend.operations {
         let Some(Method::Post) = Method::parse(&operation.method) else {
-            return Err(crate::Error::Config(format!(
-                "{}: backend \"{}\", operation \"{operation_name}\": method \"{}\" not \
-                 supported (only \"{}\" is supported)",
-                source.display(),
-                backend.id,
-                operation.method,
-                Method::SUPPORTED
+            return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+                source,
+                Some(&backend.id),
+                format!(
+                    "backend \"{}\", operation \"{operation_name}\": method \"{}\" not \
+                     supported (only \"{}\" is supported)",
+                    backend.id,
+                    operation.method,
+                    Method::SUPPORTED
+                ),
             )));
         };
     }
@@ -410,10 +443,13 @@ pub(crate) fn validate_backend(backend: &Backend, source: &Path) -> crate::Resul
     if let Some(timeouts) = &backend.timeouts
         && timeouts.request_secs == 0
     {
-        return Err(crate::Error::Config(format!(
-            "{}: backend \"{}\": [timeouts].request_secs must be greater than 0",
-            source.display(),
-            backend.id
+        return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            Some(&backend.id),
+            format!(
+                "backend \"{}\": [timeouts].request_secs must be greater than 0",
+                backend.id
+            ),
         )));
     }
 

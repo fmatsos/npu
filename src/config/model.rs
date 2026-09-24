@@ -53,20 +53,23 @@ pub(crate) fn validate_fallback(
     };
 
     if fallback == &model.id {
-        return Err(crate::Error::Config(format!(
-            "{}: model \"{}\" declares itself as its own fallback",
-            source.display(),
-            model.id
+        return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            Some(&model.id),
+            format!("model \"{}\" declares itself as its own fallback", model.id),
         )));
     }
 
     if !models.contains_key(fallback) {
-        return Err(crate::Error::Config(format!(
-            "{}: model \"{}\" declares fallback \"{fallback}\", which is not a known model \
-             (available models: {})",
-            source.display(),
-            model.id,
-            crate::error::format_available(models.keys())
+        return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            Some(&model.id),
+            format!(
+                "model \"{}\" declares fallback \"{fallback}\", which is not a known model \
+                 (available models: {})",
+                model.id,
+                crate::error::format_available(models.keys())
+            ),
         )));
     }
 
