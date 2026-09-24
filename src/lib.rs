@@ -10,6 +10,7 @@ mod cli;
 pub mod command;
 pub mod config;
 pub mod discover;
+mod dispatch;
 pub mod error;
 mod exec;
 pub mod input;
@@ -114,103 +115,106 @@ pub fn run() -> Result<i32> {
     };
 
     let (path, leaf_matches) = cli::selected_path(&matches);
-    let route: Vec<&str> = path.iter().map(String::as_str).collect();
+    let route_path: Vec<&str> = path.iter().map(String::as_str).collect();
+    let route = dispatch::route_for(&route_path);
 
-    if matches!(route.as_slice(), ["doctor"] | ["config", "check"]) {
-        return Ok(cli::builtins::doctor(&loaded));
+    // These routes depend only on the binary itself, the host and GitHub
+    // Releases — or, for `Describe`, only on the `clap` tree — so they run
+    // whatever state loading ended in (degraded mode). Everything else
+    // (`Business` included) is handled below, after `loaded?` has
+    // propagated any load error, exit code 2.
+    match route {
+        dispatch::Route::Doctor => return Ok(cli::builtins::doctor(&loaded)),
+        dispatch::Route::Help => return cli::builtins::help(help_cli, leaf_matches),
+        dispatch::Route::Update => return cli::builtins::update(logger),
+        dispatch::Route::ModelDiscover => {
+            let config = loaded.as_ref().map(|(config, _)| config);
+            anstream::println!(
+                "{}",
+                cli::builtins::model_discover(leaf_matches, config, logger)?
+            );
+            return Ok(0);
+        }
+        dispatch::Route::Describe => {
+            if let Some(json) =
+                cli::builtins::describe_builtin(&cli::builtins::describe_words(leaf_matches))?
+            {
+                println!("{json}");
+                return Ok(0);
+            }
+        }
+        dispatch::Route::ConfigModels
+        | dispatch::Route::BackendServe
+        | dispatch::Route::BackendStop
+        | dispatch::Route::BackendStatus
+        | dispatch::Route::BackendLogs
+        | dispatch::Route::BackendTune
+        | dispatch::Route::Business => {}
     }
 
-    // These two built-ins depend only on the binary itself and GitHub
-    // Releases. Like `doctor`, they remain available in degraded mode: a
-    // malformed AI configuration is unrelated to reading or updating npu.
-    if route == ["help"] {
-        return cli::builtins::help(help_cli, leaf_matches);
-    }
-
-    if route == ["update"] {
-        return cli::builtins::update(logger);
-    }
-
-    // Needs no configuration: it looks at the host and at Hugging Face.
-    if route == ["model", "discover"] {
-        let config = loaded.as_ref().map(|(config, _)| config);
-        anstream::println!(
-            "{}",
-            cli::builtins::model_discover(leaf_matches, config, logger)?
-        );
-        return Ok(0);
-    }
-
-    // A built-in is described from the `clap` tree alone: like `doctor`,
-    // this works whatever state the configuration is in.
-    if route == ["describe"]
-        && let Some(json) =
-            cli::builtins::describe_builtin(&cli::builtins::describe_words(leaf_matches))?
-    {
-        println!("{json}");
-        return Ok(0);
-    }
-
-    // Any OTHER branch (business command, `models`, the lifecycle commands,
-    // `describe`) requires a
-    // successfully loaded configuration: propagates the error KEPT above,
-    // code 2, exactly as before this phase (point 1 of the shared
-    // contract).
     let (config, specs) = loaded?;
-
-    if route == ["config", "models"] {
-        println!("{}", builtin::format_models(&config));
-        return Ok(0);
-    }
-
-    // The outside world the lifecycle commands act through, injected in one
-    // place exactly like `probe` and `runner`: the real environment, the
-    // real state directory, the real process table, the real signals and
-    // the real TCP probe. `builtin.rs` and `runtime::process`'s tests build
-    // their own, which is why no test in this suite needs a server
-    // installed.
     let env = |name: &str| std::env::var(name).ok();
-    let host = runtime::process::Host {
-        env: &env,
-        state: runtime::state::StateEnv::from_env(),
-        inspect: &runtime::process::inspect,
-        signal: &runtime::process::signal,
-        probe: &builtin::tcp_probe,
-    };
 
-    if let Some(outcome) =
-        run_backend_lifecycle(route.as_slice(), &config, leaf_matches, &env, &host, logger)?
-    {
-        return Ok(outcome);
+    match route {
+        dispatch::Route::ConfigModels => {
+            println!("{}", builtin::format_models(&config));
+            Ok(0)
+        }
+        dispatch::Route::BackendServe
+        | dispatch::Route::BackendStop
+        | dispatch::Route::BackendStatus
+        | dispatch::Route::BackendLogs
+        | dispatch::Route::BackendTune => {
+            // The outside world the lifecycle commands act through,
+            // injected in one place exactly like `probe` and `runner`: the
+            // real environment, the real state directory, the real process
+            // table, the real signals and the real TCP probe. `builtin.rs`
+            // and `runtime::process`'s tests build their own, which is why
+            // no test in this suite needs a server installed.
+            let host = runtime::process::Host {
+                env: &env,
+                state: runtime::state::StateEnv::from_env(),
+                inspect: &runtime::process::inspect,
+                signal: &runtime::process::signal,
+                probe: &builtin::tcp_probe,
+            };
+            match run_backend_lifecycle(&route_path, &config, leaf_matches, &env, &host, logger)? {
+                Some(outcome) => Ok(outcome),
+                None => unreachable!("route matched a backend lifecycle command"),
+            }
+        }
+        dispatch::Route::Describe => {
+            let key = cli::builtins::describe_words(leaf_matches).join("/");
+            let spec = cli::find_command(&specs, &key)?;
+            println!("{}", builtin::describe(spec, &config)?);
+            Ok(0)
+        }
+        dispatch::Route::Business => {
+            let key = path.join("/");
+            let spec = cli::find_command(&specs, &key)?;
+            exec::execute_business_command(
+                spec,
+                &config,
+                leaf_matches,
+                logger,
+                &env,
+                &input::resolve,
+                std::io::IsTerminal::is_terminal(&std::io::stdout()),
+            )?;
+            Ok(0)
+        }
+        dispatch::Route::Doctor
+        | dispatch::Route::Help
+        | dispatch::Route::Update
+        | dispatch::Route::ModelDiscover => {
+            unreachable!("these routes already returned above, whatever state loading ended in")
+        }
     }
-
-    if route == ["describe"] {
-        let key = cli::builtins::describe_words(leaf_matches).join("/");
-        let spec = cli::find_command(&specs, &key)?;
-        println!("{}", builtin::describe(spec, &config)?);
-        return Ok(0);
-    }
-
-    let key = path.join("/");
-    let spec = cli::find_command(&specs, &key)?;
-
-    exec::execute_business_command(
-        spec,
-        &config,
-        leaf_matches,
-        logger,
-        &env,
-        &input::resolve,
-        std::io::IsTerminal::is_terminal(&std::io::stdout()),
-    )?;
-
-    Ok(0)
 }
 
 /// Handles the `backend serve|stop|status|logs|tune` group: `Some(code)` if
-/// `route` named one of them, `None` otherwise, letting `run` fall through
-/// to the remaining branches. Extracted from `run` as-is, only to keep it
-/// under the pedantic line-count threshold — the behaviour and order are
+/// `route` named one of them, `None` otherwise. Extracted from `run` as-is,
+/// only to keep the two `match`es above small — the behaviour and order are
 /// unchanged.
 fn run_backend_lifecycle(
     route: &[&str],
