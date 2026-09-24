@@ -5,6 +5,7 @@
 
 /// `npu model discover`: reads its flags, the host's RAM and NPU, then
 /// delegates to [`crate::discover::discover`], whose report is the result.
+#[cfg(feature = "hardware-tooling")]
 pub(crate) fn model_discover(
     leaf_matches: &clap::ArgMatches,
     config: std::result::Result<&crate::config::Config, &crate::Error>,
@@ -57,7 +58,7 @@ pub(crate) fn model_discover(
     system.refresh_memory();
     let world = crate::discover::World {
         fetch: &crate::discover::fetch,
-        llmfit: &crate::runtime::llmfit::fit_json,
+        llmfit: &crate::discover::llmfit_stdout,
         has_npu: crate::discover::host_has_npu(),
         total_ram: system.total_memory(),
     };
@@ -70,6 +71,7 @@ pub(crate) fn model_discover(
 /// configured backend's identifier, whose engine is read from its runtime.
 /// Only the second needs the configuration, and only then does a failed
 /// load become this command's error.
+#[cfg(feature = "hardware-tooling")]
 fn discover_engine(
     name: &str,
     config: std::result::Result<&crate::config::Config, &crate::Error>,
@@ -108,6 +110,7 @@ fn discover_engine(
 }
 
 /// `npu model discover`'s arguments.
+#[cfg(feature = "hardware-tooling")]
 pub(crate) fn discover_command() -> clap::Command {
     clap::Command::new("discover")
         .about(
@@ -190,6 +193,7 @@ pub(crate) fn discover_command() -> clap::Command {
 }
 
 /// `npu backend tune`'s arguments, kept out of [`add_builtins`] for size.
+#[cfg(feature = "hardware-tooling")]
 pub(crate) fn tune_command() -> clap::Command {
     clap::Command::new("tune")
         .about(
@@ -271,8 +275,12 @@ pub(crate) fn add_builtins(cli: clap::Command) -> clap::Command {
     // commands' `description`, and the repository's documentation is in
     // English.
     let model_arg = |help: &'static str| clap::Arg::new("MODEL").required(true).help(help);
+    #[cfg(feature = "hardware-tooling")]
+    let backend_about = "Manage the runtime of a model's backend: serve, stop, status, logs, tune";
+    #[cfg(not(feature = "hardware-tooling"))]
+    let backend_about = "Manage the runtime of a model's backend: serve, stop, status, logs";
     let backend = clap::Command::new("backend")
-        .about("Manage the runtime of a model's backend: serve, stop, status, logs, tune")
+        .about(backend_about)
         .subcommand_required(true)
         .arg_required_else_help(true)
         .subcommand(
@@ -304,8 +312,9 @@ pub(crate) fn add_builtins(cli: clap::Command) -> clap::Command {
                         .action(clap::ArgAction::SetTrue)
                         .help("Keep streaming as new lines arrive"),
                 ),
-        )
-        .subcommand(tune_command());
+        );
+    #[cfg(feature = "hardware-tooling")]
+    let backend = backend.subcommand(tune_command());
     let config = clap::Command::new("config")
         .about("Inspect the configuration: check, models")
         .subcommand_required(true)
@@ -313,17 +322,21 @@ pub(crate) fn add_builtins(cli: clap::Command) -> clap::Command {
         .subcommand(clap::Command::new("check").about(DOCTOR_ABOUT))
         .subcommand(clap::Command::new("models").about("List configured models"));
 
+    #[cfg(feature = "hardware-tooling")]
     let model = clap::Command::new("model")
         .about("Find models for this host: discover")
         .subcommand_required(true)
         .arg_required_else_help(true)
         .subcommand(discover_command());
 
-    cli.version(crate::updater::VERSION)
+    let cli = cli
+        .version(crate::updater::VERSION)
         .subcommand(backend)
-        .subcommand(config)
-        .subcommand(model)
-        .subcommand(clap::Command::new("doctor").about(DOCTOR_ABOUT))
+        .subcommand(config);
+    #[cfg(feature = "hardware-tooling")]
+    let cli = cli.subcommand(model);
+
+    cli.subcommand(clap::Command::new("doctor").about(DOCTOR_ABOUT))
         .subcommand(
             clap::Command::new("describe")
                 .about("Describe a command, built-in or configured, as JSON")
@@ -349,6 +362,7 @@ pub(crate) fn add_builtins(cli: clap::Command) -> clap::Command {
 
 /// `npu backend tune`: reads its flags and the host's RAM, then delegates to
 /// [`crate::tune::tune`], whose plan is the result.
+#[cfg(feature = "hardware-tooling")]
 pub(crate) fn backend_tune(
     config: &crate::config::Config,
     leaf_matches: &clap::ArgMatches,
@@ -395,12 +409,23 @@ pub(crate) fn backend_tune(
 
 /// Built-ins that run with a configuration that failed to load: the
 /// dispatch in `crate::run` handles them before it requires one.
+#[cfg(feature = "hardware-tooling")]
 pub(crate) const DEGRADED_MODE_BUILTINS: &[&[&str]] = &[
     &["doctor"],
     &["config", "check"],
     &["update"],
     &["describe"],
     &["model", "discover"],
+];
+
+/// See the feature-enabled [`DEGRADED_MODE_BUILTINS`]: `model discover`
+/// drops out with it, since `model` is then not declared at all.
+#[cfg(not(feature = "hardware-tooling"))]
+pub(crate) const DEGRADED_MODE_BUILTINS: &[&[&str]] = &[
+    &["doctor"],
+    &["config", "check"],
+    &["update"],
+    &["describe"],
 ];
 
 /// The path `npu describe` was given, one segment per word, a word written

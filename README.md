@@ -48,11 +48,15 @@ Four concepts, deliberately kept separate:
 | **Model** | a concrete model id, its backend, the backend operation it uses | `models/*.toml` |
 | **Backend** | runtime protocol, connection details, available operations | `backends/*.toml` |
 | **Schema** | the JSON contract a structured command must satisfy | `schemas/*.json` |
+| **Hardware tooling** | preparing a configuration for Intel/OpenVINO and Hugging Face (`model discover`, `backend tune`) | `src/vendor/` |
 
 A command names a model; a model names a backend and one of its operations. The command never
 needs to know which endpoint or protocol is involved.
 
-The Rust core understands execution mechanics, not AI business semantics.
+The Rust core understands execution mechanics, not AI business semantics. `model discover` and
+`backend tune` are the one deliberate exception: they know Intel/OpenVINO and Hugging Face well
+enough to help prepare a configuration, but they never run a command themselves, and everything
+they know lives under `src/vendor/`, never in the engine that does.
 
 ---
 
@@ -136,6 +140,11 @@ cargo install --path .
 > rejected at load time naming the file — that family needs a `$XDG_STATE_HOME`/`$HOME` state
 > directory and a `SIGTERM`, neither of which Windows has. Everything else — command discovery,
 > arguments, templating, structured output, the other built-ins — is platform-independent.
+
+`cargo install --path .` builds with the `hardware-tooling` Cargo feature on by default, which
+declares `npu model discover` and `npu backend tune` (see [How it works](#how-it-works) and
+[`docs/cli.md`](docs/cli.md#cargo-feature-hardware-tooling)). Build with `--no-default-features`
+for a smaller, engine-only CLI without them.
 
 ### Verify the installation
 

@@ -15,7 +15,6 @@
 use std::time::Duration;
 
 pub mod docker;
-pub mod llmfit;
 
 /// Exit code of `exe args…`, both streams discarded; `None` when it could not
 /// be started or was killed by a signal.
@@ -29,6 +28,25 @@ pub fn exit_code_of(exe: &std::path::Path, args: &[&str]) -> Option<i32> {
         .status()
         .ok()?
         .code()
+}
+
+/// Runs `program args…` with its stdin closed and stderr discarded, and
+/// returns its stdout as text: `Some` only when it exits successfully and
+/// prints something, `None` when it is missing from `PATH`, fails, or is
+/// silent. The single place outside `src/runtime/` a vendor helper may call
+/// to run an external tool, so `std::process::Command` still appears
+/// nowhere else in the crate.
+#[cfg(feature = "hardware-tooling")]
+#[must_use]
+pub fn capture(program: &str, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    (output.status.success() && !output.stdout.is_empty())
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 pub mod process;

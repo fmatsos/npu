@@ -6,6 +6,20 @@ description = "Generic execution engine for local AI commands"
 license = "MIT"
 publish = false
 
+# `hardware-tooling`, on by default, declares the two built-ins that know a
+# specific hub or engine (Hugging Face, OpenVINO, `llmfit`) rather than a
+# protocol: `model discover` and `backend tune`, and everything under
+# `src/vendor/` they call into. With it off, neither is declared in the
+# `clap` tree and the `model` group is not declared either — but `model`
+# stays in `builtin::RESERVED`, since a reserved name is part of the
+# contract, not a feature. No dependency becomes optional: `sysinfo` also
+# serves the process runtime and `ureq` the backend, so this is purely a
+# compile-time seam on the engine/hardware-tooling boundary, never a smaller
+# dependency graph.
+[features]
+default = ["hardware-tooling"]
+hardware-tooling = []
+
 [dependencies]
 clap = { version = "4.6.7", default-features = false, features = ["std", "color", "help", "usage", "error-context", "suggestions", "string"] }
 jsonschema = { version = "0.56.0", default-features = false }

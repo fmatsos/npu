@@ -328,6 +328,55 @@ The logs *are* this command's result. Exit codes are `npu backend serve`'s.
 
 ---
 
+## Cargo feature: `hardware-tooling`
+
+`npu backend tune` and `npu model discover` (below) are the one deliberate exception to "the core
+understands execution mechanics, not AI business semantics": they know Intel/OpenVINO and Hugging
+Face well enough to help prepare a configuration. Everything they know lives under `src/vendor/`,
+never in the engine, and the whole seam is gated by a Cargo feature, `hardware-tooling`, **on by
+default**.
+
+Building with `--no-default-features` drops both commands, and the `model` group along with
+`discover` (the group would otherwise be empty), from the CLI tree — `backend`'s own `about` text
+drops `tune` too:
+
+```console
+$ npu --help
+Usage: npu [OPTIONS] [COMMAND]
+
+Commands:
+  bank-classify   Classify the transactions of a bank statement
+  chat            Everyday question, answer streamed on a terminal
+  classify        Classify an input document
+  code            Code assistant
+  commit-message  Generate a conventional commit message
+  mr-description  Generate a merge request title and description from a diff
+  rewrite         Rewrite a text (email, document) in a given tone
+  sort-files      Propose a folder for each file of a listing
+  synthese        Synthétise un ou plusieurs fichiers en Markdown
+  translate       Translate input text
+
+Built-ins:
+  backend   Manage the runtime of a model's backend: serve, stop, status, logs
+  config    Inspect the configuration: check, models
+  doctor    Check the runtime environment: configuration, backend reachability, declared output schemas
+  describe  Describe a command, built-in or configured, as JSON
+  update    Download and install the latest npu release from GitHub
+  help      Print this message or the help of the given command
+
+Options:
+  -v, --verbose <LEVEL>  Diagnostic verbosity on stderr; stdout always carries the result only [default: warn] [possible values: error, warn, info]
+  -h, --help             Print help
+  -V, --version          Print version
+```
+
+`model` stays in `builtin::RESERVED` either way — a reserved name is part of the contract, not a
+feature — so a command file still cannot be placed at `commands/model/*.md`. No dependency becomes
+optional: `sysinfo` also serves the process runtime and `ureq` the backend, so this is a
+compile-time seam on the engine/hardware-tooling boundary, never a smaller dependency graph.
+
+---
+
 ## `npu backend tune`
 
 Sizes the context and memory of every model compiled for the NPU or the GPU, from the model and the
@@ -382,7 +431,15 @@ qwen3-4b-instruct                NPU       262144     144KB    1536     512     
 qwen3-4b-instruct-gpu            GPU       262144     144KB    5376    1792       3.3GB
 qwen3-8b                         NPU        40960     144KB     512     512       5.9GB
 qwen3-8b-gpu                     GPU        40960     144KB    5376    1792       5.9GB
+
+calibration: activation_tenths=62 activation_tenths_long=90 long_context=24576 step=1024
 ```
+
+`--dry-run` additionally prints the calibration constants the NPU column above was computed
+from (see `vendor::openvino::graph`'s module documentation for what they were measured against
+and on what hardware): `activation_tenths` and `activation_tenths_long` are the tenths of
+`hidden_size x layers` bytes of static buffers charged per token below and above
+`long_context`, and `step` is the token granularity the context is rounded to.
 
 What each device gets:
 

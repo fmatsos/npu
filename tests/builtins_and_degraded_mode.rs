@@ -751,6 +751,7 @@ fn no_colour_reaches_a_pipe() {
 
 /// Writes an NPU export of `qwen-fast-underlying` under `models_dir`: the
 /// three files `backend tune` reads.
+#[cfg(feature = "hardware-tooling")]
 fn write_npu_export(models_dir: &Path) {
     write(
         models_dir,
@@ -766,6 +767,7 @@ fn write_npu_export(models_dir: &Path) {
     write(models_dir, "qwen-fast-underlying/openvino_model.bin", "w");
 }
 
+#[cfg(feature = "hardware-tooling")]
 #[test]
 fn tune_without_an_npu_export_exits_two_naming_the_directory_with_empty_stdout() {
     let xdg = fixture_dir("tune-none-xdg");
@@ -786,6 +788,7 @@ fn tune_without_an_npu_export_exits_two_naming_the_directory_with_empty_stdout()
     assert!(stderr_of(&output).contains("no-models-here"));
 }
 
+#[cfg(feature = "hardware-tooling")]
 #[test]
 fn tune_writes_the_graph_and_max_tokens_unless_dry_run() {
     let xdg = fixture_dir("tune-xdg");
@@ -804,7 +807,15 @@ fn tune_writes_the_graph_and_max_tokens_unless_dry_run() {
         &["backend", "tune", "--models-dir", &dir, "--dry-run"],
     );
     assert_eq!(dry.status.code(), Some(0), "stderr: {}", stderr_of(&dry));
-    assert!(stdout_of(&dry).contains("qwen-fast"));
+    let dry_stdout = stdout_of(&dry);
+    assert!(dry_stdout.contains("qwen-fast"));
+    // --dry-run additionally prints the calibration constants that decided
+    // the plan above, as key=value so a caller can parse them.
+    assert!(dry_stdout.contains(&format!(
+        "activation_tenths={}",
+        npu::vendor::openvino::graph::ACTIVATION_TENTHS
+    )));
+    assert!(dry_stdout.contains(&format!("step={}", npu::vendor::openvino::graph::STEP)));
     assert_eq!(std::fs::read_to_string(&graph).expect("graph"), before);
 
     let output = run_npu(
