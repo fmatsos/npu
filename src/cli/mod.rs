@@ -132,7 +132,10 @@ fn verbose_arg() -> clap::Arg {
 /// usable with an empty `specs` (degraded mode, cf. `crate::run`).
 pub(crate) fn build_cli(specs: &[crate::command::CommandSpec]) -> clap::Command {
     let tree = build_command_tree(specs);
+    // `bin_name` pinned: clap would otherwise print `argv[0]` (`npu.exe` on
+    // Windows) in usage lines, which `help` and the docs spell `npu`.
     let mut root = clap::Command::new("npu")
+        .bin_name("npu")
         .styles(crate::style::clap_styles())
         .arg_required_else_help(true)
         .arg(verbose_arg());

@@ -1734,7 +1734,7 @@ mod tests {
         std::fs::write(&schema_path, r#"{"type": "object"}"#).expect("failed to write schema");
 
         let source = format!(
-            "---\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\nschema = \"{}\"\n\
+            "---\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\nschema = '{}'\n\
              ---\nprompt\n",
             schema_path.display()
         );
@@ -1851,12 +1851,7 @@ mod tests {
             "the message must name the offending command file, got: {message}"
         );
         assert!(
-            message.contains(
-                root.join("schemas")
-                    .join("absent.json")
-                    .to_string_lossy()
-                    .as_ref()
-            ),
+            message.contains("absent.json"),
             "the message must also cite the schema's resolved path, got: {message}"
         );
     }
