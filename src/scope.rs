@@ -1,25 +1,57 @@
 //! Resolution of layered configuration scopes.
 //!
-//! General -> local precedence: `/etc/npu`, then `$XDG_CONFIG_HOME/npu`
-//! (falling back to
-//! `$HOME/.config/npu`), then `./.npu`. Consumers (`config.rs`,
-//! `command.rs`) apply "last one wins" to this list.
+//! General -> local precedence, Unix: `/etc/npu`, then `$XDG_CONFIG_HOME/npu`
+//! (falling back to `$HOME/.config/npu`), then the project scope. Windows
+//! (see [`Platform::Windows`]): `%ProgramData%\npu`, then `%APPDATA%\npu`
+//! (falling back to `%USERPROFILE%\.config\npu`, then `$HOME\.config\npu`),
+//! then the project scope. Consumers (`config.rs`, `command.rs`) apply "last
+//! one wins" to this list.
 
 use std::path::PathBuf;
 
 /// `/etc/npu` root, hardcoded: this is not an environment variable.
 const ETC_ROOT: &str = "/etc/npu";
 
+/// Which OS family's scope layout applies: a parameter, never `cfg!`
+/// inside [`candidate_roots`]/[`user_scope_root`], so the Windows order is
+/// unit-tested from Linux — `cfg!` would make it untestable anywhere but a
+/// real Windows CI runner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Platform {
+    Unix,
+    Windows,
+}
+
+impl Platform {
+    /// The platform this process actually runs on — the only place
+    /// `cfg!(windows)` appears in this module.
+    #[must_use]
+    pub(crate) const fn current() -> Self {
+        if cfg!(windows) {
+            Platform::Windows
+        } else {
+            Platform::Unix
+        }
+    }
+}
+
 /// The environment inputs the resolution depends on, isolated so the
 /// core stays a pure, testable function without touching real variables.
 #[derive(Debug, Clone)]
 pub(crate) struct ScopeEnv {
-    /// `/etc/npu`.
+    /// `/etc/npu` (Unix system scope).
     pub etc: PathBuf,
-    /// `$XDG_CONFIG_HOME`, if set and non-empty.
+    /// `$XDG_CONFIG_HOME`, if set and non-empty (Unix user scope).
     pub xdg_config_home: Option<PathBuf>,
     /// `$HOME`, if set and non-empty.
     pub home: Option<PathBuf>,
+    /// `%ProgramData%`, if set and non-empty (Windows system scope).
+    pub program_data: Option<PathBuf>,
+    /// `%APPDATA%`, if set and non-empty (Windows user scope, first choice).
+    pub appdata: Option<PathBuf>,
+    /// `%USERPROFILE%`, if set and non-empty (Windows user scope, second
+    /// choice, when `%APPDATA%` is absent).
+    pub userprofile: Option<PathBuf>,
     /// Current directory.
     pub cwd: PathBuf,
     /// `--config-dir`/`NPU_CONFIG_DIR`, when given: the project scope
@@ -68,6 +100,9 @@ impl ScopeEnv {
             etc: PathBuf::from(ETC_ROOT),
             xdg_config_home: non_empty_env_var("XDG_CONFIG_HOME"),
             home: non_empty_env_var("HOME"),
+            program_data: non_empty_env_var("ProgramData"),
+            appdata: non_empty_env_var("APPDATA"),
+            userprofile: non_empty_env_var("USERPROFILE"),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             config_dir_override,
         }
@@ -146,28 +181,70 @@ pub(crate) fn project_root(env: &ScopeEnv) -> Option<PathBuf> {
     }
 }
 
+/// The user scope root: `env.xdg_config_home/npu` if set (replaces the
+/// `HOME`-derived path, does not add to it), else `env.home/.config/npu` —
+/// on [`Platform::Unix`]. On [`Platform::Windows`]: `env.appdata/npu` if
+/// set, else `env.userprofile/.config/npu` if set, else
+/// `env.home/.config/npu` — the same `.config` leaf as Unix's fallback,
+/// since `$HOME` there is a manual override (cf. this module's doc),
+/// not `%USERPROFILE%` read again under another name.
+fn user_scope_root(env: &ScopeEnv, platform: Platform) -> Option<PathBuf> {
+    match platform {
+        Platform::Unix => env.xdg_config_home.as_ref().map_or_else(
+            || {
+                env.home
+                    .as_ref()
+                    .map(|home| home.join(".config").join("npu"))
+            },
+            |xdg| Some(xdg.join("npu")),
+        ),
+        Platform::Windows => env
+            .appdata
+            .as_ref()
+            .map(|appdata| appdata.join("npu"))
+            .or_else(|| {
+                env.userprofile
+                    .as_ref()
+                    .map(|profile| profile.join(".config").join("npu"))
+            })
+            .or_else(|| {
+                env.home
+                    .as_ref()
+                    .map(|home| home.join(".config").join("npu"))
+            }),
+    }
+}
+
+/// The system scope root: `env.etc` (`/etc/npu`) on [`Platform::Unix`],
+/// `env.program_data/npu` on [`Platform::Windows`] — `None` there when
+/// `%ProgramData%` is unset, which `filter_existing_dirs` then simply never
+/// sees (no hardcoded Windows fallback path: unlike `/etc`, which this
+/// binary can assume exists on every Unix host, a Windows host without
+/// `%ProgramData%` set is not this module's problem to guess a default
+/// for).
+fn system_scope_root(env: &ScopeEnv, platform: Platform) -> Option<PathBuf> {
+    match platform {
+        Platform::Unix => Some(env.etc.clone()),
+        Platform::Windows => env.program_data.as_ref().map(|pd| pd.join("npu")),
+    }
+}
+
 /// Candidate roots, from MOST GENERAL to MOST LOCAL. Pure function:
 /// reads no environment variable, everything comes from `env`.
 ///
 /// Order:
-/// 1. `env.etc` (typically `/etc/npu`);
-/// 2. `env.xdg_config_home/npu` if `xdg_config_home` is `Some` (replaces the
-///    derivation from `HOME`, does not add to it); otherwise `env.home/.config/npu`
-///    if `home` is `Some`;
+/// 1. [`system_scope_root`];
+/// 2. [`user_scope_root`];
 /// 3. the project scope, if [`project_root`] finds one (an override, or a
 ///    `.npu` found by walking up from `env.cwd`).
 ///
 /// Deduplicates while preserving order: if two entries resolve to the same
 /// path (e.g. `cwd` is `/etc`), only the first occurrence is kept.
 #[must_use]
-pub(crate) fn candidate_roots(env: &ScopeEnv) -> Vec<PathBuf> {
-    let mut candidates = vec![env.etc.clone()];
+pub(crate) fn candidate_roots(env: &ScopeEnv, platform: Platform) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = system_scope_root(env, platform).into_iter().collect();
 
-    if let Some(xdg) = &env.xdg_config_home {
-        candidates.push(xdg.join("npu"));
-    } else if let Some(home) = &env.home {
-        candidates.push(home.join(".config").join("npu"));
-    }
+    candidates.extend(user_scope_root(env, platform));
 
     if let Some(project) = project_root(env) {
         candidates.push(project);
@@ -205,7 +282,10 @@ fn filter_existing_dirs(candidates: Vec<PathBuf>) -> Vec<PathBuf> {
 /// the list).
 #[must_use]
 pub fn roots(config_dir_override: Option<PathBuf>) -> Vec<PathBuf> {
-    filter_existing_dirs(candidate_roots(&ScopeEnv::from_env(config_dir_override)))
+    filter_existing_dirs(candidate_roots(
+        &ScopeEnv::from_env(config_dir_override),
+        Platform::current(),
+    ))
 }
 
 /// The project scope `npu doctor` reports (an `Ok` check naming it, added
@@ -230,6 +310,30 @@ mod tests {
             etc: PathBuf::from(etc),
             xdg_config_home: xdg_config_home.map(PathBuf::from),
             home: home.map(PathBuf::from),
+            program_data: None,
+            appdata: None,
+            userprofile: None,
+            cwd: PathBuf::from(cwd),
+            config_dir_override: None,
+        }
+    }
+
+    /// Same as [`env`], plus the three Windows-only variables.
+    #[allow(clippy::too_many_arguments)]
+    fn windows_env(
+        appdata: Option<&str>,
+        userprofile: Option<&str>,
+        home: Option<&str>,
+        program_data: Option<&str>,
+        cwd: &str,
+    ) -> ScopeEnv {
+        ScopeEnv {
+            etc: PathBuf::from(ETC_ROOT),
+            xdg_config_home: None,
+            home: home.map(PathBuf::from),
+            program_data: program_data.map(PathBuf::from),
+            appdata: appdata.map(PathBuf::from),
+            userprofile: userprofile.map(PathBuf::from),
             cwd: PathBuf::from(cwd),
             config_dir_override: None,
         }
@@ -256,7 +360,7 @@ mod tests {
             Some("/home/alice"),
             &work.display().to_string(),
         );
-        let roots = candidate_roots(&e);
+        let roots = candidate_roots(&e, Platform::Unix);
         assert_eq!(
             roots,
             vec![
@@ -276,7 +380,7 @@ mod tests {
             Some("/home/alice"),
             &work.display().to_string(),
         );
-        let roots = candidate_roots(&e);
+        let roots = candidate_roots(&e, Platform::Unix);
         assert_eq!(
             roots,
             vec![
@@ -291,7 +395,7 @@ mod tests {
     fn xdg_and_home_both_absent_yields_only_etc_and_cwd() {
         let work = work_dir_with_npu("xdg-and-home-absent");
         let e = env("/etc/npu", None, None, &work.display().to_string());
-        let roots = candidate_roots(&e);
+        let roots = candidate_roots(&e, Platform::Unix);
         assert_eq!(roots, vec![PathBuf::from("/etc/npu"), work.join(".npu")]);
     }
 
@@ -306,7 +410,7 @@ mod tests {
             Some("/home/alice"),
             &work.display().to_string(),
         );
-        let roots = candidate_roots(&e);
+        let roots = candidate_roots(&e, Platform::Unix);
         assert!(!roots.contains(&PathBuf::from("/home/alice/.config/npu")));
         assert_eq!(roots.iter().filter(|p| p.ends_with("npu")).count(), 2);
     }
@@ -320,7 +424,7 @@ mod tests {
             Some("/home/alice"),
             &work.display().to_string(),
         );
-        let roots = candidate_roots(&e);
+        let roots = candidate_roots(&e, Platform::Unix);
         assert_eq!(roots[0], PathBuf::from("/etc/npu"));
         assert_eq!(roots[1], PathBuf::from("/xdg/npu"));
         assert_eq!(roots[2], work.join(".npu"));
@@ -333,7 +437,7 @@ mod tests {
         let work = work_dir_with_npu("dup-xdg-collides-etc");
         let etc = PathBuf::from("/etc/npu");
         let e = env("/etc/npu", Some("/etc"), None, &work.display().to_string());
-        let roots = candidate_roots(&e);
+        let roots = candidate_roots(&e, Platform::Unix);
         assert_eq!(
             roots,
             vec![etc, work.join(".npu")],
@@ -352,7 +456,7 @@ mod tests {
             None,
             &dup_root.display().to_string(),
         );
-        let roots2 = candidate_roots(&e2);
+        let roots2 = candidate_roots(&e2, Platform::Unix);
         assert_eq!(roots2, vec![dup_root.clone(), dup_root.join(".npu")]);
     }
 
@@ -516,6 +620,105 @@ mod tests {
         let overridden = PathBuf::from("/somewhere/declared/.npu");
         e.config_dir_override = Some(overridden.clone());
         assert_eq!(project_root(&e), Some(overridden));
+    }
+
+    // -- Platform::Windows ---------------------------------------------------
+
+    // `user_scope_root`/`system_scope_root` directly, not `candidate_roots`:
+    // `candidate_roots` also runs `project_root`'s filesystem walk-up, and a
+    // Windows-style path (`C:\...`) has no meaning to `std::path` on the
+    // Linux host these tests run on — it is a single opaque, RELATIVE
+    // component, so climbing it would walk the test process's own real
+    // working directory instead. The Windows path SHAPE is exercised at the
+    // level these two pure functions actually decide it, independent of
+    // the walk-up.
+
+    #[test]
+    fn windows_order_is_program_data_then_appdata() {
+        let e = windows_env(
+            Some(r"C:\Users\alice\AppData\Roaming"),
+            Some(r"C:\Users\alice"),
+            Some(r"C:\Users\alice"),
+            Some(r"C:\ProgramData"),
+            r"C:\projects\x",
+        );
+        assert_eq!(
+            system_scope_root(&e, Platform::Windows),
+            Some(PathBuf::from(r"C:\ProgramData").join("npu"))
+        );
+        assert_eq!(
+            user_scope_root(&e, Platform::Windows),
+            Some(PathBuf::from(r"C:\Users\alice\AppData\Roaming").join("npu"))
+        );
+    }
+
+    #[test]
+    fn windows_appdata_absent_falls_back_to_userprofile_dot_config() {
+        let e = windows_env(
+            None,
+            Some(r"C:\Users\alice"),
+            Some(r"C:\Users\alice"),
+            Some(r"C:\ProgramData"),
+            r"C:\projects\x",
+        );
+        assert_eq!(
+            user_scope_root(&e, Platform::Windows),
+            Some(PathBuf::from(r"C:\Users\alice").join(".config").join("npu"))
+        );
+    }
+
+    #[test]
+    fn windows_appdata_and_userprofile_absent_falls_back_to_home_dot_config() {
+        let e = windows_env(
+            None,
+            None,
+            Some(r"C:\Users\alice"),
+            Some(r"C:\ProgramData"),
+            r"C:\projects\x",
+        );
+        assert_eq!(
+            user_scope_root(&e, Platform::Windows),
+            Some(PathBuf::from(r"C:\Users\alice").join(".config").join("npu"))
+        );
+    }
+
+    #[test]
+    fn windows_program_data_absent_omits_the_system_scope_without_a_hardcoded_fallback() {
+        let e = windows_env(
+            Some(r"C:\Users\alice\AppData\Roaming"),
+            None,
+            None,
+            None,
+            r"C:\projects\x",
+        );
+        assert_eq!(system_scope_root(&e, Platform::Windows), None);
+    }
+
+    #[test]
+    fn windows_candidate_roots_orders_program_data_before_appdata_without_touching_project_root() {
+        // A REAL isolated cwd (never a bare Windows-style string): proves
+        // `candidate_roots(Platform::Windows)` wires `system_scope_root`
+        // and `user_scope_root` in the right order, with the project scope
+        // walk-up genuinely finding nothing here.
+        let cwd = fixture_dir("windows-candidate-roots");
+        // `home` pinned to `cwd` itself: bounds the walk-up so it never
+        // climbs into this repository's OWN real `.npu`/`.git` above
+        // `target/test-fixtures` — the point of this test is the ORDER of
+        // the two Windows scope roots, not the walk-up.
+        let e = windows_env(
+            Some(r"C:\Users\alice\AppData\Roaming"),
+            None,
+            Some(&cwd.display().to_string()),
+            Some(r"C:\ProgramData"),
+            &cwd.display().to_string(),
+        );
+        assert_eq!(
+            candidate_roots(&e, Platform::Windows),
+            vec![
+                PathBuf::from(r"C:\ProgramData").join("npu"),
+                PathBuf::from(r"C:\Users\alice\AppData\Roaming").join("npu"),
+            ]
+        );
     }
 
     #[test]

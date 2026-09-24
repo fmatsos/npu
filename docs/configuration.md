@@ -65,10 +65,11 @@ $ npu --config-dir /path/to/.npu config models
 
 `npu doctor` reports the project scope it actually resolved, as an `Ok` line naming the directory.
 
-> [!WARNING]
-> On Windows, only `.\.npu` works out of the box. `/etc/npu` is a hard-coded Unix path, and the
-> user scope is read from `$HOME`, never from `%USERPROFILE%`. Set `HOME` or `XDG_CONFIG_HOME`
-> explicitly if you want a user-level scope.
+On Windows, the same three tiers use their own environment variables instead:
+`%ProgramData%\npu` (system-wide; omitted entirely when `%ProgramData%` is unset — there is no
+hardcoded fallback path for it), then `%APPDATA%\npu` if set, else `%USERPROFILE%\.config\npu` if
+set, else `%HOME%\.config\npu` as a last resort (a manual override, not `%USERPROFILE%` read again
+under another name).
 
 This lets a repository ship its own `.npu/` with project-specific commands, model aliases and
 backend overrides, without touching the machine or the user setup.
