@@ -591,6 +591,10 @@ at the same path. It exits `1` without replacing anything when the manifest, dow
 platform detection, or replacement fails. The executable's directory must therefore be writable
 by the current user.
 
+The manifest and the binaries come from the same GitHub release: the SHA-256 check protects
+against a corrupted download, not against a compromised release. A detached signature is
+planned.
+
 Like `--version`, `update` does not depend on the AI configuration and remains available in degraded
 mode. After a successful update, the **new** binary is asked whether it accepts your configuration;
 if it does not, a warning on stderr points to the changelog and the documentation — the update

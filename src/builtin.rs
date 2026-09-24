@@ -748,7 +748,7 @@ pub fn describe(
         .map_err(|err| crate::Error::Config(format!("description serialization failed: {err}")))
 }
 
-/// Extracts `(host, port)` from a base URL "http(s)://host[:port][/...]".
+/// Extracts `(host, port)` from a base URL `http(s)://host[:port][/...]`.
 /// Falls back to the scheme's implicit
 /// port (80 for `http`, 443 for `https`) when no explicit port is
 /// present. PURELY SYNTACTIC: never touches the network, only the

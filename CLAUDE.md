@@ -186,7 +186,8 @@ stripped by the same rule as `clap`'s. The feature and `anstream` together
 cost 90 312 bytes (8 676 880 -> 8 767 192) and six crates (112 -> 118).
 
 Adding one is a measured decision: check the binary size and the crate count
-before and after, and record the numbers.
+before and after, and record the numbers. A version bump of an existing
+dependency (Dependabot's weekly PRs) needs no measurement.
 
 At 0.5.1: 205 packages in `Cargo.lock`, 9 015 408 bytes release binary on
 x86_64 Linux.
