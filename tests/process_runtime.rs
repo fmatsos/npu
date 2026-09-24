@@ -21,6 +21,9 @@
 //! the machine's real configuration or leave a record in the developer's
 //! `~/.local/state`.
 
+// The process runtime is rejected at load time on Windows, so there is
+// nothing to drive end to end there.
+#![cfg(unix)]
 #![allow(clippy::expect_used)] // tolerated in tests (cf. Cargo.toml [lints.clippy]).
 
 use std::io::Write as _;
