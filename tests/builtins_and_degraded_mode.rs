@@ -49,7 +49,7 @@ fn fixture_dir(name: &str) -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target")
         .join("test-fixtures")
-        .join(format!("phase5-{name}-{n}"));
+        .join(format!("builtins-{name}-{n}"));
     std::fs::create_dir_all(&dir).expect("creating the fixture directory");
     dir
 }
