@@ -264,7 +264,7 @@ pub fn tune(
 fn append_calibration(report: &mut String) {
     let _ = write!(
         report,
-        "\n\ncalibration (vendor::openvino::graph): activation_tenths={} \
+        "\n\ncalibration: activation_tenths={} \
          activation_tenths_long={} long_context={} step={}",
         crate::vendor::openvino::graph::ACTIVATION_TENTHS,
         crate::vendor::openvino::graph::ACTIVATION_TENTHS_LONG,

@@ -432,7 +432,7 @@ qwen3-4b-instruct-gpu            GPU       262144     144KB    5376    1792     
 qwen3-8b                         NPU        40960     144KB     512     512       5.9GB
 qwen3-8b-gpu                     GPU        40960     144KB    5376    1792       5.9GB
 
-calibration (vendor::openvino::graph): activation_tenths=62 activation_tenths_long=90 long_context=24576 step=1024
+calibration: activation_tenths=62 activation_tenths_long=90 long_context=24576 step=1024
 ```
 
 `--dry-run` additionally prints the calibration constants the NPU column above was computed
