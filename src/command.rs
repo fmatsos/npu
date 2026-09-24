@@ -1898,9 +1898,11 @@ mod tests {
         std::fs::write(&schema_path, r#"{"type": "object"}"#).expect("failed to write schema");
 
         let source = format!(
-            "---\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\nschema = '{}'\n\
+            "---\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\nschema = {}\n\
              ---\nprompt\n",
-            schema_path.display()
+            // Quoted by `toml` itself: a Windows backslash or an apostrophe
+            // in the checkout path must not break the fixture.
+            toml::Value::String(schema_path.display().to_string())
         );
         let spec = parse(&source, vec!["x".to_string()], &test_scope_root())
             .expect("an absolute schema path should resolve without depending on the scope root");
@@ -2014,7 +2016,9 @@ mod tests {
             "the message must name the offending command file, got: {message}"
         );
         assert!(
-            message.contains("absent.json"),
+            // Joined the way `resolve_schema_path` joins it, so the
+            // separators match on Windows too.
+            message.contains(&root.join("schemas/absent.json").display().to_string()),
             "the message must also cite the schema's resolved path, got: {message}"
         );
     }
