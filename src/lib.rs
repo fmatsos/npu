@@ -345,10 +345,23 @@ fn run_backend_lifecycle(
 /// `clap_complete` engine reads that same `hide` flag to decide what to
 /// offer, so completing through the hidden tree would silently drop every
 /// built-in group (`backend`, `config`, ...) from `npu <TAB>`.
+/// The command line being completed. A dynamic completion request is
+/// `npu -- npu <words…>`: the first `--` is the completion transport, not
+/// the argument terminator, so it is dropped here before the raw scanners
+/// (which stop at `--`) read the words. Anything that is not a completion
+/// request is returned as is.
+fn completed_line(args: impl IntoIterator<Item = String>) -> Vec<String> {
+    let args: Vec<String> = args.into_iter().collect();
+    match args.iter().position(|arg| arg == "--") {
+        Some(transport) => args[transport + 1..].to_vec(),
+        None => args,
+    }
+}
+
 fn complete_env() -> clap_complete::CompleteEnv<'static, impl Fn() -> clap::Command> {
     clap_complete::CompleteEnv::with_factory(|| {
-        let config_dir_override =
-            scope::config_dir_from_args(std::env::args()).or_else(scope::config_dir_env_var);
+        let config_dir_override = scope::config_dir_from_args(completed_line(std::env::args()))
+            .or_else(scope::config_dir_env_var);
         let roots = scope::roots(config_dir_override);
         let specs = config::load_scopes(&roots)
             .and_then(|_| command::discover_scopes(&roots))
@@ -466,6 +479,15 @@ fn first_word<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
 #[cfg(test)]
 mod first_word_tests {
     use super::first_word;
+
+    #[test]
+    fn a_completion_request_keeps_the_config_dir_of_the_completed_line() {
+        let argv = ["npu", "--", "npu", "--config-dir", "/custom/.npu", "cl"].map(String::from);
+        assert_eq!(
+            crate::scope::config_dir_from_args(super::completed_line(argv)),
+            Some(std::path::PathBuf::from("/custom/.npu"))
+        );
+    }
 
     fn first(args: &[&str]) -> Option<String> {
         first_word(args.iter().map(ToString::to_string))
