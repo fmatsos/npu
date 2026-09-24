@@ -92,6 +92,15 @@ fn build_clap_node(name: &str, node: &CommandNode<'_>) -> clap::Command {
             for (arg_name, arg_spec) in &spec.args {
                 cmd = cmd.arg(build_declared_arg(arg_name, arg_spec));
             }
+            cmd = cmd.arg(
+                clap::Arg::new("dry-run")
+                    .long("dry-run")
+                    .action(clap::ArgAction::SetTrue)
+                    .help(
+                        "Print the request that would be sent (url, headers, body) instead of \
+                         sending it",
+                    ),
+            );
         }
         None => {
             cmd = cmd.arg_required_else_help(true);
@@ -350,7 +359,12 @@ mod tests {
         let stdin_only = cli
             .find_subcommand("commit-message")
             .expect("commit-message must exist");
-        assert!(stdin_only.get_arguments().next().is_none());
+        assert!(
+            stdin_only
+                .get_arguments()
+                .all(|arg| arg.get_id() == "dry-run" || arg.get_id() == "help"),
+            "a business leaf carries only its own args, plus dry-run and the automatic help flag"
+        );
 
         let classify = cli
             .find_subcommand("classify")
@@ -496,7 +510,7 @@ mod tests {
         let names: Vec<&str> = x
             .get_arguments()
             .map(|arg| arg.get_id().as_str())
-            .filter(|id| *id != "help")
+            .filter(|id| *id != "help" && *id != "dry-run")
             .collect();
 
         assert_eq!(names, vec!["alpha", "zebra"]);

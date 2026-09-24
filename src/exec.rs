@@ -143,6 +143,61 @@ pub(crate) fn chat_with_fallback(
         })
 }
 
+/// The value every redacted header shows instead of its real value: a
+/// `--dry-run` report is meant to be pasted into a bug report or an agent's
+/// transcript, and a header value (an API key, a bearer token) must never
+/// leak through it.
+const REDACTED_HEADER_VALUE: &str = "<redacted>";
+
+/// `npu <command> --dry-run`'s whole job: build the exact request `chat`
+/// would send to the PRIMARY model (never the fallback — a dry run shows
+/// what would be tried first), through the same [`crate::backend::build_request`]
+/// constructor `chat` itself uses, then print it as JSON and return without
+/// ever reaching the network.
+///
+/// Two things a real call would do are deliberately skipped:
+/// - the runtime is never resolved (`runtime::resolve_base_url`): a
+///   `port = "auto"` backend's `base_url` is shown with its
+///   `{{ backend.port }}` placeholder exactly as declared, since resolving
+///   it means asking Docker, which a dry run must never do;
+/// - header VALUES are redacted (`REDACTED_HEADER_VALUE`): only their names
+///   are shown, same discipline as the "POST ..." info log line in
+///   `backend::chat`.
+fn print_dry_run(
+    model: &crate::config::Model,
+    backend: &crate::config::Backend,
+    messages: &[crate::backend::Message],
+    schema: Option<&serde_json::Value>,
+    spec: &crate::command::CommandSpec,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> crate::Result<()> {
+    let headers = crate::config::resolve_headers(backend, env)?;
+    let generation = crate::config::Generation::merged(&model.generation, spec.generation.as_ref());
+    let schema = schema.filter(|_| backend.structured_output);
+    let request = crate::backend::Request {
+        messages,
+        schema,
+        on_token: None,
+        headers: &headers,
+        generation: &generation,
+    };
+    let prepared = crate::backend::build_request(backend, model, &backend.base_url, &request)?;
+
+    let redacted_headers: std::collections::BTreeMap<&str, &str> = prepared
+        .headers
+        .keys()
+        .map(|name| (name.as_str(), REDACTED_HEADER_VALUE))
+        .collect();
+
+    let report = serde_json::json!({
+        "url": prepared.url,
+        "headers": redacted_headers,
+        "body": prepared.body,
+    });
+    println!("{report}");
+    Ok(())
+}
+
 /// Strips one leading `<think>...</think>` block from `content` (when
 /// `enabled`) BEFORE the rest of the output pipeline (fences, parsing,
 /// schema, trim/`max_lines`) runs, and logs the removed length — never its
@@ -269,6 +324,7 @@ pub(crate) fn execute_business_command(
     ) -> crate::Result<String>,
     stdout_is_terminal: bool,
 ) -> crate::Result<()> {
+    let dry_run = leaf_matches.get_flag("dry-run");
     let (model, backend) = config.resolve(&spec.model)?;
     logger.info(&format!(
         "command \"{}\" -> model \"{}\" (backend \"{}\", operation \"{}\") from {}",
@@ -367,6 +423,10 @@ pub(crate) fn execute_business_command(
     // `backend::tests::build_chat_request_without_generation_options` and
     // the e2e test asserting the exact request bytes.
     let messages = build_messages(spec, &prompt, &args, env, &schemas)?;
+
+    if dry_run {
+        return print_dry_run(model, backend, &messages, output_schema.as_ref(), spec, env);
+    }
 
     // The backend's raw response is never
     // written as-is to stdout. `output::finalize` applies the declared
