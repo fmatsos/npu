@@ -702,6 +702,21 @@ $ echo "texte" | npu classify --dry-run
 unrecognized flag. `dry-run` is consequently a reserved argument name: a command declaring
 `[args."dry-run"]` is rejected at load time, naming the file.
 
+### `--model`
+
+Every business command leaf also accepts `--model <ID>`, to use a model other than the command
+file's own for this one call. The override replaces `spec.model` before the model is resolved and
+before the input is read: an unknown id fails exactly like an unknown model in the command file
+would (`Error::Config`, exit `2`, the id named in the message), and nothing is sent to the network.
+
+```console
+$ echo "texte" | npu classify --model qwen-fast --dry-run
+{"body":{"messages":[{"content":"Classify: texte\n","role":"user"}],"model":"OpenVINO/Qwen3-8B-int4-ov"},"headers":{},"url":"http://127.0.0.1:8000/v3/chat/completions"}
+```
+
+`model` is consequently a reserved argument name, for the same reason as `dry-run`: a command
+declaring `[args.model]` is rejected at load time, naming the file.
+
 ### Progress indicators
 
 On a terminal, `npu` draws a spinner on stderr while it waits for a model (relabelled when the

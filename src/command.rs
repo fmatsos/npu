@@ -415,13 +415,13 @@ fn collect_markdown_files(
 /// flags `clap` handles itself; an argument named `FILE` would collide
 /// with the positional `FILE` argument that `cli::mod` (`build_clap_node`)
 /// already adds for commands whose input mode accepts a file
-/// (`InputMode::File`/`StdinOrFile`); `dry-run` would collide with the
-/// `--dry-run` flag `cli::mod` (`build_clap_node`) adds to every business
-/// command leaf. Reject here, at load time,
+/// (`InputMode::File`/`StdinOrFile`); `dry-run` and `model` would collide
+/// with the `--dry-run` and `--model` flags `cli::mod` (`build_clap_node`)
+/// adds to every business command leaf. Reject here, at load time,
 /// rather than letting the error surface (much less clearly, or even
 /// panicking `clap::Command::arg` on a duplicate id) from the clap tree's
 /// construction downstream, in `cli::mod`.
-const RESERVED_ARG_NAMES: [&str; 5] = ["help", "version", "FILE", "verbose", "dry-run"];
+const RESERVED_ARG_NAMES: [&str; 6] = ["help", "version", "FILE", "verbose", "dry-run", "model"];
 
 /// Short letter reserved by `clap`: every `Command` gets an automatic
 /// `-h`/`--help` flag, whether or not `disable_help_flag` is called —
@@ -1483,6 +1483,18 @@ mod tests {
 
         assert!(matches!(err, crate::Error::Config(_)));
         assert!(err.to_string().contains("dry-run"));
+    }
+
+    #[test]
+    fn arg_named_model_is_config_error() {
+        let source = "---\nmodel = \"qwen-fast\"\n\n[args.model]\nrequired = true\n---\nHello {{ args.model }}\n";
+
+        let err = parse(source, vec!["x".to_string()], std::path::Path::new(".")).expect_err(
+            "\"model\" collides with the --model override every business leaf declares",
+        );
+
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("model"));
     }
 
     #[test]
