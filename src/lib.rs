@@ -23,6 +23,7 @@ pub mod scope;
 pub mod style;
 pub mod tune;
 pub mod updater;
+pub mod vendor;
 
 pub use error::{Error, Result};
 

@@ -25,11 +25,8 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 
-// ponytail: `main`, not the latest release — `pip install optimum-intel`
-// may lag it by an architecture or two, which `npu-export`'s CPU check
-// catches. Pin a release tag if that ever misleads someone.
-pub const ARCHITECTURES_URL: &str = "https://raw.githubusercontent.com/huggingface/optimum-intel/main/optimum/exporters/openvino/model_configs.py";
-const HUB_API: &str = "https://huggingface.co/api/models";
+use crate::vendor::huggingface::{HUB_API, encode};
+use crate::vendor::openvino::registry::{ARCHITECTURES_URL, exportable_architectures};
 
 // ponytail: INT4 is half a byte per parameter; embeddings and the head stay
 // wider, measured at about +20 % on the Qwen3 exports. Refine per
@@ -279,55 +276,6 @@ impl std::fmt::Debug for World<'_> {
             .field("total_ram", &self.total_ram)
             .finish_non_exhaustive()
     }
-}
-
-/// The architectures `optimum-intel` registers for `task`, parsed from its
-/// `model_configs.py`: every `@register_in_tasks_manager("<type>", ...)`
-/// whose arguments name `"<task>"` or `"<task>-with-past"`.
-fn exportable_architectures(source: &str, task: &str) -> BTreeSet<String> {
-    const CALL: &str = "@register_in_tasks_manager(";
-    let wanted = [format!("\"{task}\""), format!("\"{task}-with-past\"")];
-    let mut found = BTreeSet::new();
-    let mut rest = source;
-    while let Some(at) = rest.find(CALL) {
-        rest = &rest[at + CALL.len()..];
-        let mut depth = 1;
-        let end = rest
-            .char_indices()
-            .find(|&(_, c)| {
-                match c {
-                    '(' => depth += 1,
-                    ')' => depth -= 1,
-                    _ => {}
-                }
-                depth == 0
-            })
-            .map_or(rest.len(), |(i, _)| i);
-        let args = &rest[..end];
-        let name = args
-            .trim_start()
-            .strip_prefix('"')
-            .and_then(|s| s.split('"').next());
-        if let Some(name) = name
-            && wanted.iter().any(|w| args.contains(w.as_str()))
-        {
-            found.insert(name.to_string());
-        }
-    }
-    found
-}
-
-/// Percent-encodes a query-string value.
-fn encode(value: &str) -> String {
-    value
-        .bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                char::from(b).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
 }
 
 fn search_url(query: &Query) -> String {
@@ -725,35 +673,6 @@ pub fn discover(
     Ok(format_report(&found, llmfit.is_some()))
 }
 
-/// The real [`World::fetch`]: a GET through `ureq`, `Error::Backend` on any
-/// failure, naming the URL.
-///
-/// # Errors
-///
-/// `Error::Backend` when the request fails or the status is not 2xx.
-pub fn fetch(url: &str, token: Option<&str>) -> crate::Result<String> {
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(60)))
-        .build()
-        .new_agent();
-    let mut request = agent
-        .get(url)
-        .header("User-Agent", concat!("npu/", env!("CARGO_PKG_VERSION")));
-    if let Some(token) = token {
-        request = request.header("Authorization", format!("Bearer {token}"));
-    }
-    let failed =
-        |e: &dyn std::fmt::Display| crate::Error::backend(format!("GET {url} failed: {e}"));
-    request
-        .call()
-        .map_err(|e| failed(&e))?
-        .body_mut()
-        .with_config()
-        .limit(64 * 1024 * 1024)
-        .read_to_string()
-        .map_err(|e| failed(&e))
-}
-
 /// Whether the host exposes an Intel NPU: an `accel*` node under
 /// `/dev/accel`, which is what OVMS's `--device /dev/accel` passes through.
 #[must_use]
@@ -768,32 +687,6 @@ pub fn host_has_npu() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const REGISTRY: &str = r#"
-@register_in_tasks_manager(
-    "qwen3",
-    *["text-generation", "text-generation-with-past"],
-    library_name="transformers",
-)
-class Qwen3OpenVINOConfig(Base):
-    pass
-
-@register_in_tasks_manager("bert", *["feature-extraction", "text2text-generation"])
-class BertConfig(Base):
-    pass
-
-@register_in_tasks_manager("llama", *COMMON_TEXT_GENERATION_TASKS, "text-generation-with-past")
-class LlamaConfig(Base):
-    pass
-"#;
-
-    #[test]
-    fn only_architectures_registered_for_the_task_are_kept() {
-        let found = exportable_architectures(REGISTRY, "text-generation");
-        assert_eq!(found.into_iter().collect::<Vec<_>>(), ["llama", "qwen3"]);
-        let features = exportable_architectures(REGISTRY, "feature-extraction");
-        assert_eq!(features.into_iter().collect::<Vec<_>>(), ["bert"]);
-    }
 
     fn query() -> Query {
         Query {
