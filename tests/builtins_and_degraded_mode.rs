@@ -72,6 +72,8 @@ fn run_npu(cwd: &Path, xdg_config_home: &Path, args: &[&str]) -> Output {
         .current_dir(cwd)
         .env("HOME", cwd)
         .env("XDG_CONFIG_HOME", xdg_config_home)
+        // The user scope root on Windows.
+        .env("APPDATA", xdg_config_home)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -300,6 +300,7 @@ fn run_npu(scope: &Path, args: &[&str], stdin_data: &str) -> Output {
         // forbidden here).
         .env("HOME", scope)
         .env_remove("XDG_CONFIG_HOME")
+        .env_remove("APPDATA")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -388,6 +389,8 @@ fn run_npu_xdg(cwd: &Path, xdg_config_home: &Path, args: &[&str], stdin_data: &s
         .current_dir(cwd)
         .env("HOME", cwd)
         .env("XDG_CONFIG_HOME", xdg_config_home)
+        // The user scope root on Windows.
+        .env("APPDATA", xdg_config_home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
