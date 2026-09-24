@@ -1481,6 +1481,17 @@ mod tests {
     }
 
     #[test]
+    fn post_update_check_parses_against_the_real_tree() {
+        let cli = sectioned_help(add_builtins(build_cli(&[])), false);
+        assert!(
+            cli.try_get_matches_from(
+                std::iter::once("npu").chain(POST_UPDATE_CHECK.iter().copied())
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn build_cli_merges_commands_sharing_a_prefix() {
         let specs = vec![
             spec(&["commit-message"], InputMode::Stdin),
@@ -1844,6 +1855,11 @@ fn help(cli: clap::Command, leaf_matches: &clap::ArgMatches) -> Result<i32> {
     }
 }
 
+/// The invocation `update` hands the freshly installed binary to judge the
+/// configuration: `config models` loads every scope without touching the
+/// network, so its only failure is a configuration error.
+const POST_UPDATE_CHECK: &[&str] = &["--verbose", "error", "config", "models"];
+
 /// Runs `npu update`, then asks the NEW binary whether it accepts the
 /// configuration and, if not, points the user at the changelog and the docs.
 fn update(logger: log::Logger) -> Result<i32> {
@@ -1856,7 +1872,7 @@ fn update(logger: log::Logger) -> Result<i32> {
         // error (`2`) is reported; the update itself has already succeeded.
         let rejected = std::env::current_exe()
             .ok()
-            .and_then(|exe| runtime::exit_code_of(&exe, &["--verbose", "error", "models"]))
+            .and_then(|exe| runtime::exit_code_of(&exe, POST_UPDATE_CHECK))
             == Some(Error::Config(String::new()).exit_code());
         if rejected {
             logger.warn(&format!(
