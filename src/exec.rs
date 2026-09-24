@@ -45,7 +45,7 @@ pub(crate) fn chat_with_fallback(
     backend: &crate::config::Backend,
     ask: &Ask<'_>,
     logger: crate::log::Logger,
-) -> crate::Result<(String, String)> {
+) -> crate::Result<(crate::backend::ChatAnswer, String)> {
     let Ask {
         prompt,
         schema,
@@ -158,6 +158,8 @@ pub(crate) fn execute_business_command(
     ) -> crate::Result<String>,
     stdout_is_terminal: bool,
 ) -> crate::Result<()> {
+    use crate::error::InFile;
+
     let (model, backend) = config.resolve(&spec.model)?;
     logger.info(&format!(
         "command \"{}\" -> model \"{}\" (backend \"{}\", operation \"{}\") from {}",
@@ -262,7 +264,30 @@ pub(crate) fn execute_business_command(
         schema: output_schema.as_ref(),
         stream: streaming.then_some(&print_token as TokenSink<'_>),
     };
-    let (raw_output, answered_by) = chat_with_fallback(config, model, backend, &ask, logger)?;
+    let (answer, answered_by) = chat_with_fallback(config, model, backend, &ask, logger)?;
+
+    // Truncation is a defect of the ANSWER, not of the prompt: it must never
+    // trigger the fallback (that retry exists for a prompt too long, cf.
+    // `chat_with_fallback`'s doc), and it must be checked before anything is
+    // written to stdout on a pipe. On a terminal in streaming mode, tokens
+    // already reached the screen through `print_token` — that is accepted
+    // (cf. this crate's CLAUDE.md, spec A4); the exit code is still 4 and
+    // stdout (the byte stream a calling agent reads) never receives the
+    // framed/closing output below.
+    if answer.finish_reason.as_deref() == Some("length") && !spec.output.allow_truncated {
+        let max_tokens = model.generation.max_tokens.map_or_else(
+            || "server default".to_string(),
+            |max_tokens| max_tokens.to_string(),
+        );
+        return Err(crate::Error::output(format!(
+            "model \"{}\" answered with finish_reason \"length\" (truncated at max_tokens = \
+             {max_tokens}); set [output].allow_truncated = true to accept a truncated answer",
+            model.id
+        )))
+        .in_file(&spec.file);
+    }
+
+    let raw_output = answer.content;
     let output = crate::output::finalize(&spec.output, &raw_output, &spec.file)?;
     logger.info(&format!(
         "output contract honoured ({}): {} characters written to stdout",
@@ -442,7 +467,7 @@ mod tests {
         )
         .expect("the fallback must answer");
 
-        assert_eq!(output, "from the fallback");
+        assert_eq!(output.content, "from the fallback");
         assert_eq!(answered_by, "big");
         primary_server.join().expect("primary stub thread");
         fallback_server.join().expect("fallback stub thread");
@@ -573,5 +598,129 @@ mod tests {
 
         assert!(matches!(err, Error::Config(_)));
         assert!(err.to_string().contains("NPU_TEST_UNSET"));
+    }
+
+    /// Spec: `chat_with_fallback` streaming a couple of deltas (so `emitted`
+    /// is set) and then failing must return `Err(Backend)` WITHOUT ever
+    /// attempting the fallback: the fallback backend below is unreachable,
+    /// so an attempt to contact it would fail differently and its id would
+    /// show up in the message (cf. the "failed too" phrasing built by
+    /// `chat_with_fallback` when the fallback IS attempted).
+    #[test]
+    fn chat_with_fallback_does_not_retry_once_a_token_has_been_emitted() {
+        let (primary_url, primary_server) = stub_backend(
+            "200 OK",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Bon\"}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{\"content\":\"jour\"}}]}\n\n\
+             data: {\"error\":{\"message\":\"boom mid-stream\"}}\n\n",
+        );
+
+        let mut config = config::Config::default();
+        config
+            .backends
+            .insert("npu".to_string(), backend_at("npu", primary_url));
+        // Deliberately unreachable: if `chat_with_fallback` attempted it
+        // regardless of `emitted`, the failure message would differ from a
+        // plain primary-only failure (it would name "big" too).
+        config.backends.insert(
+            "gpu".to_string(),
+            backend_at("gpu", "http://127.0.0.1:1".to_string()),
+        );
+        config
+            .models
+            .insert("small".to_string(), model_on("small", "npu", Some("big")));
+        config
+            .models
+            .insert("big".to_string(), model_on("big", "gpu", None));
+
+        let seen = std::cell::RefCell::new(Vec::new());
+        let sink = |_: &str, token: &str| seen.borrow_mut().push(token.to_string());
+
+        let (model, backend) = config.resolve("small").expect("the fixture must resolve");
+        let err = chat_with_fallback(
+            &config,
+            model,
+            backend,
+            &Ask {
+                prompt: "hello",
+                schema: None,
+                stream: Some(&sink),
+            },
+            log::Logger::new(log::Level::Error),
+        )
+        .expect_err("a mid-stream error after emitted tokens must stay a failure");
+
+        assert!(matches!(err, Error::Backend(_)));
+        assert_eq!(err.exit_code(), 3);
+        assert_eq!(*seen.borrow(), ["Bon", "jour"]);
+        let message = err.to_string();
+        assert!(
+            !message.contains("big") && !message.contains("failed too"),
+            "the fallback must not have been attempted once a token was emitted, got: {message}"
+        );
+        primary_server.join().expect("primary stub thread");
+    }
+
+    /// Spec A4: a streamed answer whose stream ends with
+    /// `finish_reason = "length"` must fail with `Error::Output` (exit 4)
+    /// even when tokens already reached a terminal (`stdout_is_terminal =
+    /// true`), naming the model id; `allow_truncated` is left at its
+    /// default (`false`) by `OutputSpec::default()`.
+    #[test]
+    fn a_truncated_streamed_answer_fails_with_output_error_even_on_a_terminal() {
+        let (url, server) = stub_backend(
+            "200 OK",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n\
+             data: [DONE]\n\n",
+        );
+
+        let mut config = config::Config::default();
+        config
+            .backends
+            .insert("b".to_string(), backend_at("b", url));
+        config
+            .models
+            .insert("qwen-fast".to_string(), model_on("qwen-fast", "b", None));
+
+        let specs = vec![crate::command::CommandSpec {
+            path: vec!["x".to_string()],
+            description: "desc x".to_string(),
+            model: "qwen-fast".to_string(),
+            input: crate::command::InputMode::Stdin,
+            prompt: "{{ input }}".to_string(),
+            args: std::collections::BTreeMap::new(),
+            output: crate::output::OutputSpec::default(),
+            schemas: std::collections::BTreeMap::new(),
+            file: std::path::PathBuf::new(),
+        }];
+        let cli = crate::cli::build_cli(&specs);
+        let matches = cli
+            .try_get_matches_from(["npu", "x"])
+            .expect("the command line must be accepted");
+        let (_, leaf_matches) = crate::cli::selected_path(&matches);
+
+        let env = |_: &str| None;
+        let read_input =
+            |_: &crate::command::InputMode, _: Option<&std::path::Path>| Ok("hi".to_string());
+
+        let err = execute_business_command(
+            &specs[0],
+            &config,
+            leaf_matches,
+            log::Logger::new(log::Level::Error),
+            &env,
+            &read_input,
+            true,
+        )
+        .expect_err("a truncated answer must fail even when streamed to a terminal");
+
+        assert!(matches!(err, Error::Output(_)));
+        assert_eq!(err.exit_code(), 4);
+        assert!(
+            err.to_string().contains("qwen-fast"),
+            "the message must name the model, got: {err}"
+        );
+        server.join().expect("stub server thread");
     }
 }

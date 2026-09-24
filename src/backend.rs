@@ -51,7 +51,7 @@ pub fn chat(
     base_url: &str,
     request: &Request<'_>,
     logger: crate::log::Logger,
-) -> crate::Result<String> {
+) -> crate::Result<ChatAnswer> {
     let Request {
         prompt,
         schema,
@@ -116,19 +116,25 @@ pub fn chat(
 
     let status = response.status();
     if let (Some(on_token), true) = (on_token, status.is_success()) {
-        let answer = read_stream(response.body_mut().as_reader(), on_token).map_err(|err| {
-            backend_err(format!(
-                "reading the streamed response from backend \"{}\" ({url}) failed: {err}",
-                backend.id
-            ))
-        })?;
+        let stream_result =
+            read_stream(response.body_mut().as_reader(), on_token).map_err(|err| {
+                backend_err(format!(
+                    "reading the streamed response from backend \"{}\" ({url}) failed: {err}",
+                    backend.id
+                ))
+            })?;
         logger.info(&format!(
-            "backend \"{}\" streamed {status} in {} ms, {} characters",
+            "backend \"{}\" streamed {status} in {} ms, {} characters{}",
             backend.id,
             started.elapsed().as_millis(),
-            answer.chars().count()
+            stream_result.content.chars().count(),
+            usage_suffix(stream_result.usage.as_ref())
         ));
-        return Ok(answer);
+        return Ok(ChatAnswer {
+            content: stream_result.content,
+            finish_reason: stream_result.finish_reason,
+            usage: stream_result.usage,
+        });
     }
     let response_text = response.body_mut().read_to_string().map_err(|err| {
         backend_err(format!(
@@ -137,54 +143,166 @@ pub fn chat(
         ))
     })?;
 
-    logger.info(&format!(
-        "backend \"{}\" answered {status} in {} ms, {} characters",
-        backend.id,
-        started.elapsed().as_millis(),
-        response_text.chars().count()
-    ));
+    handle_non_streamed_response(
+        &backend.id,
+        &url,
+        status,
+        &response_text,
+        started.elapsed(),
+        logger,
+    )
+}
+
+/// Handles the non-streamed tail of [`chat`]: status check, JSON parsing,
+/// content/`finish_reason`/`usage` extraction and the "answered" info log.
+/// Split out of `chat` only to keep it under the crate's line-count lint —
+/// no behavior is different from what used to be inlined there.
+fn handle_non_streamed_response(
+    backend_id: &str,
+    url: &str,
+    status: ureq::http::StatusCode,
+    response_text: &str,
+    elapsed: std::time::Duration,
+    logger: crate::log::Logger,
+) -> crate::Result<ChatAnswer> {
+    let backend_err = |message: String| {
+        crate::Error::Backend(crate::error::BackendError::at_url(backend_id, url, message))
+    };
 
     if !status.is_success() {
+        logger.info(&format!(
+            "backend \"{backend_id}\" answered {status} in {} ms, {} characters",
+            elapsed.as_millis(),
+            response_text.chars().count()
+        ));
         return Err(crate::Error::Backend(
             crate::error::BackendError::at_status(
-                &backend.id,
-                &url,
+                backend_id,
+                url,
                 status.as_u16(),
                 format!(
-                    "backend \"{}\" ({url}) responded with status {status}: {}",
-                    backend.id,
-                    truncate(&response_text, ERROR_BODY_TRUNCATE_AT)
+                    "backend \"{backend_id}\" ({url}) responded with status {status}: {}",
+                    truncate(response_text, ERROR_BODY_TRUNCATE_AT)
                 ),
             ),
         ));
     }
 
-    let response_json: Value = serde_json::from_str(&response_text).map_err(|err| {
+    let response_json: Value = serde_json::from_str(response_text).map_err(|err| {
         backend_err(format!(
-            "response from backend \"{}\" ({url}) unreadable as JSON: {err}; body received: {}",
-            backend.id,
-            truncate(&response_text, ERROR_BODY_TRUNCATE_AT)
+            "response from backend \"{backend_id}\" ({url}) unreadable as JSON: {err}; body \
+             received: {}",
+            truncate(response_text, ERROR_BODY_TRUNCATE_AT)
         ))
     })?;
 
-    extract_chat_content(&response_json).ok_or_else(|| {
+    let content = extract_chat_content(&response_json).ok_or_else(|| {
         backend_err(format!(
-            "response from backend \"{}\" ({url}) has no usable content (expected \
+            "response from backend \"{backend_id}\" ({url}) has no usable content (expected \
              choices[0].message.content); body received: {}",
-            backend.id,
-            truncate(&response_text, ERROR_BODY_TRUNCATE_AT)
+            truncate(response_text, ERROR_BODY_TRUNCATE_AT)
         ))
+    })?;
+    let finish_reason = extract_finish_reason(&response_json);
+    let usage = response_json.get("usage").and_then(parse_usage);
+
+    logger.info(&format!(
+        "backend \"{backend_id}\" answered {status} in {} ms, {} characters{}",
+        elapsed.as_millis(),
+        response_text.chars().count(),
+        usage_suffix(usage.as_ref())
+    ));
+
+    Ok(ChatAnswer {
+        content,
+        finish_reason,
+        usage,
     })
+}
+
+/// Token usage reported by the backend for one `chat` call, when present.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Usage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+}
+
+/// The answer to a `chat` call: its content, the reason generation stopped
+/// (when the backend reports one — `"stop"`, `"length"`, ...), and token
+/// usage (when the backend reports it).
+#[derive(Debug, Clone)]
+pub struct ChatAnswer {
+    pub content: String,
+    pub finish_reason: Option<String>,
+    pub usage: Option<Usage>,
+}
+
+/// Parses a `usage` object (`{"prompt_tokens": N, "completion_tokens": M,
+/// ...}`) into a [`Usage`]. `None` if either field is missing or not an
+/// integer — a partial/malformed `usage` object is treated as absent rather
+/// than guessed at.
+fn parse_usage(usage: &Value) -> Option<Usage> {
+    Some(Usage {
+        prompt_tokens: usage.get("prompt_tokens")?.as_u64()?,
+        completion_tokens: usage.get("completion_tokens")?.as_u64()?,
+    })
+}
+
+/// The ", N prompt + M completion tokens" suffix appended to the "answered"/
+/// "streamed" info log line when usage is known; empty otherwise.
+fn usage_suffix(usage: Option<&Usage>) -> String {
+    usage.map_or_else(String::new, |usage| {
+        format!(
+            ", {} prompt + {} completion tokens",
+            usage.prompt_tokens, usage.completion_tokens
+        )
+    })
+}
+
+/// Extracts `choices[0].finish_reason` from a `chat/completions` response,
+/// when present and a string.
+fn extract_finish_reason(response: &Value) -> Option<String> {
+    response
+        .pointer("/choices/0/finish_reason")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// The result of reading a full event stream: the concatenated answer, the
+/// `finish_reason` of its last event that carried one, and `usage` when a
+/// (possibly final, otherwise-empty) chunk carried it.
+#[derive(Debug)]
+struct StreamResult {
+    content: String,
+    finish_reason: Option<String>,
+    usage: Option<Usage>,
 }
 
 /// Reads an `OpenAI` `chat/completions` event stream (`data: {...}` lines,
 /// ended by `data: [DONE]` or the end of the body), hands each
 /// `choices[0].delta.content` to `on_token` as it arrives, and returns the
-/// whole answer. Any other line — a blank separator, a comment, an event
-/// without content — is skipped.
-fn read_stream(reader: impl std::io::Read, on_token: &dyn Fn(&str)) -> std::io::Result<String> {
+/// whole answer plus `finish_reason`/`usage` when the stream carries them.
+/// Any other line — a blank separator, a comment, an event without content —
+/// is skipped.
+///
+/// Two cases end the stream with an `Err` (mapped to `Error::Backend` by the
+/// caller), rather than a partial or empty success:
+/// - an event carrying a top-level `error` object (the server reporting a
+///   failure mid-stream): tokens already handed to `on_token` before this
+///   point stay delivered, but the call as a whole fails, so no fallback is
+///   attempted once anything has been emitted;
+/// - a stream that ends with no content at all AND no `finish_reason`: a
+///   `chat/completions` stream reporting nothing usable, indistinguishable
+///   from a broken connection, must not be reported as a successful empty
+///   answer.
+fn read_stream(
+    reader: impl std::io::Read,
+    on_token: &dyn Fn(&str),
+) -> std::io::Result<StreamResult> {
     use std::io::BufRead;
     let mut answer = String::new();
+    let mut finish_reason = None;
+    let mut usage = None;
     for line in std::io::BufReader::new(reader).lines() {
         let line = line?;
         let Some(data) = line.strip_prefix("data:").map(str::trim) else {
@@ -196,6 +314,15 @@ fn read_stream(reader: impl std::io::Read, on_token: &dyn Fn(&str)) -> std::io::
         let Ok(event) = serde_json::from_str::<Value>(data) else {
             continue;
         };
+        if let Some(error) = event.get("error") {
+            let message = error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error");
+            return Err(std::io::Error::other(format!(
+                "server reported an error mid-stream: {message}"
+            )));
+        }
         let content = event
             .pointer("/choices/0/delta/content")
             .and_then(Value::as_str)
@@ -204,8 +331,26 @@ fn read_stream(reader: impl std::io::Read, on_token: &dyn Fn(&str)) -> std::io::
             on_token(content);
             answer.push_str(content);
         }
+        if let Some(reason) = event
+            .pointer("/choices/0/finish_reason")
+            .and_then(Value::as_str)
+        {
+            finish_reason = Some(reason.to_string());
+        }
+        if let Some(reported) = event.get("usage").and_then(parse_usage) {
+            usage = Some(reported);
+        }
     }
-    Ok(answer)
+    if answer.is_empty() && finish_reason.is_none() {
+        return Err(std::io::Error::other(
+            "stream ended with no content and no finish_reason",
+        ));
+    }
+    Ok(StreamResult {
+        content: answer,
+        finish_reason,
+        usage,
+    })
 }
 
 /// What one chat call asks: the prompt, the schema constraining the answer
@@ -566,7 +711,9 @@ mod tests {
             crate::log::Logger::new(crate::log::Level::Error),
         )
         .expect("chat() must succeed against the stubbed listener");
-        assert_eq!(result, "stubbed reply");
+        assert_eq!(result.content, "stubbed reply");
+        assert_eq!(result.finish_reason, None);
+        assert!(result.usage.is_none());
 
         server.join().expect("the server thread must not panic");
     }
@@ -580,9 +727,76 @@ mod tests {
                     data: [DONE]\n\n\
                     data: {\"choices\":[{\"delta\":{\"content\":\"ignored\"}}]}\n";
         let seen = std::cell::RefCell::new(Vec::new());
-        let answer = read_stream(body.as_bytes(), &|t| seen.borrow_mut().push(t.to_string()))
+        let result = read_stream(body.as_bytes(), &|t| seen.borrow_mut().push(t.to_string()))
             .expect("an in-memory stream reads");
-        assert_eq!(answer, "Bonjour");
+        assert_eq!(result.content, "Bonjour");
         assert_eq!(*seen.borrow(), ["Bon", "jour"]);
+    }
+
+    /// Spec 1: a top-level `error` event ends the stream with `Err`, and
+    /// tokens already handed to `on_token` before it stay delivered — the
+    /// caller (`chat_with_fallback`) relies on this to decide the fallback
+    /// must NOT be attempted once anything has been emitted.
+    #[test]
+    fn a_stream_error_event_ends_the_stream_with_err_after_delivering_prior_deltas() {
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Bon\"}}]}\n\n\
+                    data: {\"choices\":[{\"delta\":{\"content\":\"jour\"}}]}\n\n\
+                    data: {\"error\":{\"message\":\"server exploded\"}}\n\n";
+        let seen = std::cell::RefCell::new(Vec::new());
+        let err = read_stream(body.as_bytes(), &|t| seen.borrow_mut().push(t.to_string()))
+            .expect_err("an error event must end the stream with Err");
+        assert_eq!(err.kind(), std::io::ErrorKind::Other);
+        assert_eq!(*seen.borrow(), ["Bon", "jour"]);
+    }
+
+    #[test]
+    fn a_stream_finish_reason_length_in_the_last_event_is_captured() {
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
+                    data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n\
+                    data: [DONE]\n\n";
+        let result = read_stream(body.as_bytes(), &|_| {}).expect("the stream must read");
+        assert_eq!(result.content, "hi");
+        assert_eq!(result.finish_reason.as_deref(), Some("length"));
+    }
+
+    /// Spec 2: a stream delivering no content at all and no `finish_reason`
+    /// must be `Err`, never `Ok("")`.
+    #[test]
+    fn a_stream_with_no_content_and_no_finish_reason_is_err() {
+        let body = "data: {\"choices\":[{\"delta\":{}}]}\n\ndata: [DONE]\n\n";
+        let err =
+            read_stream(body.as_bytes(), &|_| {}).expect_err("an empty stream must be an error");
+        assert_eq!(err.kind(), std::io::ErrorKind::Other);
+    }
+
+    #[test]
+    fn a_stream_usage_from_a_final_chunk_with_empty_choices_is_captured() {
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n\
+                    data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\n\
+                    data: [DONE]\n\n";
+        let result = read_stream(body.as_bytes(), &|_| {}).expect("the stream must read");
+        assert_eq!(result.content, "hi");
+        assert_eq!(result.finish_reason.as_deref(), Some("stop"));
+        let usage = result.usage.expect("usage must be captured");
+        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.completion_tokens, 2);
+    }
+
+    #[test]
+    fn non_streamed_body_with_finish_reason_and_usage_extracts_both() {
+        let response = serde_json::json!({
+            "choices": [
+                { "message": { "role": "assistant", "content": "hi" }, "finish_reason": "length" }
+            ],
+            "usage": { "prompt_tokens": 5, "completion_tokens": 7 }
+        });
+        assert_eq!(extract_chat_content(&response), Some("hi".to_string()));
+        assert_eq!(extract_finish_reason(&response), Some("length".to_string()));
+        let usage = response
+            .get("usage")
+            .and_then(parse_usage)
+            .expect("usage must parse");
+        assert_eq!(usage.prompt_tokens, 5);
+        assert_eq!(usage.completion_tokens, 7);
     }
 }

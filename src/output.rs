@@ -64,6 +64,11 @@ pub struct OutputSpec {
     pub format: Format,
     pub schema: Option<PathBuf>,
     pub max_lines: Option<usize>,
+    /// Whether a streamed/non-streamed answer ending with
+    /// `finish_reason = "length"` (the model's answer was truncated by
+    /// `max_tokens`) is accepted as-is. `false` by default: a truncated
+    /// answer is an `Error::Output` (exit 4) unless the command opts in.
+    pub allow_truncated: bool,
 }
 
 /// Maximum number of characters kept in the response excerpt quoted by a
@@ -418,6 +423,7 @@ mod tests {
             format: Format::Text,
             schema: None,
             max_lines: None,
+            allow_truncated: false,
         };
         let out =
             finalize(&spec, "  \n  hello world  \n\n", &test_command_file()).expect("must succeed");
@@ -430,6 +436,7 @@ mod tests {
             format: Format::Text,
             schema: None,
             max_lines: Some(2),
+            allow_truncated: false,
         };
         let out = finalize(&spec, "line 1\nline 2", &test_command_file()).expect("must succeed");
         assert_eq!(out, "line 1\nline 2");
@@ -441,6 +448,7 @@ mod tests {
             format: Format::Text,
             schema: None,
             max_lines: Some(1),
+            allow_truncated: false,
         };
         let err = finalize(&spec, "line 1\nline 2", &test_command_file()).expect_err("must fail");
         assert!(matches!(err, crate::Error::Output(_)));
@@ -452,6 +460,7 @@ mod tests {
             format: Format::Text,
             schema: None,
             max_lines: Some(2),
+            allow_truncated: false,
         };
         // 2 non-empty lines, 2 empty lines (one of which has only
         // whitespace): must not exceed max_lines = 2.
@@ -466,6 +475,7 @@ mod tests {
             format: Format::Text,
             schema: None,
             max_lines: None,
+            allow_truncated: false,
         };
         let out =
             finalize(&spec, "l1\nl2\nl3\nl4\nl5", &test_command_file()).expect("must succeed");
@@ -480,6 +490,7 @@ mod tests {
             format: Format::Json,
             schema: None,
             max_lines: None,
+            allow_truncated: false,
         };
         let out =
             finalize(&spec, "{\n  \"a\": 1\n}\n", &test_command_file()).expect("must succeed");
@@ -492,6 +503,7 @@ mod tests {
             format: Format::Json,
             schema: None,
             max_lines: None,
+            allow_truncated: false,
         };
         let out = finalize(
             &spec,
@@ -508,6 +520,7 @@ mod tests {
             format: Format::Json,
             schema: None,
             max_lines: None,
+            allow_truncated: false,
         };
         let err = finalize(&spec, "not JSON at all", &test_command_file()).expect_err("must fail");
         assert!(matches!(err, crate::Error::Output(_)));
@@ -529,6 +542,7 @@ mod tests {
             format: Format::Json,
             schema: None,
             max_lines: None,
+            allow_truncated: false,
         };
         // Emojis (4 bytes each) rather than "é" (2 bytes): with a 2-byte
         // step, a regression that sliced by byte index would have a
@@ -554,6 +568,7 @@ mod tests {
             format: Format::Json,
             schema: None,
             max_lines: None,
+            allow_truncated: false,
         };
         let out = finalize(
             &spec,
@@ -586,6 +601,7 @@ mod tests {
             format: Format::Json,
             schema: Some(schema_path),
             max_lines: None,
+            allow_truncated: false,
         };
         let out = finalize(
             &spec,
@@ -614,6 +630,7 @@ mod tests {
             format: Format::Json,
             schema: Some(schema_path),
             max_lines: None,
+            allow_truncated: false,
         };
         // "confidence" missing (required) AND "category" of the wrong type:
         // two distinct violations.
@@ -633,6 +650,7 @@ mod tests {
             format: Format::Json,
             schema: Some(missing),
             max_lines: None,
+            allow_truncated: false,
         };
         let err = finalize(&spec, "{\"a\": 1}", &test_command_file()).expect_err("must fail");
         assert!(
@@ -648,6 +666,7 @@ mod tests {
             format: Format::Json,
             schema: Some(schema_path),
             max_lines: None,
+            allow_truncated: false,
         };
         let err = finalize(&spec, "{\"a\": 1}", &test_command_file()).expect_err("must fail");
         assert!(
@@ -664,6 +683,7 @@ mod tests {
             format: Format::Text,
             schema: None,
             max_lines: Some(0),
+            allow_truncated: false,
         };
         let err = finalize(&spec, "one line", &test_command_file()).expect_err("must fail");
         assert!(matches!(err, crate::Error::Output(_)));
