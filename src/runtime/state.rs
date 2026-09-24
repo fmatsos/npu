@@ -2,8 +2,8 @@
 //!
 //! Docker IS its own registry: `docker ps` answers "is it still up?" and
 //! `docker port` answers "on which port?", which is why the Docker runtime
-//! persists nothing (see the rationale on
-//! [`crate::config::DOCKER_EPHEMERAL_PORT`]). A process runtime has no such
+//! persists nothing (see the rationale on the ephemeral port allocation in
+//! `config::port`). A process runtime has no such
 //! registry — once `npu serve` exits, nothing but a file remembers the pid
 //! it spawned — so `npu` keeps its own.
 //!

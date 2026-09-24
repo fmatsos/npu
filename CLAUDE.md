@@ -99,8 +99,8 @@ table (`type = "docker"`), deserialized into `config::Runtime`. The untagged
 `[docker]` table of earlier versions is still accepted and FOLDED into
 `runtime` at load time, once, so every reader downstream sees one shape;
 declaring both is rejected, naming the file and the backend. `.docker` is
-therefore read in exactly two places, both in `config.rs`: the fold and the
-rule that rejects the double declaration. Both fields are `pub(crate)` so
+therefore read in exactly two places, both in `config/runtime.rs`: the fold
+and the rule that rejects the double declaration. Both fields are `pub(crate)` so
 that rule is structural, not a doc comment: everything else goes through
 `Backend::runtime()`, or through `config::docker_of` — the crate's single
 runtime-family test, an exhaustive `match` a new variant breaks.
