@@ -288,6 +288,7 @@ mod tests {
             schemas: std::collections::BTreeMap::new(),
             system: None,
             examples: Vec::new(),
+            generation: None,
             // Neutral for the same reasons as `output` above: these tests
             // never bear on the output contract nor on naming the command
             // file in a schema error.

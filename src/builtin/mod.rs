@@ -241,6 +241,7 @@ mod tests {
             schemas: std::collections::BTreeMap::new(),
             system: None,
             examples: Vec::new(),
+            generation: None,
             file: std::path::PathBuf::new(),
         }
     }
@@ -695,6 +696,7 @@ mod tests {
             schemas: std::collections::BTreeMap::new(),
             system: None,
             examples: Vec::new(),
+            generation: None,
             file: std::path::PathBuf::from(".npu/commands/translate.md"),
         }
     }

@@ -23,6 +23,7 @@ pub use port::Port;
 pub use runtime::{Docker, Process, Runtime};
 
 pub(crate) use backend::{is_valid_runtime_id, validate_backend};
+pub(crate) use model::{extra_to_json, generation_errors};
 pub(crate) use port::substitute_port;
 pub(crate) use runtime::{docker_of, process_of};
 
@@ -209,6 +210,7 @@ pub fn load_scopes(roots: &[PathBuf]) -> crate::Result<Config> {
     // scope and satisfied by a model from a more local scope stays valid.
     for (model, source) in models.values() {
         model::validate_fallback(model, &models, source)?;
+        model::validate_generation(&model.generation, &model.id, source)?;
     }
     for (model, source) in models.values_mut() {
         model.source.clone_from(source);

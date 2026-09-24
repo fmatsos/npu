@@ -59,6 +59,11 @@ pub struct CommandSpec {
     /// in file order, emitted after `system` and before the rendered body.
     /// Same placeholder rules as `system`.
     pub examples: Vec<Example>,
+    /// Optional `[generation]` section: overrides the model's own
+    /// `[generation]`, key by key (see `config::Generation::merged`'s
+    /// doc) — the one field-by-field merge in the project, an explicit
+    /// exception to "replacement, never merge".
+    pub generation: Option<crate::config::Generation>,
     /// Path of the source command file (e.g. `.npu/commands/classify.md`)
     /// this `CommandSpec` was parsed from. Needed by `output::finalize`
     /// to name, at real execution time, the command
@@ -153,6 +158,13 @@ struct Frontmatter {
     /// Optional `[[examples]]` array: see [`CommandSpec::examples`]'s doc.
     #[serde(default)]
     examples: Vec<RawExample>,
+    /// Optional `[generation]` section: see [`CommandSpec::generation`]'s
+    /// doc. Reuses `config::Generation` directly (same shape, same
+    /// `deny_unknown_fields`, same validation via
+    /// `config::generation_errors`): a command's override is not a
+    /// different kind of thing from a model's own `[generation]`.
+    #[serde(default)]
+    generation: Option<crate::config::Generation>,
 }
 
 /// Raw version of the `[output]` section as written in TOML: `schema` is
@@ -920,6 +932,16 @@ pub fn parse(
     // see `convert_output`'s doc.
     let output = convert_output(frontmatter.output, scope_root)?;
 
+    // A command's own `[generation]` (validated the same way as a model's:
+    // `stop` non-empty, `extra` neither shadowing a typed key nor carrying
+    // a datetime or non-finite float) — merged onto the model's at
+    // execution time (`config::Generation::merged`), never here: `parse`
+    // does not know which model this command resolves to.
+    if let Some(generation) = &frontmatter.generation {
+        let label = path.join("/");
+        crate::config::generation_errors(generation, &label)?;
+    }
+
     Ok(CommandSpec {
         path,
         description: frontmatter.description,
@@ -931,6 +953,7 @@ pub fn parse(
         schemas,
         system,
         examples,
+        generation: frontmatter.generation,
         // Filled in by `read_and_parse`, the only caller that knows the
         // path of the file actually read (see the field's doc on
         // `CommandSpec`).

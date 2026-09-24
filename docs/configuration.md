@@ -478,13 +478,71 @@ max_tokens = 512
 | `operation` | yes | must be an operation that backend exposes |
 | `model` | yes | the concrete model identifier sent to the backend |
 | `fallback` | no | another model `id` to retry against when this one fails — see below |
-| `[generation]` | no | `temperature`, `max_tokens`; omitted fields are not sent at all |
-
-`generation` values are only included in the request when present — no `null` is ever serialised
-for an absent field.
+| `[generation]` | no | see [Generation parameters](#generation-parameters) below |
 
 A model naming an unknown backend, or an operation its backend does not expose, produces a
 configuration error listing what *is* available.
+
+### Generation parameters
+
+```toml
+[generation]
+temperature = 0.0
+max_tokens = 512
+seed = 42
+top_p = 0.9
+stop = ["\n\n", "###"]
+
+[generation.extra]
+chat_template_kwargs = { enable_thinking = false }
+```
+
+| Key | Notes |
+| --- | --- |
+| `temperature` | float |
+| `max_tokens` | integer |
+| `seed` | integer, forwarded as-is for deterministic sampling |
+| `top_p` | float, same no-binary-noise serialization as `temperature` |
+| `stop` | a non-empty list of non-empty strings — no upper bound (deliberately not the 1-4 entry limit some providers impose; that would tie `npu` to one provider) |
+| `[generation.extra]` | free-form table, forwarded **verbatim** at the top level of the request, after the typed keys above |
+
+A value is only included in the request when present — no `null` is ever serialized for an
+absent field.
+
+`[generation.extra]` is the one escape hatch for an engine-specific knob `npu` does not model
+itself (`chat_template_kwargs.enable_thinking = false` on Qwen3 is the motivating case). Its keys
+are copied TOML structure for TOML structure into JSON (tables become objects, arrays become
+arrays); this is the one place in the crate where "honoured" means "forwarded verbatim" rather
+than interpreted. Two things are rejected at load time, naming the file:
+
+- a key of `extra` that collides with a typed key (`temperature`, `max_tokens`, `seed`, `top_p`,
+  `stop`, and the keys `npu` itself controls: `model`, `messages`, `stream`,
+  `response_format`) — the typed form is the only spelling, a silent override would be a key
+  read and then ignored;
+- a TOML `Datetime` or a non-finite float (`nan`, `inf`, legal TOML float literals) anywhere
+  inside `extra`, including nested in a table or an array — JSON has no datetime type and would
+  silently drop a non-finite float. A plain **string** that merely looks like a date
+  (`"2024-01-01"`) is unaffected: only a genuine TOML datetime *value* is rejected.
+
+#### Per-command override (the one field-by-field merge)
+
+A command's own frontmatter may declare its own `[generation]`, in the same shape (`extra`
+included). Unlike every other configuration key in this project, **this one merges instead of
+replacing**: each typed key the command sets overrides the model's; a key the command leaves
+unset keeps the model's value. `extra` merges the same way, key by key, at the top level only —
+a command setting `chat_template_kwargs` replaces the model's `chat_template_kwargs` wholesale,
+never merged one level deeper.
+
+This is a deliberate, explicit exception to "a more local scope replaces wholesale, never
+merges" (see [Merge semantics](#merge-semantics) above): a command legitimately wants the
+model's defaults plus one change, not a full generation table copy-pasted into every command
+file. When a model declares a `fallback`, the fallback uses **its own** base `[generation]`
+merged with the **same** command override — the override describes the command being run, not
+which model answers it.
+
+`npu describe` prints the *effective* table (after the merge), so an agent sees exactly what
+will be sent. The diagnostic log line at `info` names the generation keys actually sent
+(including each `extra` key, as `extra.<key>`), never their values.
 
 ### `fallback` (optional)
 

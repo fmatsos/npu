@@ -57,6 +57,7 @@ pub fn chat(
         schema,
         on_token,
         headers,
+        generation,
     } = *request;
     let operation = backend.operations.get(&model.operation).ok_or_else(|| {
         crate::Error::Config(crate::error::ConfigError::bare(
@@ -79,7 +80,7 @@ pub fn chat(
         ))
     };
     let schema = schema.filter(|_| backend.structured_output);
-    let mut body = build_chat_request(&model.model, messages, &model.generation, schema);
+    let mut body = build_chat_request(&model.model, messages, generation, schema);
     if on_token.is_some()
         && let Value::Object(map) = &mut body
     {
@@ -97,7 +98,7 @@ pub fn chat(
         .new_agent();
 
     logger.info(&format!(
-        "POST {url} (model \"{}\", timeout {} s{}{})",
+        "POST {url} (model \"{}\", timeout {} s{}{}{})",
         model.model,
         timeout.as_secs(),
         if schema.is_some() {
@@ -112,7 +113,8 @@ pub fn chat(
                 ", with headers: {}",
                 headers.keys().cloned().collect::<Vec<_>>().join(", ")
             )
-        }
+        },
+        generation_keys_suffix(generation)
     ));
 
     let started = std::time::Instant::now();
@@ -397,6 +399,12 @@ pub struct Request<'a> {
     /// value, `{{ env.NAME }}` already substituted): see
     /// `config::resolve_headers`. Never logged.
     pub headers: &'a std::collections::BTreeMap<String, String>,
+    /// The generation parameters for THIS call: the model's own
+    /// `[generation]` already merged with the command's override, if any
+    /// (`config::Generation::merged`) — never `model.generation` read
+    /// directly, so a command override reaches the request whichever
+    /// model (primary or fallback) actually answers.
+    pub generation: &'a crate::config::Generation,
 }
 
 // `&dyn Fn` cannot derive `Debug`: the closure has nothing to print. Header
@@ -456,12 +464,65 @@ fn build_chat_request(
         if let Some(max_tokens) = generation.max_tokens {
             map.insert("max_tokens".to_string(), Value::from(max_tokens));
         }
+        if let Some(seed) = generation.seed {
+            map.insert("seed".to_string(), Value::from(seed));
+        }
+        if let Some(top_p) = generation.top_p {
+            // Same f32-via-text treatment as `temperature`, see above.
+            if let Some(number) = serde_json::Number::from_f64(f64_from_f32_text(top_p)) {
+                map.insert("top_p".to_string(), Value::Number(number));
+            }
+        }
+        if let Some(stop) = &generation.stop {
+            map.insert("stop".to_string(), Value::from(stop.clone()));
+        }
         if let Some(schema) = schema {
             map.insert("response_format".to_string(), response_format(schema));
+        }
+        // `extra` last: every key of it is forwarded verbatim, at the top
+        // level, after the typed keys above — `generation_errors` already
+        // rejected any key colliding with one of them, at load time.
+        if let Some(extra) = &generation.extra {
+            for (key, value) in crate::config::extra_to_json(extra) {
+                map.insert(key, value);
+            }
         }
     }
 
     body
+}
+
+/// The `", generation: temperature, seed, extra.chat_template_kwargs"` suffix
+/// appended to the `POST` trace line: the NAMES of the generation keys
+/// actually sent (typed keys present, plus each top-level `extra` key
+/// prefixed `extra.`), never their values — an `extra` value may be a
+/// secret someday, same discipline as `[headers]`. Empty when nothing in
+/// `generation` is set.
+fn generation_keys_suffix(generation: &crate::config::Generation) -> String {
+    let mut keys = Vec::new();
+    if generation.temperature.is_some() {
+        keys.push("temperature".to_string());
+    }
+    if generation.max_tokens.is_some() {
+        keys.push("max_tokens".to_string());
+    }
+    if generation.seed.is_some() {
+        keys.push("seed".to_string());
+    }
+    if generation.top_p.is_some() {
+        keys.push("top_p".to_string());
+    }
+    if generation.stop.is_some() {
+        keys.push("stop".to_string());
+    }
+    if let Some(extra) = &generation.extra {
+        keys.extend(extra.keys().map(|key| format!("extra.{key}")));
+    }
+    if keys.is_empty() {
+        String::new()
+    } else {
+        format!(", generation: {}", keys.join(", "))
+    }
 }
 
 /// The `OpenAI` `response_format` constraining the answer to `schema`.
@@ -571,6 +632,10 @@ mod tests {
         let generation = Generation {
             temperature: None,
             max_tokens: None,
+            seed: None,
+            top_p: None,
+            stop: None,
+            extra: None,
         };
         let body = build_chat_request(
             "qwen-2.5-1.5b",
@@ -658,6 +723,10 @@ mod tests {
         let generation = Generation {
             temperature: Some(0.0),
             max_tokens: Some(512),
+            seed: None,
+            top_p: None,
+            stop: None,
+            extra: None,
         };
         let body = build_chat_request(
             "qwen-2.5-1.5b",
@@ -670,6 +739,89 @@ mod tests {
         assert_eq!(body["max_tokens"], 512);
     }
 
+    /// B3: `seed`, `top_p` and `stop` appear in the body when set, absent
+    /// otherwise (same "no key sent when unset" rule as `temperature`).
+    #[test]
+    fn build_chat_request_sends_seed_top_p_and_stop_when_set() {
+        let generation = Generation {
+            temperature: None,
+            max_tokens: None,
+            seed: Some(42),
+            top_p: Some(0.9),
+            stop: Some(vec!["\n\n".to_string(), "###".to_string()]),
+            extra: None,
+        };
+        let body = build_chat_request("m", &[Message::user("hello")], &generation, None);
+
+        assert_eq!(body["seed"], 42);
+        assert_eq!(body["top_p"], 0.9);
+        assert_eq!(body["stop"], serde_json::json!(["\n\n", "###"]));
+    }
+
+    #[test]
+    fn build_chat_request_omits_seed_top_p_and_stop_when_unset() {
+        let generation = Generation {
+            temperature: None,
+            max_tokens: None,
+            seed: None,
+            top_p: None,
+            stop: None,
+            extra: None,
+        };
+        let body = build_chat_request("m", &[Message::user("hello")], &generation, None);
+
+        assert!(body.get("seed").is_none());
+        assert!(body.get("top_p").is_none());
+        assert!(body.get("stop").is_none());
+    }
+
+    /// `top_p` gets the same shortest-text f32->f64 treatment as
+    /// `temperature`: no binary widening noise.
+    #[test]
+    fn build_chat_request_top_p_has_no_f32_widening_noise() {
+        let generation = Generation {
+            temperature: None,
+            max_tokens: None,
+            seed: None,
+            top_p: Some(0.7),
+            stop: None,
+            extra: None,
+        };
+        let body = build_chat_request("m", &[Message::user("hello")], &generation, None);
+        assert_eq!(
+            serde_json::to_string(&body["top_p"]).expect("must serialize"),
+            "0.7"
+        );
+    }
+
+    /// B3: `[generation.extra]` is forwarded verbatim, at the top level,
+    /// alongside the typed keys.
+    #[test]
+    fn build_chat_request_forwards_extra_verbatim_alongside_typed_keys() {
+        let mut kwargs = toml::Table::new();
+        kwargs.insert("enable_thinking".to_string(), toml::Value::Boolean(false));
+        let mut extra = toml::Table::new();
+        extra.insert(
+            "chat_template_kwargs".to_string(),
+            toml::Value::Table(kwargs),
+        );
+        let generation = Generation {
+            temperature: Some(0.0),
+            max_tokens: None,
+            seed: None,
+            top_p: None,
+            stop: None,
+            extra: Some(extra),
+        };
+        let body = build_chat_request("m", &[Message::user("hello")], &generation, None);
+
+        assert_eq!(body["temperature"], 0.0);
+        assert_eq!(
+            body["chat_template_kwargs"],
+            serde_json::json!({ "enable_thinking": false })
+        );
+    }
+
     #[test]
     fn build_chat_request_temperature_has_no_f32_widening_noise() {
         // `0.7_f32 as f64` != `0.7_f64` (binary noise): the emitted body
@@ -678,6 +830,10 @@ mod tests {
         let generation = Generation {
             temperature: Some(0.7),
             max_tokens: None,
+            seed: None,
+            top_p: None,
+            stop: None,
+            extra: None,
         };
         let body = build_chat_request(
             "qwen-2.5-1.5b",
@@ -837,6 +993,7 @@ mod tests {
                 schema: None,
                 on_token: None,
                 headers: &sent_headers,
+                generation: &Generation::default(),
             },
             crate::log::Logger::new(crate::log::Level::Error),
         )
