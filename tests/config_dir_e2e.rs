@@ -67,6 +67,8 @@ fn run(cwd: &Path, empty_xdg: &Path, args: &[&str], extra_env: &[(&str, &str)]) 
         .current_dir(cwd)
         .env("HOME", empty_xdg)
         .env("XDG_CONFIG_HOME", empty_xdg)
+        // The user scope root on Windows.
+        .env("APPDATA", empty_xdg)
         .envs(extra_env.iter().copied())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

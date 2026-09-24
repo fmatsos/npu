@@ -46,6 +46,7 @@ fn run_npu(args: &[&str]) -> Output {
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
+        .env_remove("APPDATA")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

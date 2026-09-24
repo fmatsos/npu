@@ -131,12 +131,11 @@ cargo install --path .
 ```
 
 > [!WARNING]
-> **Windows support is partial.** Configuration scope resolution is written for
-> Unix conventions: the system scope is the hard-coded path `/etc/npu`, and the user scope is read
-> from `$HOME`, never from `%USERPROFILE%`. In practice this means only the project-local `.\.npu`
-> scope works out of the box. To get a user-level scope, set `HOME` (or `XDG_CONFIG_HOME`)
-> explicitly in your environment. The runtime lifecycle is split: `type = "docker"` works (Docker
-> Desktop is its prerequisite, not `npu`'s code), while a backend declaring `type = "process"` is
+> **Windows support is partial.** Configuration scopes follow Windows conventions: the system
+> scope is `%ProgramData%\npu`, the user scope `%APPDATA%\npu` (see
+> [configuration](docs/configuration.md)), and the project `.npu` is found as on Unix. The runtime
+> lifecycle is split: `type = "docker"` works (Docker Desktop is its prerequisite, not `npu`'s
+> code), while a backend declaring `type = "process"` is
 > rejected at load time naming the file — that family needs a `$XDG_STATE_HOME`/`$HOME` state
 > directory and a `SIGTERM`, neither of which Windows has. Everything else — command discovery,
 > arguments, templating, structured output, the other built-ins — is platform-independent.

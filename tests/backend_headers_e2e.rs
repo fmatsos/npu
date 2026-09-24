@@ -162,6 +162,7 @@ fn run_npu(scope: &Path, args: &[&str], env_vars: &[(&str, &str)]) -> Output {
         .current_dir(scope)
         .env("HOME", scope)
         .env_remove("XDG_CONFIG_HOME")
+        .env_remove("APPDATA")
         .envs(env_vars.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

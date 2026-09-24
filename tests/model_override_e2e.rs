@@ -74,6 +74,7 @@ fn run(scope: &Path, args: &[&str]) -> Output {
         .current_dir(scope)
         .env("HOME", scope)
         .env_remove("XDG_CONFIG_HOME")
+        .env_remove("APPDATA")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -34,6 +34,7 @@ fn run_npu(scope: &Path, args: &[&str]) -> Output {
         .current_dir(scope)
         .env("HOME", scope)
         .env_remove("XDG_CONFIG_HOME")
+        .env_remove("APPDATA")
         // No `docker` on PATH: proves a dry run never shells out to it, even
         // for a `port = "auto"` backend.
         .env("PATH", scope)
@@ -107,6 +108,7 @@ fn dry_run_never_resolves_the_runtime_and_leaves_the_port_placeholder() {
         .current_dir(&scope)
         .env("HOME", &scope)
         .env_remove("XDG_CONFIG_HOME")
+        .env_remove("APPDATA")
         .env("PATH", &scope)
         .env("NPU_TEST_DRY_RUN_SECRET", "s3cr3t-value")
         .stdin(Stdio::piped())
@@ -155,6 +157,7 @@ fn dry_run_redacts_header_values_but_keeps_their_names() {
         .current_dir(&scope)
         .env("HOME", &scope)
         .env_remove("XDG_CONFIG_HOME")
+        .env_remove("APPDATA")
         .env("PATH", &scope)
         .env("NPU_TEST_DRY_RUN_SECRET_2", "s3cr3t-value")
         .stdin(Stdio::piped())
