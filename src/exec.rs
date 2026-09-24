@@ -13,7 +13,7 @@ pub(crate) struct Ask<'a> {
     pub(crate) schema: Option<&'a serde_json::Value>,
     pub(crate) stream: Option<TokenSink<'a>>,
     /// The command's own `[generation]` override, if declared — merged
-    /// (B3, key by key, command wins) onto EACH candidate model's own
+    /// (key by key, command wins) onto EACH candidate model's own
     /// `[generation]` inside `chat_with_fallback`'s `call`: the fallback
     /// model uses its own base `[generation]` merged with this SAME
     /// override, never the primary's merged result.
@@ -81,7 +81,7 @@ pub(crate) fn chat_with_fallback(
         };
         let on_token: Option<&dyn Fn(&str)> = stream.map(|_| &on_token as &dyn Fn(&str));
         let headers = crate::config::resolve_headers(backend, env)?;
-        // B3: this model's OWN `[generation]` merged with the command's
+        // This model's OWN `[generation]` merged with the command's
         // override — recomputed per candidate, never precomputed once for
         // the primary and reused for the fallback (see `Ask`'s doc).
         let generation = crate::config::Generation::merged(&model.generation, command_generation);
@@ -101,16 +101,16 @@ pub(crate) fn chat_with_fallback(
 
     let primary = match call(backend, model) {
         Ok(output) => return Ok((output, model.id.clone())),
-        Err(crate::Error::Backend(err)) if !emitted.get() => err.message,
+        Err(crate::Error::Backend(err)) if !emitted.get() => err,
         Err(other) => return Err(other),
     };
 
+    // Without a fallback the primary's error is returned as is, URL and
+    // status included.
     let Some(fallback_id) = model.fallback.as_deref() else {
-        return Err(crate::Error::Backend(crate::error::BackendError::at(
-            &backend.id,
-            primary,
-        )));
+        return Err(crate::Error::Backend(primary));
     };
+    let primary = primary.message;
 
     // `info`, not `warn`: the fallback is the designed path for a primary
     // that is down or refuses the prompt, and the command still succeeds.
@@ -129,29 +129,21 @@ pub(crate) fn chat_with_fallback(
     call(fallback_backend, fallback_model)
         .map(|output| (output, fallback_id.to_string()))
         .map_err(|err| match err {
-            crate::Error::Backend(second) => crate::Error::Backend(crate::error::BackendError::at(
-                fallback_id,
-                format!(
+            // The fallback's own error, backend, URL and status kept; only
+            // the message is widened to tell both failures.
+            crate::Error::Backend(mut second) => {
+                second.message = format!(
                     "model \"{}\" failed ({primary}), and its fallback \"{fallback_id}\" \
-                         failed too: {}",
+                     failed too: {}",
                     model.id, second.message
-                ),
-            )),
+                );
+                crate::Error::Backend(second)
+            }
             other => other,
         })
 }
 
-/// Builds the full `messages` array for `spec`: `[system?] +
-/// examples×[user, assistant] + [user: prompt]`, in file order. Split out
-/// of `execute_business_command` only to keep it under the crate's
-/// line-count lint — no behavior is different from what used to be
-/// inlined there (same convention as
-/// `backend::handle_non_streamed_response`).
-///
-/// With neither `system` nor `examples` declared, the result is exactly
-/// today's single-element array (pinned by
-/// `backend::tests::build_chat_request_without_system_or_examples_is_byte_identical_to_the_pre_b2_body`).
-/// B4: strips one leading `<think>...</think>` block from `content` (when
+/// Strips one leading `<think>...</think>` block from `content` (when
 /// `enabled`) BEFORE the rest of the output pipeline (fences, parsing,
 /// schema, trim/`max_lines`) runs, and logs the removed length — never its
 /// content. Split out of `execute_business_command` only to keep it under
@@ -166,6 +158,16 @@ fn strip_reasoning_and_log(content: &str, enabled: bool, logger: crate::log::Log
     stripped.to_string()
 }
 
+/// Builds the full `messages` array for `spec`: `[system?] +
+/// examples×[user, assistant] + [user: prompt]`, in file order. Split out
+/// of `execute_business_command` only to keep it under the crate's
+/// line-count lint — no behavior is different from what used to be
+/// inlined there (same convention as
+/// `backend::handle_non_streamed_response`).
+///
+/// With neither `system` nor `examples` declared, the result is exactly
+/// today's single-element array (pinned by
+/// `backend::tests::build_chat_request_without_system_or_examples_is_byte_identical_to_the_plain_body`).
 fn build_messages(
     spec: &crate::command::CommandSpec,
     prompt: &str,
@@ -195,6 +197,43 @@ fn build_messages(
     }
     messages.push(crate::backend::Message::user(prompt.to_string()));
     Ok(messages)
+}
+
+/// Fails with `Error::Output` when the answer was cut at `max_tokens` and
+/// the command does not accept a truncated answer.
+fn reject_truncation(
+    answer: &crate::backend::ChatAnswer,
+    answered_by: &str,
+    spec: &crate::command::CommandSpec,
+    config: &crate::config::Config,
+    model: &crate::config::Model,
+) -> crate::Result<()> {
+    use crate::error::InFile;
+
+    if answer.finish_reason.as_deref() == Some("length") && !spec.output.allow_truncated {
+        // Named after the model that ANSWERED — the fallback, when it took
+        // over — with the limit in effect for it (its own `[generation]`
+        // under the command's override).
+        let answering = if answered_by == model.id {
+            model
+        } else {
+            config.resolve(answered_by)?.0
+        };
+        let generation =
+            crate::config::Generation::merged(&answering.generation, spec.generation.as_ref());
+        let max_tokens = generation.max_tokens.map_or_else(
+            || "server default".to_string(),
+            |max_tokens| max_tokens.to_string(),
+        );
+        return Err(crate::Error::output(format!(
+            "model \"{}\" answered with finish_reason \"length\" (truncated at max_tokens = \
+             {max_tokens}); set [output].allow_truncated = true to accept a truncated answer",
+            answering.id
+        )))
+        .in_file(&spec.file);
+    }
+
+    Ok(())
 }
 
 /// Executes the pipeline of an already-resolved BUSINESS command (`spec`),
@@ -230,8 +269,6 @@ pub(crate) fn execute_business_command(
     ) -> crate::Result<String>,
     stdout_is_terminal: bool,
 ) -> crate::Result<()> {
-    use crate::error::InFile;
-
     let (model, backend) = config.resolve(&spec.model)?;
     logger.info(&format!(
         "command \"{}\" -> model \"{}\" (backend \"{}\", operation \"{}\") from {}",
@@ -342,7 +379,7 @@ pub(crate) fn execute_business_command(
     // Streamed only where nothing can reject the answer after it is shown
     // — free text, no `max_lines` — and only to a terminal: a pipe keeps
     // receiving the answer in one piece, byte for byte as before.
-    // B4: `strip_reasoning` disables streaming even on a terminal — printing
+    // `strip_reasoning` disables streaming even on a terminal — printing
     // tokens as they arrive would show the reasoning block before it can be
     // stripped, defeating the whole point. The answer then arrives in one
     // piece, exactly as for a JSON contract.
@@ -381,21 +418,10 @@ pub(crate) fn execute_business_command(
     // `chat_with_fallback`'s doc), and it must be checked before anything is
     // written to stdout on a pipe. On a terminal in streaming mode, tokens
     // already reached the screen through `print_token` — that is accepted
-    // (cf. this crate's CLAUDE.md, spec A4); the exit code is still 4 and
+    // (cf. this crate's CLAUDE.md); the exit code is still 4 and
     // stdout (the byte stream a calling agent reads) never receives the
     // framed/closing output below.
-    if answer.finish_reason.as_deref() == Some("length") && !spec.output.allow_truncated {
-        let max_tokens = model.generation.max_tokens.map_or_else(
-            || "server default".to_string(),
-            |max_tokens| max_tokens.to_string(),
-        );
-        return Err(crate::Error::output(format!(
-            "model \"{}\" answered with finish_reason \"length\" (truncated at max_tokens = \
-             {max_tokens}); set [output].allow_truncated = true to accept a truncated answer",
-            model.id
-        )))
-        .in_file(&spec.file);
-    }
+    reject_truncation(&answer, &answered_by, spec, config, model)?;
 
     let raw_output = strip_reasoning_and_log(&answer.content, spec.output.strip_reasoning, logger);
     let output = crate::output::finalize(&spec.output, &raw_output, &spec.file)?;
@@ -502,7 +528,7 @@ mod tests {
 
     /// Same idiom as [`stub_backend`], but hands the raw request body it
     /// received back to the caller through the returned channel, so a test
-    /// can assert on the exact `messages` array `npu` sent (B2).
+    /// can assert on the exact `messages` array `npu` sent.
     fn stub_backend_capturing_body(
         body: &'static str,
     ) -> (
@@ -674,8 +700,59 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("small"), "got: {message}");
         assert!(message.contains("big"), "got: {message}");
+        let Error::Backend(backend_err) = &err else {
+            unreachable!("expected a backend error, got {err:?}");
+        };
+        // The fallback's backend, not its model id, with its own status.
+        assert_eq!(backend_err.backend.as_deref(), Some("gpu"));
+        assert_eq!(backend_err.status, Some(500));
         primary_server.join().expect("primary stub thread");
         fallback_server.join().expect("fallback stub thread");
+    }
+
+    /// A truncation by the fallback names the fallback and ITS limit, not
+    /// the primary's.
+    #[test]
+    fn a_truncation_by_the_fallback_names_the_fallback_and_its_limit() {
+        let mut config = config::Config::default();
+        let mut small = model_on("small", "npu", Some("big"));
+        small.generation.max_tokens = Some(111);
+        let mut big = model_on("big", "gpu", None);
+        big.generation.max_tokens = Some(222);
+        config.models.insert("small".to_string(), small);
+        config.models.insert("big".to_string(), big);
+        config.backends.insert(
+            "gpu".to_string(),
+            backend_at("gpu", "http://127.0.0.1:9".to_string()),
+        );
+        let spec = crate::command::CommandSpec {
+            path: vec!["x".to_string()],
+            description: String::new(),
+            model: "small".to_string(),
+            input: crate::command::InputMode::Stdin,
+            prompt: "{{ input }}".to_string(),
+            args: std::collections::BTreeMap::new(),
+            output: crate::output::OutputSpec::default(),
+            schemas: std::collections::BTreeMap::new(),
+            system: None,
+            examples: Vec::new(),
+            generation: None,
+            file: std::path::PathBuf::from("x.md"),
+        };
+        let answer = crate::backend::ChatAnswer {
+            content: "cut".to_string(),
+            finish_reason: Some("length".to_string()),
+            usage: None,
+        };
+
+        let err = reject_truncation(&answer, "big", &spec, &config, &config.models["small"])
+            .expect_err("a truncated answer must be rejected");
+
+        assert_eq!(err.exit_code(), 4);
+        let message = err.to_string();
+        assert!(message.contains("\"big\""), "got: {message}");
+        assert!(message.contains("222"), "got: {message}");
+        assert!(!message.contains("111"), "got: {message}");
     }
 
     #[test]
@@ -708,6 +785,11 @@ mod tests {
         .expect_err("a backend failure without fallback must stay a failure");
 
         assert_eq!(err.exit_code(), 3);
+        let Error::Backend(backend_err) = &err else {
+            unreachable!("expected a backend error, got {err:?}");
+        };
+        assert_eq!(backend_err.status, Some(400));
+        assert!(backend_err.url.is_some());
         primary_server.join().expect("primary stub thread");
     }
 
@@ -769,7 +851,7 @@ mod tests {
 
     /// Same invariant as above, but for a backend `[headers]` value
     /// referencing an undefined environment variable: preflight must
-    /// resolve headers (B1) before `input::resolve` runs, exactly like the
+    /// resolve headers before `input::resolve` runs, exactly like the
     /// prompt's own placeholders.
     #[test]
     #[allow(clippy::panic)] // the panic is the assertion: read_input must not run.
@@ -888,7 +970,7 @@ mod tests {
         primary_server.join().expect("primary stub thread");
     }
 
-    /// Spec A4: a streamed answer whose stream ends with
+    /// A streamed answer whose stream ends with
     /// `finish_reason = "length"` must fail with `Error::Output` (exit 4)
     /// even when tokens already reached a terminal (`stdout_is_terminal =
     /// true`), naming the model id; `allow_truncated` is left at its
@@ -954,7 +1036,7 @@ mod tests {
         server.join().expect("stub server thread");
     }
 
-    /// B2: a command declaring `system` and `[[examples]]` must send them,
+    /// A command declaring `system` and `[[examples]]` must send them,
     /// in order, ahead of the rendered body as the final `user` message.
     #[test]
     fn system_and_examples_are_sent_in_order_ahead_of_the_body() {
@@ -1026,7 +1108,7 @@ mod tests {
         server.join().expect("stub server thread");
     }
 
-    /// B2 preflight: an undefined environment variable referenced only by
+    /// An undefined environment variable referenced only by
     /// `system` must be rejected BEFORE `read_input` is ever called, same
     /// invariant as the prompt's own placeholders.
     #[test]
@@ -1081,7 +1163,7 @@ mod tests {
         assert!(err.to_string().contains("NPU_TEST_UNSET_SYSTEM_VAR"));
     }
 
-    /// B4: `strip_reasoning = true` must disable streaming even when
+    /// `strip_reasoning = true` must disable streaming even when
     /// `stdout_is_terminal = true` — the condition that would otherwise
     /// enable it (cf. the `streaming` computation in
     /// `execute_business_command`). Asserted on the REQUEST the stub

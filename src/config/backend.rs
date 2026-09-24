@@ -128,30 +128,31 @@ impl Backend {
 /// The backend types `backend.rs` knows how to talk to. `Backend.kind`
 /// stays a string for the error message; [`validate_backend`] parses it, so
 /// a new type is a variant here and a compile error wherever it must be
-/// handled, never a value `backend.rs` silently treats as another.
-enum BackendKind {
+/// handled, never a value `backend.rs` silently treats as another:
+/// `backend::chat` matches on it.
+pub(crate) enum BackendKind {
     OpenAiCompatible,
 }
 
 impl BackendKind {
     const SUPPORTED: &str = "openai-compatible";
 
-    fn parse(kind: &str) -> Option<Self> {
+    pub(crate) fn parse(kind: &str) -> Option<Self> {
         (kind == Self::SUPPORTED).then_some(Self::OpenAiCompatible)
     }
 }
 
-/// The HTTP methods `backend.rs` can send; it calls `client.post()`, so any
-/// other would be silently ignored. Parsed without regard to case, as
-/// `"post"` has always been accepted.
-enum Method {
+/// The HTTP methods `backend.rs` can send; `backend::chat` matches on it
+/// to pick the request builder. Parsed without regard to case, as `"post"`
+/// has always been accepted.
+pub(crate) enum Method {
     Post,
 }
 
 impl Method {
     const SUPPORTED: &str = "POST";
 
-    fn parse(method: &str) -> Option<Self> {
+    pub(crate) fn parse(method: &str) -> Option<Self> {
         method
             .eq_ignore_ascii_case(Self::SUPPORTED)
             .then_some(Self::Post)
@@ -601,13 +602,16 @@ pub fn resolve_headers(
                 }
                 other => other,
             })?;
-        if value.contains(['\r', '\n', '\0']) {
+        // RFC 9110 field-value: visible characters, space and HTAB; every
+        // other control byte (CR, LF, NUL, VT, DEL...) is refused here, as
+        // a configuration error, rather than by the HTTP client later.
+        if value.chars().any(|c| c != '\t' && c.is_ascii_control()) {
             return Err(crate::Error::Config(crate::error::ConfigError::in_file(
                 &backend.source,
                 Some(&backend.id),
                 format!(
                     "backend \"{}\": [headers].{name} resolves to a value containing a \
-                     control character (CR, LF or NUL), which is not a legal HTTP header value",
+                     control character, which is not a legal HTTP header value",
                     backend.id
                 ),
             )));

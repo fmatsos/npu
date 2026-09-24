@@ -34,6 +34,34 @@ fn effective_timeout(backend: &crate::config::Backend) -> Duration {
 /// message, to stay diagnosable without flooding stderr.
 const ERROR_BODY_TRUNCATE_AT: usize = 500;
 
+/// The request builder for `operation`. Type and method were validated at
+/// load time; these `match`es are what make a new type or method a compile
+/// error here rather than a request sent the wrong way.
+fn request_builder(
+    agent: &ureq::Agent,
+    url: &str,
+    backend: &crate::config::Backend,
+    operation: &crate::config::Operation,
+) -> crate::Result<ureq::RequestBuilder<ureq::typestate::WithBody>> {
+    let unvalidated = || {
+        crate::Error::Config(crate::error::ConfigError::bare(
+            Some(&backend.id),
+            format!(
+                "backend \"{}\": type \"{}\" or method \"{}\" was not validated",
+                backend.id, backend.kind, operation.method
+            ),
+        ))
+    };
+    match crate::config::BackendKind::parse(&backend.kind) {
+        Some(crate::config::BackendKind::OpenAiCompatible) => {}
+        None => return Err(unvalidated()),
+    }
+    match crate::config::Method::parse(&operation.method) {
+        Some(crate::config::Method::Post) => Ok(agent.post(url)),
+        None => Err(unvalidated()),
+    }
+}
+
 /// Executes the `chat` operation of the given `model` against `backend`, with `prompt`.
 ///
 /// `schema` is the command's output schema, if any: sent as
@@ -118,7 +146,7 @@ pub fn chat(
     ));
 
     let started = std::time::Instant::now();
-    let mut post = agent.post(&url);
+    let mut post = request_builder(&agent, &url, backend, operation)?;
     for (name, value) in headers {
         post = post.header(name.as_str(), value.as_str());
     }
@@ -651,12 +679,12 @@ mod tests {
         assert!(body.get("max_tokens").is_none());
     }
 
-    /// B2 invariant: a command declaring neither `system` nor `examples`
+    /// A command declaring neither `system` nor `examples`
     /// must produce a request body BYTE-IDENTICAL to what `npu` sent
-    /// before B2 existed — a single-element `messages` array holding only
+    /// before `system` and `examples` existed — a single-element `messages` array holding only
     /// the rendered body as a `user` message.
     #[test]
-    fn build_chat_request_without_system_or_examples_is_byte_identical_to_the_pre_b2_body() {
+    fn build_chat_request_without_system_or_examples_is_byte_identical_to_the_plain_body() {
         let body = build_chat_request(
             "qwen-2.5-1.5b",
             &[Message::user("hello")],
@@ -669,7 +697,7 @@ mod tests {
         );
     }
 
-    /// B2: `system`, then each example's `[user, assistant]` pair in file
+    /// `system`, then each example's `[user, assistant]` pair in file
     /// order, then the rendered body as the final `user` message.
     #[test]
     fn build_chat_request_orders_system_then_examples_then_body() {
@@ -739,7 +767,7 @@ mod tests {
         assert_eq!(body["max_tokens"], 512);
     }
 
-    /// B3: `seed`, `top_p` and `stop` appear in the body when set, absent
+    /// `seed`, `top_p` and `stop` appear in the body when set, absent
     /// otherwise (same "no key sent when unset" rule as `temperature`).
     #[test]
     fn build_chat_request_sends_seed_top_p_and_stop_when_set() {
@@ -794,7 +822,7 @@ mod tests {
         );
     }
 
-    /// B3: `[generation.extra]` is forwarded verbatim, at the top level,
+    /// `[generation.extra]` is forwarded verbatim, at the top level,
     /// alongside the typed keys.
     #[test]
     fn build_chat_request_forwards_extra_verbatim_alongside_typed_keys() {

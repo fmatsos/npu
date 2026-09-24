@@ -160,6 +160,18 @@ fn toml_value_to_json(value: &toml::Value) -> serde_json::Value {
 /// uses for `prompt`/`output` errors: this function has no file of its own
 /// to name, its callers (models and commands) do.
 pub(crate) fn generation_errors(generation: &Generation, label: &str) -> crate::Result<()> {
+    // A NaN or infinite float has no JSON form: it would be dropped from the
+    // request while the configuration says it is sent.
+    for (key, value) in [
+        ("temperature", generation.temperature),
+        ("top_p", generation.top_p),
+    ] {
+        if value.is_some_and(|v| !v.is_finite()) {
+            return Err(crate::Error::config(format!(
+                "\"{label}\": [generation].{key} must be a finite number"
+            )));
+        }
+    }
     if let Some(stop) = &generation.stop {
         if stop.is_empty() {
             return Err(crate::Error::config(format!(
@@ -402,6 +414,30 @@ mod tests {
     }
 
     // -- Generation::merged ----------------------------------------------
+
+    #[test]
+    fn a_non_finite_top_p_or_temperature_is_rejected_naming_the_key() {
+        for (generation, key) in [
+            (
+                Generation {
+                    top_p: Some(f32::NAN),
+                    ..Generation::default()
+                },
+                "top_p",
+            ),
+            (
+                Generation {
+                    temperature: Some(f32::INFINITY),
+                    ..Generation::default()
+                },
+                "temperature",
+            ),
+        ] {
+            let err = generation_errors(&generation, "m").expect_err("non-finite");
+            assert!(matches!(err, crate::Error::Config(_)));
+            assert!(err.to_string().contains(key));
+        }
+    }
 
     #[test]
     fn merged_without_command_override_keeps_the_model_as_is() {
