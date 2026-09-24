@@ -387,7 +387,7 @@ pub fn streamer(args: &[String]) -> crate::Result<()> {
 /// Probes the container runtime for `doctor`'s check (f): runs
 /// `docker info`, which reaches the DAEMON and not merely the binary — a
 /// report claiming the runtime is available while its daemon is dead would
-/// be exactly the kind of lie `builtin.rs` refuses (cf. its module doc).
+/// be exactly the kind of lie `builtin::doctor` refuses (cf. its module doc).
 ///
 /// Bounded by [`super::PROBE_TIMEOUT`], like the TCP probe and for the same
 /// reason: `doctor` must stay fast, and a wedged daemon would otherwise hang

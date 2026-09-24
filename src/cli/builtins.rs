@@ -450,7 +450,7 @@ pub(crate) fn doctor(
 ) -> i32 {
     // `doctor` ALWAYS runs, whether loading succeeded or failed: this
     // is precisely its point in degraded mode. `probe` is the REAL probe
-    // (`builtin::tcp_probe`), never a stub — `builtin.rs`'s tests inject
+    // (`builtin::tcp_probe`), never a stub — `builtin/doctor.rs`'s tests inject
     // their own directly on `builtin::doctor`, this function here only
     // wires in the real probe.
     let (config_ref, specs_ref, load_error_ref) = match loaded {

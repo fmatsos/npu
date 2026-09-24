@@ -1,7 +1,7 @@
 //! Runtime families: how a backend's server is brought up, asked about and
 //! torn down by `serve`, `stop`, `status` and `logs`.
 //!
-//! `builtin.rs` keeps the ORCHESTRATION — resolve the model, pick the
+//! `src/builtin/lifecycle.rs` keeps the ORCHESTRATION — resolve the model, pick the
 //! family, format the report — and this module keeps everything that
 //! actually touches the outside world. `std::process::Command` appears
 //! nowhere else in the crate.

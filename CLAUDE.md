@@ -112,10 +112,13 @@ ports or accelerator is a configuration change, never a rebuild. The
 container is named `npu-<backend-id>`, which is how `backend stop`/`status`/`logs`
 find it again.
 
-`builtin.rs` is ORCHESTRATION: it resolves model and backend, `match`es on
-the runtime family, and formats. `src/runtime/` holds what actually touches
-the outside world — dispatch is a `match`, never a trait object, so a new
-family is a compile error at every site that must handle it.
+`src/builtin/` (`doctor.rs`, `describe.rs`, `models.rs`, `lifecycle.rs`,
+`net.rs`, with shared vocabulary — `RESERVED`, `CheckKind`/`Check`/`Status`
+— and re-exports in `mod.rs`) is ORCHESTRATION: `lifecycle.rs` resolves model
+and backend, `match`es on the runtime family, and formats. `src/runtime/`
+holds what actually touches the outside world — dispatch is a `match`, never
+a trait object, so a new family is a compile error at every site that must
+handle it.
 
 Everything that touches the outside world is **injected**, like `probe` in
 `doctor`: `runner` (captures stdout), `streamer` (inherits both streams, for
