@@ -29,20 +29,27 @@ pub fn resolve(
     }
 }
 
-/// Reads `reader` as UTF-8, refusing more than [`MAX_INPUT_BYTES`].
+/// Reads `reader` as UTF-8, refusing more than [`MAX_INPUT_BYTES`]. The
+/// size is checked on bytes before decoding, so a cap that splits a
+/// multibyte character still reports the size, not invalid UTF-8.
 fn read_capped(reader: impl Read, source: &str) -> crate::Result<String> {
-    let mut buf = String::new();
+    let mut bytes = Vec::new();
     reader
         .take(MAX_INPUT_BYTES + 1)
-        .read_to_string(&mut buf)
+        .read_to_end(&mut bytes)
         .map_err(|e| named(source, &e))?;
-    if buf.len() as u64 > MAX_INPUT_BYTES {
+    if bytes.len() as u64 > MAX_INPUT_BYTES {
         return Err(crate::Error::Io(std::io::Error::new(
             std::io::ErrorKind::FileTooLarge,
             format!("{source}: input exceeds {MAX_INPUT_BYTES} bytes"),
         )));
     }
-    Ok(buf)
+    String::from_utf8(bytes).map_err(|e| {
+        named(
+            source,
+            &std::io::Error::new(std::io::ErrorKind::InvalidData, e.utf8_error()),
+        )
+    })
 }
 
 fn named(source: &str, e: &std::io::Error) -> crate::Error {
