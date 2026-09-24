@@ -168,7 +168,7 @@ pub fn run() -> Result<i32> {
             // The outside world the lifecycle commands act through,
             // injected in one place exactly like `probe` and `runner`: the
             // real environment, the real state directory, the real process
-            // table, the real signals and the real TCP probe. `builtin.rs`
+            // table, the real signals and the real TCP probe. `src/builtin/`
             // and `runtime::process`'s tests build their own, which is why
             // no test in this suite needs a server installed.
             let host = runtime::process::Host {

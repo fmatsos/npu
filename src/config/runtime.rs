@@ -201,7 +201,7 @@ pub(crate) fn reject_double_runtime(
 ///
 /// Done at LOAD time, once, rather than on every read: it is what lets
 /// [`Backend::runtime`] hand out a plain reference (no `Cow`, no clone per
-/// call) and what keeps every reader downstream — `builtin.rs`, `runtime/`,
+/// call) and what keeps every reader downstream — `builtin/`, `runtime/`,
 /// `lib.rs` — written against a runtime FAMILY instead of against Docker.
 pub(crate) fn normalize_runtime(backend: &mut Backend) {
     if backend.runtime.is_none()
