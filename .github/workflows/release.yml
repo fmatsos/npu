@@ -41,15 +41,15 @@ jobs:
           fi
       - run: make qa
 
-  # Six targets, eight archives. Each ARM target builds where the cross-compile
+  # Six targets, six archives. Each ARM target builds where the cross-compile
   # needs no extra toolchain: Linux ARM on a native ARM runner (no cross
   # linker), the Apple pair on one macOS host (a single SDK covers both), the
   # Windows pair on one MSVC host. `ureq`'s TLS is `ring`, which builds for all
   # six without a C toolchain setup step.
   #
-  # `label` names the archive; it defaults to the target and only differs for
-  # the two distro containers, which build the same triple as the Ubuntu job
-  # against their own glibc.
+  # One Linux x86-64 build serves every distribution: the binary links only
+  # libc (TLS is rustls), and the Ubuntu runner's glibc is older than the
+  # ones rolling distributions ship, so it runs on them unchanged.
   build:
     needs: qa
     strategy:
@@ -68,34 +68,11 @@ jobs:
             os: windows-latest
           - target: aarch64-pc-windows-msvc
             os: windows-latest
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            container: fedora:latest
-            label: x86_64-fedora
-            setup: dnf -y install gcc curl tar gzip
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            container: archlinux:latest
-            label: x86_64-arch
-            setup: pacman -Syu --noconfirm gcc curl tar gzip
     runs-on: ${{ matrix.os }}
-    # Empty for every entry but the two distro ones, which is how the hosted
-    # runners keep running directly on the host.
-    container: ${{ matrix.container }}
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
-
-      # The distro images ship no Rust: rustup from the official script keeps
-      # the toolchain identical to the hosted runners'.
-      - name: Distro prerequisites
-        if: matrix.setup != ''
-        run: |
-          set -eux
-          ${{ matrix.setup }}
-          curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       # Windows spends 2.3x Linux on the same crate graph, and the tell is the
       # download phase: unpacking the same 149 crates takes 0.9 s on Linux and
@@ -129,7 +106,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ inputs.tag || github.ref_name }}"
-          platform="${{ matrix.label || matrix.target }}"
+          platform="${{ matrix.target }}"
           name="npu-${version}-${platform}"
           mkdir -p "dist/${name}"
           cp "target/${{ matrix.target }}/release/npu" "dist/${name}/"
@@ -143,7 +120,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ inputs.tag || github.ref_name }}"
-          platform="${{ matrix.label || matrix.target }}"
+          platform="${{ matrix.target }}"
           name="npu-${version}-${platform}"
           mkdir -p "dist/${name}"
           cp "target/${{ matrix.target }}/release/npu.exe" "dist/${name}/"
@@ -153,12 +130,12 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: npu-${{ matrix.label || matrix.target }}
+          name: npu-${{ matrix.target }}
           path: |
             dist/*.tar.gz
             dist/*.zip
-            dist/npu-${{ matrix.label || matrix.target }}
-            dist/npu-${{ matrix.label || matrix.target }}.exe
+            dist/npu-${{ matrix.target }}
+            dist/npu-${{ matrix.target }}.exe
           if-no-files-found: error
 
   publish:
@@ -206,9 +183,19 @@ jobs:
             count=$((count + 1))
           done
 
-          if [ "$count" -ne 8 ]; then
-            echo "expected 8 update binaries, found $count" >&2
+          if [ "$count" -ne 6 ]; then
+            echo "expected 6 update binaries, found $count" >&2
             exit 1
+          fi
+
+          # Up to 0.6.0, `npu update` on Fedora or Arch looks up its own
+          # `x86_64-fedora` / `x86_64-arch` entry. The 0.6.1 manifest, and only
+          # it, maps both to the single Linux binary so those clients can reach
+          # the release that stops asking; later manifests drop them.
+          if [ "$version" = "0.6.1" ]; then
+            assets="$(jq -c \
+              '. + {"x86_64-fedora": .["x86_64-unknown-linux-gnu"], "x86_64-arch": .["x86_64-unknown-linux-gnu"]}' \
+              <<<"$assets")"
           fi
 
           jq -n \

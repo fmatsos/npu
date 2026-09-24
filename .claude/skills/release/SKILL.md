@@ -13,7 +13,7 @@ allowed-tools: Read Write Edit Grep Bash(git:*) Bash(make:*) Bash(gh:*) Bash(car
 # Releasing `npu`
 
 A release is a tag. Everything after it is automated: pushing `vX.Y.Z` runs
-`.github/workflows/release.yml`, which re-runs `make qa`, builds the eight
+`.github/workflows/release.yml`, which re-runs `make qa`, builds the six
 release archives and raw update binaries, generates `npu-update.json` with
 their SHA-256 checksums, and publishes the GitHub release with the notes taken
 from `CHANGELOG.md`. Your job is the part a machine cannot do — deciding the

@@ -746,8 +746,8 @@ npu 0.6.0 is already up to date
 
 The release publishes a `npu-update.json` manifest. It maps every supported platform to a raw
 binary and its SHA-256 checksum. The command downloads that manifest through GitHub's stable
-`releases/latest` URL, compares semantic versions, selects the current platform (including the
-Fedora and Arch Linux x86-64 builds), verifies the downloaded bytes, then replaces the executable
+`releases/latest` URL, compares semantic versions, selects the current platform (one Linux build
+per architecture, for every glibc-based distribution), verifies the downloaded bytes, then replaces the executable
 at the same path. It exits `1` without replacing anything when the manifest, download, checksum,
 platform detection, or replacement fails. The executable's directory must therefore be writable
 by the current user.
