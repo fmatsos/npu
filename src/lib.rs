@@ -337,6 +337,14 @@ fn run_backend_lifecycle(
 /// before anything else). `--config-dir`/`NPU_CONFIG_DIR` are read again
 /// here for the same reason: the project scope must be known before the
 /// commands it declares can be listed for completion.
+/// The tree is built with `cli::builtins::add_builtins` directly, NEVER
+/// through `sectioned_help`: `sectioned_help` hides the built-ins
+/// (`mut_subcommand(name, |sub| sub.hide(true))`) so they render under their
+/// own "Built-ins:" heading in `--help` rather than clap's default
+/// "Commands:" section — a presentation concern with no bearing here. A
+/// `clap_complete` engine reads that same `hide` flag to decide what to
+/// offer, so completing through the hidden tree would silently drop every
+/// built-in group (`backend`, `config`, ...) from `npu <TAB>`.
 fn complete_env() -> clap_complete::CompleteEnv<'static, impl Fn() -> clap::Command> {
     clap_complete::CompleteEnv::with_factory(|| {
         let config_dir_override =
@@ -345,7 +353,11 @@ fn complete_env() -> clap_complete::CompleteEnv<'static, impl Fn() -> clap::Comm
         let specs = config::load_scopes(&roots)
             .and_then(|_| command::discover_scopes(&roots))
             .unwrap_or_default();
-        cli::sectioned_help(cli::builtins::add_builtins(cli::build_cli(&specs)), false)
+        // `disable_help_subcommand`, same as `sectioned_help`: `clap`'s own
+        // generated `help` subcommand would otherwise collide with the
+        // `help` built-in `add_builtins` declares (cf. this crate's
+        // CLAUDE.md, "Built-ins and the container lifecycle").
+        cli::builtins::add_builtins(cli::build_cli(&specs)).disable_help_subcommand(true)
     })
 }
 
