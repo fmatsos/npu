@@ -151,6 +151,21 @@ pub(crate) fn chat_with_fallback(
 /// With neither `system` nor `examples` declared, the result is exactly
 /// today's single-element array (pinned by
 /// `backend::tests::build_chat_request_without_system_or_examples_is_byte_identical_to_the_pre_b2_body`).
+/// B4: strips one leading `<think>...</think>` block from `content` (when
+/// `enabled`) BEFORE the rest of the output pipeline (fences, parsing,
+/// schema, trim/`max_lines`) runs, and logs the removed length — never its
+/// content. Split out of `execute_business_command` only to keep it under
+/// the crate's line-count lint (same convention as `build_messages` above).
+fn strip_reasoning_and_log(content: &str, enabled: bool, logger: crate::log::Logger) -> String {
+    let (stripped, stripped_chars) = crate::output::strip_reasoning(content, enabled);
+    if stripped_chars > 0 {
+        logger.info(&format!(
+            "stripped {stripped_chars} characters of reasoning"
+        ));
+    }
+    stripped.to_string()
+}
+
 fn build_messages(
     spec: &crate::command::CommandSpec,
     prompt: &str,
@@ -327,9 +342,14 @@ pub(crate) fn execute_business_command(
     // Streamed only where nothing can reject the answer after it is shown
     // — free text, no `max_lines` — and only to a terminal: a pipe keeps
     // receiving the answer in one piece, byte for byte as before.
+    // B4: `strip_reasoning` disables streaming even on a terminal — printing
+    // tokens as they arrive would show the reasoning block before it can be
+    // stripped, defeating the whole point. The answer then arrives in one
+    // piece, exactly as for a JSON contract.
     let streaming = stdout_is_terminal
         && spec.output.format == crate::output::Format::Text
-        && spec.output.max_lines.is_none();
+        && spec.output.max_lines.is_none()
+        && !spec.output.strip_reasoning;
     let started = std::cell::Cell::new(false);
     let print_token = |answered_by: &str, token: &str| {
         // The answer is trimmed like `finalize` trims it: nothing is shown
@@ -377,7 +397,7 @@ pub(crate) fn execute_business_command(
         .in_file(&spec.file);
     }
 
-    let raw_output = answer.content;
+    let raw_output = strip_reasoning_and_log(&answer.content, spec.output.strip_reasoning, logger);
     let output = crate::output::finalize(&spec.output, &raw_output, &spec.file)?;
     logger.info(&format!(
         "output contract honoured ({}): {} characters written to stdout",
@@ -1059,5 +1079,77 @@ mod tests {
 
         assert!(matches!(err, Error::Config(_)));
         assert!(err.to_string().contains("NPU_TEST_UNSET_SYSTEM_VAR"));
+    }
+
+    /// B4: `strip_reasoning = true` must disable streaming even when
+    /// `stdout_is_terminal = true` — the condition that would otherwise
+    /// enable it (cf. the `streaming` computation in
+    /// `execute_business_command`). Asserted on the REQUEST the stub
+    /// server actually received: no `"stream": true` in the body, which is
+    /// the discriminator streaming vs. non-streaming turns on.
+    #[test]
+    fn strip_reasoning_disables_streaming_even_on_a_terminal() {
+        let (url, server, rx) = stub_backend_capturing_body(
+            r#"{"choices":[{"message":{"role":"assistant","content":"<think>t</think>final"}}]}"#,
+        );
+
+        let mut config = config::Config::default();
+        config
+            .backends
+            .insert("b".to_string(), backend_at("b", url));
+        config
+            .models
+            .insert("qwen-fast".to_string(), model_on("qwen-fast", "b", None));
+
+        let output = crate::output::OutputSpec {
+            strip_reasoning: true,
+            ..crate::output::OutputSpec::default()
+        };
+
+        let specs = vec![crate::command::CommandSpec {
+            path: vec!["x".to_string()],
+            description: "desc x".to_string(),
+            model: "qwen-fast".to_string(),
+            input: crate::command::InputMode::Stdin,
+            prompt: "{{ input }}".to_string(),
+            args: std::collections::BTreeMap::new(),
+            output,
+            schemas: std::collections::BTreeMap::new(),
+            system: None,
+            examples: Vec::new(),
+            generation: None,
+            file: std::path::PathBuf::new(),
+        }];
+        let cli = crate::cli::build_cli(&specs);
+        let matches = cli
+            .try_get_matches_from(["npu", "x"])
+            .expect("the command line must be accepted");
+        let (_, leaf_matches) = crate::cli::selected_path(&matches);
+
+        let env = |_: &str| None;
+        let read_input =
+            |_: &crate::command::InputMode, _: Option<&std::path::Path>| Ok("hi".to_string());
+
+        execute_business_command(
+            &specs[0],
+            &config,
+            leaf_matches,
+            log::Logger::new(log::Level::Error),
+            &env,
+            &read_input,
+            // The condition that would otherwise enable streaming.
+            true,
+        )
+        .expect("must succeed");
+
+        let captured = rx.recv().expect("the stub must report the captured body");
+        let body: serde_json::Value =
+            serde_json::from_slice(&captured).expect("the body must be JSON");
+        assert!(
+            body.get("stream").is_none() || body["stream"] == false,
+            "strip_reasoning must disable streaming, got body: {body}"
+        );
+
+        server.join().expect("stub server thread");
     }
 }

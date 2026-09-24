@@ -193,6 +193,15 @@ The schema is compiled only when the command actually runs, so a broken schema
 on a command nobody invokes does not break the rest of the CLI. `npu doctor`
 is what checks them all.
 
+`[output].allow_truncated = true` (default `false`) accepts an answer cut
+short by `max_tokens` (`finish_reason = "length"`) instead of failing with
+exit `4`. `[output].strip_reasoning = true` (default `false`) removes ONE
+leading `<think>...</think>` block before the rest of the pipeline runs
+(fences, parsing, schema, trim/`max_lines`) — a block anywhere else is left
+as content, an unclosed one too. It also DISABLES streaming for the command,
+even on a terminal: printing tokens as they arrive would show the reasoning
+before it can be stripped.
+
 ## Ordering, and why it matters
 
 ```text
