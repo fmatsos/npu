@@ -244,7 +244,9 @@ pub fn tune(
         writes.push((file.clone(), set_max_tokens(&model_text, response, file)?));
     }
 
-    if !dry_run {
+    if dry_run {
+        append_calibration(&mut report);
+    } else {
         for (path, text) in &writes {
             replace_file(path, text)?;
         }
@@ -254,6 +256,21 @@ pub fn tune(
         );
     }
     Ok(report.trim_end().to_string())
+}
+
+/// Additive, stdout only: the constants behind the NPU column of `report`,
+/// so a user on other hardware can see why the numbers are what they are
+/// (see `vendor::openvino::graph`'s `## Calibration` section).
+fn append_calibration(report: &mut String) {
+    let _ = write!(
+        report,
+        "\n\ncalibration (vendor::openvino::graph): activation_tenths={} \
+         activation_tenths_long={} long_context={} step={}",
+        crate::vendor::openvino::graph::ACTIVATION_TENTHS,
+        crate::vendor::openvino::graph::ACTIVATION_TENTHS_LONG,
+        crate::vendor::openvino::graph::LONG_CONTEXT,
+        crate::vendor::openvino::graph::STEP,
+    );
 }
 
 #[cfg(test)]

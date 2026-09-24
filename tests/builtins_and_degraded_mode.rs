@@ -804,7 +804,15 @@ fn tune_writes_the_graph_and_max_tokens_unless_dry_run() {
         &["backend", "tune", "--models-dir", &dir, "--dry-run"],
     );
     assert_eq!(dry.status.code(), Some(0), "stderr: {}", stderr_of(&dry));
-    assert!(stdout_of(&dry).contains("qwen-fast"));
+    let dry_stdout = stdout_of(&dry);
+    assert!(dry_stdout.contains("qwen-fast"));
+    // --dry-run additionally prints the calibration constants that decided
+    // the plan above, as key=value so a caller can parse them.
+    assert!(dry_stdout.contains(&format!(
+        "activation_tenths={}",
+        npu::vendor::openvino::graph::ACTIVATION_TENTHS
+    )));
+    assert!(dry_stdout.contains(&format!("step={}", npu::vendor::openvino::graph::STEP)));
     assert_eq!(std::fs::read_to_string(&graph).expect("graph"), before);
 
     let output = run_npu(

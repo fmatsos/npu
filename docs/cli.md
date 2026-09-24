@@ -382,7 +382,15 @@ qwen3-4b-instruct                NPU       262144     144KB    1536     512     
 qwen3-4b-instruct-gpu            GPU       262144     144KB    5376    1792       3.3GB
 qwen3-8b                         NPU        40960     144KB     512     512       5.9GB
 qwen3-8b-gpu                     GPU        40960     144KB    5376    1792       5.9GB
+
+calibration (vendor::openvino::graph): activation_tenths=62 activation_tenths_long=90 long_context=24576 step=1024
 ```
+
+`--dry-run` additionally prints the calibration constants the NPU column above was computed
+from (see `vendor::openvino::graph`'s module documentation for what they were measured against
+and on what hardware): `activation_tenths` and `activation_tenths_long` are the tenths of
+`hidden_size x layers` bytes of static buffers charged per token below and above
+`long_context`, and `step` is the token granularity the context is rounded to.
 
 What each device gets:
 
