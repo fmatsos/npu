@@ -1942,8 +1942,7 @@ mod tests {
 
     #[test]
     fn output_max_lines_with_json_format_is_config_error() {
-        // Symmetric forbidden combination (rule 2 of the shared
-        // contract): max_lines only applies to text.
+        // Symmetric forbidden combination: max_lines only applies to text.
         let source = "---\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\nmax_lines = 3\n\
              ---\nprompt\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())

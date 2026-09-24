@@ -74,7 +74,7 @@ version and describing the change.
 7. **Commit, tag, push.**
 
    ```sh
-   git add Cargo.toml Cargo.lock CHANGELOG.md
+   git add Cargo.toml Cargo.lock CHANGELOG.md README.md docs/cli.md
    git commit -m "chore(release): vX.Y.Z"
    git tag -a vX.Y.Z -m "vX.Y.Z"
    git push origin main
