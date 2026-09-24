@@ -101,6 +101,13 @@ fn build_clap_node(name: &str, node: &CommandNode<'_>) -> clap::Command {
                          sending it",
                     ),
             );
+            cmd = cmd.arg(
+                clap::Arg::new("model")
+                    .long("model")
+                    .value_name("ID")
+                    .action(clap::ArgAction::Set)
+                    .help("Use this model instead of the command's own, for this call only"),
+            );
         }
         None => {
             cmd = cmd.arg_required_else_help(true);
@@ -362,7 +369,7 @@ mod tests {
         assert!(
             stdin_only
                 .get_arguments()
-                .all(|arg| arg.get_id() == "dry-run" || arg.get_id() == "help"),
+                .all(|arg| matches!(arg.get_id().as_str(), "dry-run" | "model" | "help")),
             "a business leaf carries only its own args, plus dry-run and the automatic help flag"
         );
 
@@ -510,7 +517,7 @@ mod tests {
         let names: Vec<&str> = x
             .get_arguments()
             .map(|arg| arg.get_id().as_str())
-            .filter(|id| *id != "help" && *id != "dry-run")
+            .filter(|id| !matches!(*id, "help" | "dry-run" | "model"))
             .collect();
 
         assert_eq!(names, vec!["alpha", "zebra"]);

@@ -325,14 +325,25 @@ pub(crate) fn execute_business_command(
     stdout_is_terminal: bool,
 ) -> crate::Result<()> {
     let dry_run = leaf_matches.get_flag("dry-run");
-    let (model, backend) = config.resolve(&spec.model)?;
+    // `--model` is applied BEFORE resolving and BEFORE reading the input: an
+    // unknown override must fail exactly like an unknown model in the
+    // command file would, with the network and the input never touched.
+    let model_id: &str = leaf_matches
+        .get_one::<String>("model")
+        .map_or(spec.model.as_str(), String::as_str);
+    let (model, backend) = config.resolve(model_id)?;
     logger.info(&format!(
-        "command \"{}\" -> model \"{}\" (backend \"{}\", operation \"{}\") from {}",
+        "command \"{}\" -> model \"{}\" (backend \"{}\", operation \"{}\") from {}{}",
         spec.path.join("/"),
         model.id,
         backend.id,
         model.operation,
-        spec.file.display()
+        spec.file.display(),
+        if model_id == spec.model {
+            String::new()
+        } else {
+            format!(" (--model override of \"{}\")", spec.model)
+        }
     ));
 
     let args = crate::cli::collect_arg_values(spec, leaf_matches);
