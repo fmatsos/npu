@@ -77,16 +77,9 @@ pub use error::{Error, Result};
 /// code) — never `main` itself, so that stdout stays reserved for the
 /// RESULT produced by this library, as everywhere else in this module.
 pub fn run() -> Result<i32> {
-    // Read from the RAW command line: this logger must exist BEFORE
-    // `get_matches()`, since the degraded-mode warning below is emitted
-    // before parsing (cf. `log::level_from_args`). `clap` re-reads the same
-    // flag afterwards and is the one that rejects an invalid value.
-    let level = log::level_from_args(std::env::args());
-    let logger = log::Logger::new(level);
-    progress::init(level);
-    let error_format = error::error_format_from_args(std::env::args());
+    let (logger, error_format, config_dir_override) = read_raw_args();
 
-    let roots = scope::roots();
+    let roots = scope::roots(config_dir_override.clone());
     logger.info(&format!(
         "scopes: {}",
         error::format_available(roots.iter().map(|root| root.display().to_string()))
@@ -130,8 +123,10 @@ pub fn run() -> Result<i32> {
     // propagated any load error, exit code 2.
     match route {
         dispatch::Route::Doctor => {
+            let project_scope = scope::resolved_project_scope(config_dir_override.clone());
             return Ok(cli::builtins::doctor(
                 &loaded,
+                project_scope.as_deref(),
                 leaf_matches.get_flag("json"),
             ));
         }
@@ -320,6 +315,24 @@ fn run_backend_lifecycle(
     }
 
     Ok(None)
+}
+
+/// Reads everything `run` needs from the RAW command line, before `clap`
+/// parses anything: the diagnostic level (`log::level_from_args`), the
+/// error-envelope format (`error::error_format_from_args`) and the
+/// `--config-dir`/`NPU_CONFIG_DIR` override (the CLI flag wins over the
+/// environment variable when both are set) — the project scope is resolved
+/// to LOAD the configuration, before the `clap` tree built FROM that
+/// configuration even exists. `progress::init` also happens here: it must
+/// run before the degraded-mode warning below, same reason as the logger.
+fn read_raw_args() -> (log::Logger, error::ErrorFormat, Option<std::path::PathBuf>) {
+    let level = log::level_from_args(std::env::args());
+    let logger = log::Logger::new(level);
+    progress::init(level);
+    let error_format = error::error_format_from_args(std::env::args());
+    let config_dir_override =
+        scope::config_dir_from_args(std::env::args()).or_else(scope::config_dir_env_var);
+    (logger, error_format, config_dir_override)
 }
 
 /// `npu describe [COMMAND…]`, once the configuration has LOADED (`run`'s

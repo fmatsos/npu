@@ -365,6 +365,7 @@ mod tests {
             Some(&config),
             Some(&commands),
             None,
+            None,
             &probes(&always_ok, &container_ok, &command_ok),
         );
 
@@ -385,6 +386,7 @@ mod tests {
             None,
             None,
             Some(&err),
+            None,
             &probes(&always_ok, &container_ok, &command_ok),
         );
 
@@ -409,6 +411,7 @@ mod tests {
         let checks = doctor(
             Some(&config),
             Some(&[]),
+            None,
             None,
             &probes(&always_ok, &container_ok, &command_ok),
         );
@@ -437,6 +440,7 @@ mod tests {
             Some(&config),
             Some(&[]),
             None,
+            None,
             &probes(&always_ok, &container_ok, &command_ok),
         );
 
@@ -461,6 +465,7 @@ mod tests {
         let checks = doctor(
             Some(&config),
             Some(&commands),
+            None,
             None,
             &probes(&always_ok, &container_ok, &command_ok),
         );
@@ -493,6 +498,7 @@ mod tests {
             Some(&config),
             Some(&[spec]),
             None,
+            None,
             &probes(&always_ok, &container_ok, &command_ok),
         );
 
@@ -511,6 +517,7 @@ mod tests {
         let checks = doctor(
             Some(&config),
             Some(&[spec]),
+            None,
             None,
             &probes(&always_ok, &container_ok, &command_ok),
         );
@@ -534,6 +541,7 @@ mod tests {
         let checks = doctor(
             Some(&config),
             Some(&[]),
+            None,
             None,
             &probes(&always_fails, &container_ok, &command_ok),
         );
@@ -574,6 +582,7 @@ mod tests {
         let checks = doctor(
             Some(&config),
             Some(&[]),
+            None,
             None,
             &probes(&always_fails, &container_ok, &command_ok),
         );
@@ -1064,6 +1073,7 @@ mod tests {
             Some(&config),
             Some(&[]),
             None,
+            None,
             &probes(&always_ok, &container_fails, &command_ok),
         );
 
@@ -1084,6 +1094,7 @@ mod tests {
             Some(&config),
             Some(&[]),
             None,
+            None,
             &probes(&always_ok, &container_fails, &command_ok),
         );
 
@@ -1103,6 +1114,7 @@ mod tests {
         let checks = doctor(
             Some(&config),
             Some(&[]),
+            None,
             None,
             &probes(&always_ok, &container_ok, &command_ok),
         );
@@ -1330,6 +1342,7 @@ mod tests {
             Some(&config),
             Some(&[]),
             None,
+            None,
             &probes(&always_ok, &container_ok, &command_fails),
         );
 
@@ -1350,6 +1363,7 @@ mod tests {
         let checks = doctor(
             Some(&config),
             Some(&[]),
+            None,
             None,
             &probes(&always_ok, &container_ok, &command_ok),
         );
@@ -1374,6 +1388,7 @@ mod tests {
             Some(&config),
             Some(&[]),
             None,
+            None,
             &probes(&always_ok, &container_ok, &command_fails),
         );
 
@@ -1393,6 +1408,7 @@ mod tests {
         let checks = doctor(
             Some(&config),
             Some(&[]),
+            None,
             None,
             &probes(&always_ok, &container_ok, &command_fails),
         );
@@ -1425,6 +1441,7 @@ mod tests {
         let checks = doctor(
             Some(&config),
             Some(&[]),
+            None,
             None,
             &probes(&always_ok, &container_ok, &probe),
         );

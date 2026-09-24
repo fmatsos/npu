@@ -417,13 +417,13 @@ fn collect_markdown_files(
 /// already adds for commands whose input mode accepts a file
 /// (`InputMode::File`/`StdinOrFile`); `dry-run` and `model` would collide
 /// with the `--dry-run` and `--model` flags `cli::mod` (`build_clap_node`)
-/// adds to every business command leaf; `error-format` would collide with
-/// the GLOBAL `--error-format` argument `cli::mod` declares on the root
-/// command, same reason as `verbose`. Reject here, at load time,
-/// rather than letting the error surface (much less clearly, or even
-/// panicking `clap::Command::arg` on a duplicate id) from the clap tree's
-/// construction downstream, in `cli::mod`.
-const RESERVED_ARG_NAMES: [&str; 7] = [
+/// adds to every business command leaf; `error-format` and `config-dir`
+/// would collide with the GLOBAL `--error-format`/`--config-dir` arguments
+/// `cli::mod` declares on the root command, same reason as `verbose`.
+/// Reject here, at load time, rather than letting the error surface (much
+/// less clearly, or even panicking `clap::Command::arg` on a duplicate id)
+/// from the clap tree's construction downstream, in `cli::mod`.
+const RESERVED_ARG_NAMES: [&str; 8] = [
     "help",
     "version",
     "FILE",
@@ -431,6 +431,7 @@ const RESERVED_ARG_NAMES: [&str; 7] = [
     "dry-run",
     "model",
     "error-format",
+    "config-dir",
 ];
 
 /// Short letter reserved by `clap`: every `Command` gets an automatic
@@ -1516,6 +1517,17 @@ mod tests {
 
         assert!(matches!(err, crate::Error::Config(_)));
         assert!(err.to_string().contains("error-format"));
+    }
+
+    #[test]
+    fn arg_named_config_dir_is_config_error() {
+        let source = "---\nmodel = \"qwen-fast\"\n\n[args.\"config-dir\"]\nrequired = true\n---\nHello {{ args.\"config-dir\" }}\n";
+
+        let err = parse(source, vec!["x".to_string()], std::path::Path::new("."))
+            .expect_err("\"config-dir\" collides with the global --config-dir argument");
+
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("config-dir"));
     }
 
     #[test]

@@ -41,12 +41,29 @@ most local wins**:
       ↓
 $XDG_CONFIG_HOME/npu   (or $HOME/.config/npu)    per user
       ↓
-./.npu                                    per project
+<walk-up>/.npu                            per project
 ```
 
 If `XDG_CONFIG_HOME` is set and non-empty it replaces the `$HOME`-derived path; it does not add to
 it. On macOS, where XDG is not a native convention, the effective path is normally
 `~/.config/npu`. A scope directory that does not exist is skipped silently.
+
+### The project scope
+
+The project scope is a `.npu` directory found by walking UP from the current directory — not only
+`./.npu` any more: running `npu` from a subdirectory of a project still finds that project's
+`.npu`. The walk stops, without going any higher, at the first directory whose `.git` `exists()`
+(a file in a worktree, a directory otherwise: either way, that is the project's own boundary) or
+at `$HOME` (checked for its own `.npu` before the walk stops there, but never searched above).
+
+`--config-dir <DIR>` or `$NPU_CONFIG_DIR` (the flag wins when both are set) name the project scope
+directly and skip the walk-up entirely:
+
+```console
+$ npu --config-dir /path/to/.npu config models
+```
+
+`npu doctor` reports the project scope it actually resolved, as an `Ok` line naming the directory.
 
 > [!WARNING]
 > On Windows, only `.\.npu` works out of the box. `/etc/npu` is a hard-coded Unix path, and the

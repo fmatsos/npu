@@ -32,6 +32,21 @@ impl std::fmt::Debug for Probes<'_> {
     }
 }
 
+/// Check: the project scope actually used to load the configuration — an
+/// `Ok` line naming the directory when
+/// [`crate::scope::resolved_project_scope`] found one (an override or a
+/// `.npu` found by walking up from `cwd`), absent entirely otherwise (no
+/// line rather than a line claiming "none": a project with no local scope
+/// at all is not a failure, cf. this module's "deliberate omission" doc).
+fn check_project_scope(project_scope: Option<&std::path::Path>) -> Option<Check> {
+    let scope = project_scope?;
+    Some(Check {
+        kind: CheckKind::Config,
+        label: format!("project scope ({})", scope.display()),
+        status: Status::Ok,
+    })
+}
+
 /// Check (a): was the configuration loaded successfully?
 ///
 /// `load_error` carries the error KEPT by the degraded mode of `lib.rs::run`
@@ -337,9 +352,11 @@ pub fn doctor(
     config: Option<&crate::config::Config>,
     commands: Option<&[crate::command::CommandSpec]>,
     load_error: Option<&crate::Error>,
+    project_scope: Option<&std::path::Path>,
     probes: &Probes<'_>,
 ) -> Vec<Check> {
     let mut checks = vec![check_config_loaded(load_error)];
+    checks.extend(check_project_scope(project_scope));
 
     if let Some(config) = config {
         checks.extend(check_backends_reachable(

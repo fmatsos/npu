@@ -161,6 +161,25 @@ fn error_format_arg() -> clap::Arg {
         .help("Format of a clap usage error on stderr: plain text, or a one-line JSON envelope")
 }
 
+/// The `--config-dir <DIR>` argument, declared once on the root and marked
+/// `global`, same idiom as [`verbose_arg`]/[`error_format_arg`]. Its VALUE
+/// is read from the raw command line (`scope::config_dir_from_args`) —
+/// before `clap` parses anything, since the project scope is resolved to
+/// LOAD the configuration this very `clap` tree is built from. Declaring it
+/// here only makes it appear in `--help` and accepted syntax;
+/// `command.rs` reserves the name `config-dir` for the same reason as
+/// `verbose`/`error-format`.
+fn config_dir_arg() -> clap::Arg {
+    clap::Arg::new("config-dir")
+        .long("config-dir")
+        .global(true)
+        .value_name("DIR")
+        .help(
+            "Use this directory as the project scope instead of walking up from the current \
+             one [env: NPU_CONFIG_DIR]",
+        )
+}
+
 /// Builds the complete `clap` tree (builder API) from the discovered
 /// commands. Contains ONLY the business
 /// commands: the built-ins (`backend …`, `config …`, `doctor`, `describe`, `update`, `--version`) are added
@@ -175,7 +194,8 @@ pub(crate) fn build_cli(specs: &[crate::command::CommandSpec]) -> clap::Command 
         .styles(crate::style::clap_styles())
         .arg_required_else_help(true)
         .arg(verbose_arg())
-        .arg(error_format_arg());
+        .arg(error_format_arg())
+        .arg(config_dir_arg());
     for (name, node) in &tree.children {
         root = root.subcommand(build_clap_node(name, node));
     }

@@ -679,6 +679,21 @@ $ npu does-not-exist --error-format json
 `error-format` is consequently a reserved argument name: a command declaring
 `[args."error-format"]` is rejected at load time, naming the file.
 
+## `--config-dir`
+
+`--config-dir <DIR>` (or `$NPU_CONFIG_DIR`, the flag winning when both are set) names the project
+scope directly, skipping the walk-up search entirely. Read from the raw command line, before
+`clap` parses anything — the project scope is resolved to LOAD the configuration, before the
+`clap` tree (built from it) even exists. See [Scopes and precedence](configuration.md#scopes-and-precedence)
+for the walk-up itself.
+
+```console
+$ npu --config-dir /path/to/.npu config models
+```
+
+`config-dir` is consequently a reserved argument name: a command declaring `[args."config-dir"]`
+is rejected at load time, naming the file.
+
 ---
 
 ## `npu --version`
