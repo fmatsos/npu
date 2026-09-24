@@ -683,6 +683,25 @@ npu: info: POST http://127.0.0.1:8000/v3/chat/completions (model "OpenVINO/Qwen3
 of a command is not a diagnostic. A failure message is printed by the process itself, once, at
 every level — `--verbose error` silences the engine's commentary, never the error you need.
 
+### `--dry-run`
+
+Every business command leaf accepts `--dry-run`: it builds the exact request `npu` would send —
+url, headers, body — through the same constructor the real call uses, and prints it as JSON
+instead of sending it. Nothing is written or read but the terminal: the runtime is never resolved
+(a `port = "auto"` backend keeps its `{{ backend.port }}` placeholder verbatim, since resolving it
+means asking Docker), only the primary model is shown (never the fallback), and header VALUES are
+redacted — only their names appear.
+
+```console
+$ echo "texte" | npu classify --dry-run
+{"body":{"messages":[{"content":"Classify: texte\n","role":"user"}],"model":"OpenVINO/Qwen3-8B-int4-ov"},"headers":{},"url":"http://127.0.0.1:8000/v3/chat/completions"}
+```
+
+`--dry-run` is declared only on business command leaves (`build_clap_node`), never on a built-in:
+`npu doctor --dry-run` is a `clap` usage error (exit `2`, empty stdout), the same path as any other
+unrecognized flag. `dry-run` is consequently a reserved argument name: a command declaring
+`[args."dry-run"]` is rejected at load time, naming the file.
+
 ### Progress indicators
 
 On a terminal, `npu` draws a spinner on stderr while it waits for a model (relabelled when the

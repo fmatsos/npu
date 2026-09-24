@@ -62,6 +62,65 @@ fn request_builder(
     }
 }
 
+/// A fully built `chat` request, before it is sent: the resolved URL, the
+/// resolved headers (name -> value, `{{ env.NAME }}` already substituted)
+/// and the JSON body. Built by [`build_request`], the single constructor
+/// [`chat`] and `--dry-run` (`exec::execute_business_command`) both go
+/// through, so the body a dry run shows is byte-identical to the one an
+/// actual call would send.
+#[derive(Debug)]
+pub struct PreparedRequest {
+    pub url: String,
+    pub headers: std::collections::BTreeMap<String, String>,
+    pub body: Value,
+}
+
+/// Builds the request `chat` would send to `model` on `backend`, without
+/// sending it: the URL (joined from `base_url` and the operation's path,
+/// UNRESOLVED — a `port = "auto"` backend's `{{ backend.port }}` placeholder
+/// is left as `base_url` carries it, since resolving it means reaching
+/// Docker, which `--dry-run` must never do), the resolved headers, and the
+/// JSON body (`response_format` sent only when `backend.structured_output`
+/// is declared).
+///
+/// # Errors
+/// `Error::Config` when `backend` does not expose `model.operation`.
+pub fn build_request(
+    backend: &crate::config::Backend,
+    model: &crate::config::Model,
+    base_url: &str,
+    request: &Request<'_>,
+) -> crate::Result<PreparedRequest> {
+    let Request {
+        messages,
+        schema,
+        on_token: _,
+        headers,
+        generation,
+    } = *request;
+    let operation = backend.operations.get(&model.operation).ok_or_else(|| {
+        crate::Error::Config(crate::error::ConfigError::bare(
+            Some(&backend.id),
+            format!(
+                "backend \"{}\" does not expose operation \"{}\" (available operations: {})",
+                backend.id,
+                model.operation,
+                crate::error::format_available(backend.operations.keys())
+            ),
+        ))
+    })?;
+
+    let url = join_url(base_url, &operation.path);
+    let schema = schema.filter(|_| backend.structured_output);
+    let body = build_chat_request(&model.model, messages, generation, schema);
+
+    Ok(PreparedRequest {
+        url,
+        headers: headers.clone(),
+        body,
+    })
+}
+
 /// Executes the `chat` operation of the given `model` against `backend`, with `prompt`.
 ///
 /// `schema` is the command's output schema, if any: sent as
@@ -81,7 +140,7 @@ pub fn chat(
     logger: crate::log::Logger,
 ) -> crate::Result<ChatAnswer> {
     let Request {
-        messages,
+        messages: _,
         schema,
         on_token,
         headers,
@@ -99,7 +158,8 @@ pub fn chat(
         ))
     })?;
 
-    let url = join_url(base_url, &operation.path);
+    let PreparedRequest { url, body, .. } = build_request(backend, model, base_url, request)?;
+    let mut body = body;
     let backend_err = |message: String| {
         crate::Error::Backend(crate::error::BackendError::at_url(
             &backend.id,
@@ -108,7 +168,6 @@ pub fn chat(
         ))
     };
     let schema = schema.filter(|_| backend.structured_output);
-    let mut body = build_chat_request(&model.model, messages, generation, schema);
     if on_token.is_some()
         && let Value::Object(map) = &mut body
     {
