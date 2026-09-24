@@ -546,6 +546,7 @@ pub(crate) const DOCTOR_ABOUT: &str = "Check the runtime environment: configurat
 /// prints its report and returns its exit code.
 pub(crate) fn doctor(
     loaded: &crate::Result<(crate::config::Config, Vec<crate::command::CommandSpec>)>,
+    project_scope: Option<&std::path::Path>,
     json: bool,
 ) -> i32 {
     // `doctor` ALWAYS runs, whether loading succeeded or failed: this
@@ -561,6 +562,7 @@ pub(crate) fn doctor(
         config_ref,
         specs_ref,
         load_error_ref,
+        project_scope,
         &crate::builtin::Probes {
             backend: &crate::builtin::tcp_probe,
             container: &crate::runtime::docker::probe,
