@@ -108,7 +108,10 @@ pub fn run() -> Result<i32> {
     );
     // Kept for `npu help`, which re-parses `<path> --help` through it.
     let help_cli = cli.clone();
-    let matches = cli.get_matches();
+    let matches = match cli.try_get_matches() {
+        Ok(matches) => matches,
+        Err(err) => err.exit(),
+    };
 
     let (path, leaf_matches) = cli::selected_path(&matches);
     let route: Vec<&str> = path.iter().map(String::as_str).collect();
