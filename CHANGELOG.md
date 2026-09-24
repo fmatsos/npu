@@ -4,6 +4,80 @@ Every notable change to `npu`, newest first. Versions follow
 [semantic versioning](https://semver.org); pre-1.0, a breaking change bumps
 the minor.
 
+## [0.6.0] - 2026-09-24
+
+### Added
+
+- `--dry-run` on every configured command prints the request `npu` would send — URL, header
+  names (values redacted) and body — as JSON on stdout, without sending it or starting a runtime.
+  The body is built by the same code as a real call, including `"stream": true` when the real
+  call would stream ([`3a21b65`](https://github.com/fmatsos/npu/commit/3a21b65d83dc9a9553504fdf25161d9c03b29177), [`1933062`](https://github.com/fmatsos/npu/commit/193306261cefee1239f54bb76e0792313a33e30d))
+- `--model <ID>` on every configured command uses another configured model for that one call; an
+  unknown id exits `2` naming the available ones, before the input is read ([`5c0f366`](https://github.com/fmatsos/npu/commit/5c0f3660fbdbaa3e6406ccaf1f91c3cdc7d32af7))
+- `--json` on `doctor` / `config check`, `backend status` and `config models`: the same report as
+  a JSON array (`kind` is `"config"` or `"reachability"`) for a calling program ([`5a266c2`](https://github.com/fmatsos/npu/commit/5a266c26310065c9cbf6278021d21aaa72569fe8))
+- `npu describe` with no argument lists every describable path, built-in groups included
+  ([`5a266c2`](https://github.com/fmatsos/npu/commit/5a266c26310065c9cbf6278021d21aaa72569fe8), [`566e600`](https://github.com/fmatsos/npu/commit/566e60095ff9b65d5f98a615bd71965f0e8f0e65))
+- `--error-format json` puts a command-line usage error on stderr as one JSON line
+  (`{"kind":"usage","message":...}`), including a missing subcommand and `npu help <unknown>`;
+  `--help` and `--version` are never affected ([`5a266c2`](https://github.com/fmatsos/npu/commit/5a266c26310065c9cbf6278021d21aaa72569fe8), [`04cc703`](https://github.com/fmatsos/npu/commit/04cc70333f25e765462ec8e56da55a0754ae0786))
+- The project scope is found by walking up from the current directory to the nearest `.npu`,
+  stopping at the repository root (`.git`) or at `$HOME`; `--config-dir <DIR>` or
+  `NPU_CONFIG_DIR` names it directly, and `npu doctor` reports which one was used
+  ([`6f09ed9`](https://github.com/fmatsos/npu/commit/6f09ed93cf82cd5491fcb4b739cfeff98db02466), [`dea2e5f`](https://github.com/fmatsos/npu/commit/dea2e5f0a0d0aad12873128cf3e39acec2a793d8), [`d17661f`](https://github.com/fmatsos/npu/commit/d17661fbedb59ce6dfedaf274e4a7c7334a88df1))
+- Backends accept a `[headers]` table sent with every request, for hosted or authenticated
+  OpenAI-compatible servers. Values may only use `{{ env.NAME }}`, are resolved before the input
+  is read, and are never logged ([`4226aa3`](https://github.com/fmatsos/npu/commit/4226aa35f4d3ed5268a79fe07303cb5b9ab3659c), [`92498e4`](https://github.com/fmatsos/npu/commit/92498e4b62f5d5428b3bd0bf41a59ad5dc74abe5))
+- Commands accept a `system` prompt and `[[examples]]` (few-shot user/assistant turns). A command
+  declaring neither sends exactly the same request as before ([`2c9c27e`](https://github.com/fmatsos/npu/commit/2c9c27e323091d7e73486b1809eb4a2ad11214f0))
+- Model `[generation]` gains `seed`, `top_p`, `stop` and a free-form `[generation.extra]`
+  forwarded as-is (e.g. `chat_template_kwargs`); a command may override any of them for itself,
+  key by key ([`073e541`](https://github.com/fmatsos/npu/commit/073e541ad9deaba6312b1bb1a72a59ebc3d28984), [`92498e4`](https://github.com/fmatsos/npu/commit/92498e4b62f5d5428b3bd0bf41a59ad5dc74abe5))
+- `[output] strip_reasoning = true` removes a leading `<think>…</think>` block before the output
+  contract is applied ([`faab3f1`](https://github.com/fmatsos/npu/commit/faab3f1f4431f111f39e9b093cf810a47f8f17bd))
+- The token usage reported by the server is logged at `--verbose info` ([`7d4e719`](https://github.com/fmatsos/npu/commit/7d4e7196c8ad7bd23d88688ed531cc61f3927dba))
+- Shell completions: `COMPLETE=bash npu` (or `zsh`, `fish`…) prints the registration script;
+  completion covers built-ins, configured commands and their arguments
+  ([`042f9f1`](https://github.com/fmatsos/npu/commit/042f9f12fde99d2045b79e333e547d917224fbc5), [`ef5230f`](https://github.com/fmatsos/npu/commit/ef5230f9f11ae0a5ebba4896f60f64fa624e807b), [`155ca00`](https://github.com/fmatsos/npu/commit/155ca005571248735e3bcd0ece0f17464e2742a7))
+- `backend tune --dry-run` also prints the NPU calibration constants its estimate uses
+  ([`a178c83`](https://github.com/fmatsos/npu/commit/a178c832de7e0073f3c160a499d73eae56301813), [`e22dbac`](https://github.com/fmatsos/npu/commit/e22dbac9fd7c6cb5ab5b91b9fd29e74e1e5914c3))
+- A Cargo feature, `hardware-tooling` (on by default), holds `model discover` and `backend tune`;
+  building with `--no-default-features` leaves them out ([`06ed679`](https://github.com/fmatsos/npu/commit/06ed679bcf407cced220486607418ea3bd8b3fb7), [`55f413d`](https://github.com/fmatsos/npu/commit/55f413d60f418d42308c5bc7c64d9da153bf88af), [`d84d13b`](https://github.com/fmatsos/npu/commit/d84d13b202aeca6d8f599244985ba496e649e546))
+
+### Changed
+
+- **Breaking**: an answer cut at `max_tokens` (`finish_reason = "length"`) now exits `4`, naming
+  the model that answered and the limit in effect, instead of exiting `0` with a truncated
+  answer. Set `allow_truncated = true` under the command's `[output]` to keep the old behaviour.
+  A truncation never triggers the fallback ([`7d4e719`](https://github.com/fmatsos/npu/commit/7d4e7196c8ad7bd23d88688ed531cc61f3927dba), [`142600a`](https://github.com/fmatsos/npu/commit/142600a2f10dbce4dfd8309290a3a02c3e7e56c8))
+- **Breaking**: `dry-run`, `model`, `error-format` and `config-dir` are now reserved argument
+  names. A command file declaring one of them under `[args]` is rejected at load time, naming
+  the file; rename the argument ([`3a21b65`](https://github.com/fmatsos/npu/commit/3a21b65d83dc9a9553504fdf25161d9c03b29177), [`5c0f366`](https://github.com/fmatsos/npu/commit/5c0f3660fbdbaa3e6406ccaf1f91c3cdc7d32af7), [`5a266c2`](https://github.com/fmatsos/npu/commit/5a266c26310065c9cbf6278021d21aaa72569fe8), [`6f09ed9`](https://github.com/fmatsos/npu/commit/6f09ed93cf82cd5491fcb4b739cfeff98db02466))
+- **Breaking**: a `.npu` in a parent directory is now loaded when `npu` runs from a
+  subdirectory. A parent `.npu` you did not mean to use must be moved, or pass `--config-dir`
+  ([`6f09ed9`](https://github.com/fmatsos/npu/commit/6f09ed93cf82cd5491fcb4b739cfeff98db02466))
+- **Breaking**: on Windows, the system and user scopes are `%ProgramData%\npu` and
+  `%APPDATA%\npu` (else `%USERPROFILE%\.config\npu`). A configuration placed under
+  `HOME` or `XDG_CONFIG_HOME` as a workaround must move there ([`5cf5371`](https://github.com/fmatsos/npu/commit/5cf53713ae1e3f6705d7c26c9d30387dd02a43e3))
+- A stream that reports an error, or ends with no content, now fails with exit `3` instead of
+  returning a partial or empty answer ([`7d4e719`](https://github.com/fmatsos/npu/commit/7d4e7196c8ad7bd23d88688ed531cc61f3927dba))
+- The OpenVINO architecture registry used by `model discover` is pinned to optimum-intel
+  `v2.2.0` instead of its moving `main` branch ([`5a4f1c2`](https://github.com/fmatsos/npu/commit/5a4f1c230a649664726fb924f89a046d116b9707))
+
+### Fixed
+
+- `npu update` no longer warns that a valid configuration is invalid after every successful
+  update ([`64934dc`](https://github.com/fmatsos/npu/commit/64934dccd337fb8cf1881a5f499c762754c06fde))
+- An unreadable, missing, non-UTF-8 or oversized input (over 64 MiB) is reported naming the
+  file or `stdin`; still exit `1` ([`8b3f187`](https://github.com/fmatsos/npu/commit/8b3f187dbfe3befabde1f45404103e4b8ecfd2df), [`cfa24e4`](https://github.com/fmatsos/npu/commit/cfa24e45a25b6bfb957e19b7c924a9f7e276f0e1))
+- `model discover` now recognises architectures registered only through optimum-intel's shared
+  text-generation task list ([`5a4f1c2`](https://github.com/fmatsos/npu/commit/5a4f1c230a649664726fb924f89a046d116b9707))
+- Usage lines name the binary `npu` on Windows too, instead of `npu.exe` ([`b617677`](https://github.com/fmatsos/npu/commit/b617677d2e73fb5ff780c0ea5564ea0ea884e2ef))
+- A backend error without a fallback keeps its URL and HTTP status, and a failing fallback is
+  reported under its own backend ([`142600a`](https://github.com/fmatsos/npu/commit/142600a2f10dbce4dfd8309290a3a02c3e7e56c8))
+
+**Full changelog**: [`v0.5.1...v0.6.0`](https://github.com/fmatsos/npu/compare/v0.5.1...v0.6.0)
+
 ## [0.5.1] - 2026-09-23
 
 ### Added

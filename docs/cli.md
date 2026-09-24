@@ -721,7 +721,7 @@ Prints the program name and the release number embedded from `Cargo.toml`:
 
 ```console
 $ npu --version
-npu 0.5.1
+npu 0.6.0
 ```
 
 It does not load or require a valid AI configuration.
@@ -734,14 +734,14 @@ Checks the latest GitHub Release and installs it over the currently running exec
 
 ```console
 $ npu update
-updated npu from 0.5.1 to 0.5.2
+updated npu from 0.5.1 to 0.6.0
 ```
 
 When no newer release exists, it reports that fact and leaves the executable untouched:
 
 ```console
 $ npu update
-npu 0.5.1 is already up to date
+npu 0.6.0 is already up to date
 ```
 
 The release publishes a `npu-update.json` manifest. It maps every supported platform to a raw
