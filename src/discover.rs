@@ -28,6 +28,13 @@ use std::fmt::Write as _;
 use crate::vendor::huggingface::{HUB_API, encode};
 use crate::vendor::openvino::registry::{ARCHITECTURES_URL, exportable_architectures};
 
+/// The real [`World::fetch`]. Re-exported so `cli::builtins`, which wires
+/// up [`World`], never has to name `vendor::` itself: only a built-in's
+/// orchestration module may.
+pub use crate::vendor::huggingface::fetch;
+/// The real [`World::llmfit`]. See [`fetch`].
+pub use crate::vendor::llmfit::fit_json as llmfit_stdout;
+
 // ponytail: INT4 is half a byte per parameter; embeddings and the head stay
 // wider, measured at about +20 % on the Qwen3 exports. Refine per
 // architecture if a model that fits here fails to load.

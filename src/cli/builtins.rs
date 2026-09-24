@@ -56,8 +56,8 @@ pub(crate) fn model_discover(
     let mut system = sysinfo::System::new();
     system.refresh_memory();
     let world = crate::discover::World {
-        fetch: &crate::vendor::huggingface::fetch,
-        llmfit: &crate::vendor::llmfit::fit_json,
+        fetch: &crate::discover::fetch,
+        llmfit: &crate::discover::llmfit_stdout,
         has_npu: crate::discover::host_has_npu(),
         total_ram: system.total_memory(),
     };
