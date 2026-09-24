@@ -151,7 +151,7 @@ jobs:
           cp README.md "dist/${name}/"
           7z a "dist/${name}.zip" "./dist/${name}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: npu-${{ matrix.label || matrix.target }}
           path: |
