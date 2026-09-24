@@ -140,6 +140,10 @@ struct RawOutputSpec {
     schema: Option<String>,
     #[serde(default)]
     max_lines: Option<usize>,
+    /// Accepts a truncated answer (`finish_reason == "length"`) as-is
+    /// instead of failing with `Error::Output`. `false` by default.
+    #[serde(default)]
+    allow_truncated: bool,
 }
 
 /// `[input]` section of the frontmatter.
@@ -611,6 +615,7 @@ fn convert_output(
                 format: crate::output::Format::Text,
                 schema: None,
                 max_lines: raw.max_lines,
+                allow_truncated: raw.allow_truncated,
             })
         }
         crate::output::Format::Json => {
@@ -629,6 +634,7 @@ fn convert_output(
                 format: crate::output::Format::Json,
                 schema,
                 max_lines: None,
+                allow_truncated: raw.allow_truncated,
             })
         }
     }

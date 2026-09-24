@@ -469,6 +469,7 @@ mod tests {
                 "/does/not/exist/schema-not-found.json",
             )),
             max_lines: None,
+            allow_truncated: false,
         };
         let config = crate::config::Config::default();
 
@@ -686,6 +687,7 @@ mod tests {
                 format: crate::output::Format::Json,
                 schema: Some(std::path::PathBuf::from("schemas/translation.json")),
                 max_lines: None,
+                allow_truncated: false,
             },
             schemas: std::collections::BTreeMap::new(),
             file: std::path::PathBuf::from(".npu/commands/translate.md"),
@@ -719,6 +721,7 @@ mod tests {
             format: crate::output::Format::Text,
             schema: None,
             max_lines: Some(1),
+            allow_truncated: false,
         };
 
         let json_text =

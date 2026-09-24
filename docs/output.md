@@ -2,6 +2,7 @@
 
 - [The stdout contract](#the-stdout-contract)
 - [Declaring an output contract](#declaring-an-output-contract)
+- [Truncated answers](#truncated-answers)
 - [Text output](#text-output)
 - [JSON output](#json-output)
 - [JSON Schema validation](#json-schema-validation)
@@ -42,6 +43,7 @@ schema = "schemas/classification.json"
 | `format` | `"text"` \| `"json"` | `"text"` | |
 | `schema` | name or path | none | JSON only; see [Schema paths](#schema-paths) |
 | `max_lines` | integer | none | text only |
+| `allow_truncated` | boolean | `false` | accept an answer cut short by `max_tokens`; see [Truncated answers](#truncated-answers) |
 
 Rejected at load time, naming the command file:
 
@@ -120,6 +122,37 @@ max_lines = 1
 If `max_lines` is declared and the response has more non-empty lines than that, the command fails
 with exit code `4`. The output is **never silently truncated** — a response that does not meet
 the declared contract is a failure, not something to repair.
+
+---
+
+## Truncated answers
+
+A backend that stops generating because it hit `max_tokens` (its own default, or the model's
+declared `[generation].max_tokens`) reports it as `finish_reason = "length"`. `npu` treats that as
+an execution failure by default — exit code `4` — exactly like a schema violation or an
+`max_lines` overrun: a cut-off answer did not honor the command's contract any less than a
+malformed one.
+
+```toml
+[output]
+allow_truncated = true
+```
+
+Setting `allow_truncated = true` accepts the truncated answer as-is instead: it is finalized and
+written to stdout like any other answer, and the command exits `0`.
+
+Truncation never triggers the [fallback](configuration.md#fallback-optional) retry: the fallback
+exists for a prompt an NPU-served model refuses as too long, not for an answer that ran out of
+`max_tokens` — the model answered, it just did not finish.
+
+The behavior differs slightly with the terminal versus a pipe:
+
+- **piped or redirected** (`npu ... > file`, `npu ... | jq .`): stdout stays **completely empty**
+  on a truncated answer that is not accepted — the answer never reaches it, byte one included.
+- **a terminal, streaming**: tokens already reached the screen as they arrived, before `npu` could
+  know the stream would end truncated. The exit code is still `4`; only the closing frame is
+  skipped. A calling agent reads the exit code and stderr, never the terminal's screen, so this is
+  not a contract violation — only a human-facing display detail.
 
 ---
 

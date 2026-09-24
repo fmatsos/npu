@@ -202,6 +202,84 @@ fn spawn_stub_server(content: String) -> (std::net::SocketAddr, std::thread::Joi
     (addr, handle)
 }
 
+/// Same idiom as [`spawn_stub_server`], but the `chat/completions` response
+/// also carries `finish_reason`, to exercise the A4 truncation contract.
+fn spawn_stub_server_with_finish_reason(
+    content: String,
+    finish_reason: &'static str,
+) -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
+    use std::io::{BufRead, BufReader, Read};
+    use std::time::Instant;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("binding the stubbed listener");
+    let addr = listener
+        .local_addr()
+        .expect("getting the listener's local address");
+    listener
+        .set_nonblocking(true)
+        .expect("switching the listener to non-blocking");
+
+    let handle = std::thread::spawn(move || {
+        let deadline = Instant::now() + ACCEPT_TIMEOUT;
+        let stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "no connection received on the stubbed listener within the \
+                         {ACCEPT_TIMEOUT:?} deadline"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                #[allow(clippy::panic)]
+                Err(err) => panic!("accepting the connection: {err}"),
+            }
+        };
+        stream
+            .set_nonblocking(false)
+            .expect("switching the accepted stream back to blocking");
+        let mut reader = BufReader::new(stream.try_clone().expect("cloning the TCP stream"));
+
+        let mut content_length = 0usize;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("reading a header line");
+            if line == "\r\n" || line.is_empty() {
+                break;
+            }
+            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                content_length = value.trim().parse().unwrap_or(0);
+            }
+        }
+        let mut body = vec![0u8; content_length];
+        reader
+            .read_exact(&mut body)
+            .expect("reading the request body");
+
+        let response_body = serde_json::json!({
+            "choices": [
+                {
+                    "message": { "role": "assistant", "content": content },
+                    "finish_reason": finish_reason
+                }
+            ]
+        })
+        .to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        let mut stream = stream;
+        stream
+            .write_all(response.as_bytes())
+            .expect("writing the stubbed response");
+    });
+
+    (addr, handle)
+}
+
 /// Runs the REAL `npu` binary (compiled by cargo for this test run, never a
 /// function called directly in this test process) with `scope` as the
 /// current directory and `stdin_data` sent on its standard input, then
@@ -611,4 +689,59 @@ fn text_exceeding_max_lines_fails_with_exit_code_four_end_to_end() {
         stderr.contains('1') && stderr.contains('3'),
         "stderr must cite the expected and the received number of lines, got: {stderr}"
     );
+}
+
+/// e) spec A4: a model answering with `finish_reason = "length"` fails with
+/// exit code 4, stdout stays EMPTY (never the truncated answer), and stderr
+/// names the model.
+#[test]
+fn truncated_answer_fails_with_exit_code_four_and_empty_stdout_end_to_end() {
+    let (addr, server) =
+        spawn_stub_server_with_finish_reason("truncated ans".to_string(), "length");
+
+    let scope = fixture_scope("truncated-answer");
+    write_scope(&scope, addr, "format = \"text\"");
+
+    let output = run_npu(&scope, &["e2e-cmd"], "whatever");
+    server.join().expect("the server thread must not panic");
+
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "a truncated answer (finish_reason = \"length\") must fail with code 4; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "the truncated answer must NEVER reach stdout, got: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr must be valid UTF-8");
+    assert!(
+        stderr.contains("test-model"),
+        "stderr must name the model, got: {stderr}"
+    );
+}
+
+/// f) the same truncated answer, but the command opts in with
+/// `allow_truncated = true`: exit 0, the (truncated) answer reaches stdout.
+#[test]
+fn truncated_answer_with_allow_truncated_succeeds_end_to_end() {
+    let (addr, server) =
+        spawn_stub_server_with_finish_reason("truncated ans".to_string(), "length");
+
+    let scope = fixture_scope("truncated-answer-allowed");
+    write_scope(&scope, addr, "format = \"text\"\nallow_truncated = true");
+
+    let output = run_npu(&scope, &["e2e-cmd"], "whatever");
+    server.join().expect("the server thread must not panic");
+
+    assert!(
+        output.status.success(),
+        "allow_truncated = true must accept a truncated answer (exit 0), got {:?}; stderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout must be valid UTF-8");
+    assert_eq!(stdout, "truncated ans\n");
 }
