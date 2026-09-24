@@ -288,6 +288,7 @@ mod tests {
     }
 
     /// Its twin for the process family.
+    #[cfg(unix)]
     fn process_table(backend: &Backend) -> &Process {
         runtime::process_of(backend).expect("a process runtime must be kept")
     }
