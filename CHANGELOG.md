@@ -4,6 +4,19 @@ Every notable change to `npu`, newest first. Versions follow
 [semantic versioning](https://semver.org); pre-1.0, a breaking change bumps
 the minor.
 
+## [0.6.1] - 2026-09-24
+
+### Changed
+
+- Linux x86-64 ships as one binary, `x86_64-unknown-linux-gnu`, for every glibc-based
+  distribution; the separate Fedora and Arch builds are gone (they were the same program).
+  `npu update` no longer reads `/etc/os-release`. A Fedora or Arch install on 0.6.0 or earlier
+  updates to this release as usual; one that skips it must reinstall from the releases page
+  once, as later manifests no longer list `x86_64-fedora` or `x86_64-arch`
+  ([`8590376`](https://github.com/fmatsos/npu/commit/85903763f80dabf261962f9161536d932bb172b1))
+
+**Full changelog**: [`v0.6.0...v0.6.1`](https://github.com/fmatsos/npu/compare/v0.6.0...v0.6.1)
+
 ## [0.6.0] - 2026-09-24
 
 ### Added
