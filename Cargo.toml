@@ -48,6 +48,19 @@ toml = "1.1.6"
 ureq = { version = "3.4.2", default-features = false, features = ["json", "rustls"] }
 indicatif = { version = "0.18.6", default-features = false }
 anstream = "1.0.0"
+# `unstable-dynamic` is what `clap_complete::CompleteEnv` needs (`COMPLETE=bash
+# npu`, no `completions` subcommand, no reserved name -- CLAUDE.md forbids
+# adding a top-level built-in): confirmed against clap_complete 4.6.11's own
+# Cargo.toml (`unstable-dynamic = ["dep:clap_lex", "dep:shlex",
+# "dep:is_executable", "clap/unstable-ext"]`; `clap/unstable-ext` is unified
+# into the crate's single `clap` dependency, so it is not repeated here).
+# Measured on x86_64-unknown-linux-gnu with `cargo tree --edges normal
+# --prefix none | sed 's/ (\*)//' | sort -u | wc -l` and `cargo build
+# --release && stat -c %s target/release/npu`:
+#   crates  118 -> 121 (+3: clap_complete, shlex, is_executable; clap_lex was
+#           already in the graph via clap_builder)
+#   binary  9 301 280 B -> 9 438 400 B (+137 120 B, +1.5 %)
+clap_complete = { version = "4.6.11", default-features = false, features = ["unstable-dynamic"] }
 
 # --- Quality: lints applied at build time ----------------------------------
 # `priority = -1` on a group is mandatory as soon as an individual lint of

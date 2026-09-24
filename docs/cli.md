@@ -694,6 +694,25 @@ $ npu --config-dir /path/to/.npu config models
 `config-dir` is consequently a reserved argument name: a command declaring `[args."config-dir"]`
 is rejected at load time, naming the file.
 
+## Shell completions
+
+`npu` supports dynamic shell completions through `clap_complete::CompleteEnv` — no `completions`
+subcommand, no reserved name: setting `COMPLETE=<shell>` makes the binary print the shell's
+registration script instead of running as usual.
+
+```console
+$ eval "$(COMPLETE=bash npu)"       # bash, once per shell session (or in ~/.bashrc)
+$ eval "$(COMPLETE=zsh npu)"        # zsh
+$ COMPLETE=fish npu | source        # fish
+```
+
+Once registered, `<TAB>` completes business commands, built-in group names (`backend`, `config`,
+...) and the global flags — never the HIDDEN top-level built-ins themselves (`doctor`, `describe`,
+`update`; `npu --help` shows them in their own section, but `clap` never lists a hidden subcommand
+as a completion candidate). Completion is resolved from the SAME `clap` tree `npu` itself runs
+against, discovered fresh on every request, so it reflects the current `.npu/` — including
+`--config-dir`/`NPU_CONFIG_DIR`.
+
 ---
 
 ## `npu --version`

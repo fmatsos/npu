@@ -166,7 +166,7 @@ unwrap_used = "warn"
 
 ## Dependencies
 
-Twelve, deliberately: `clap` (builder API, not derive — the command tree is
+Thirteen, deliberately: `clap` (builder API, not derive — the command tree is
 built at runtime from a directory scan), `serde`, `serde_json`, `toml`,
 `ureq` (blocking, rustls — chosen over `reqwest`, which drags in tokio),
 `jsonschema` with `default-features = false` (its defaults pull `reqwest`
@@ -186,14 +186,22 @@ It cost 136 400 bytes on the release binary (8 540 480 -> 8 676 880) and
 four crates (108 -> 112); and `anstream`, the stream `clap`'s `color`
 feature already pulls in, used directly so that our own colours are
 stripped by the same rule as `clap`'s. The feature and `anstream` together
-cost 90 312 bytes (8 676 880 -> 8 767 192) and six crates (112 -> 118).
+cost 90 312 bytes (8 676 880 -> 8 767 192) and six crates (112 -> 118); and
+`clap_complete` with `default-features = false, features =
+["unstable-dynamic"]` — `clap_complete::CompleteEnv`, called first in `run()`
+before any log or print (`COMPLETE=<shell> npu` prints the shell's
+registration script and exits; a dynamic completion request is served the
+same way), no built-in and no reserved name needed. `unstable-dynamic` pulls
+in `clap_lex` (already in the graph via `clap_builder`), `shlex` and
+`is_executable`; it cost 137 120 bytes and three crates (118 -> 121).
 
 Adding one is a measured decision: check the binary size and the crate count
 before and after, and record the numbers. A version bump of an existing
 dependency (Dependabot's weekly PRs) needs no measurement.
 
-At 0.5.1: 118 crates in `cargo tree --edges normal` (the metric of the deltas above; `Cargo.lock` lists 205 packages, other targets included), 9 015 408 bytes release binary on
-x86_64 Linux.
+At 0.5.2 (after `clap_complete`): 121 crates in `cargo tree --edges normal`
+(the metric of the deltas above), 9 438 400 bytes release binary on x86_64
+Linux.
 
 ## Documentation
 
