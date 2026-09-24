@@ -38,7 +38,7 @@ max_tokens = 512
 | `operation` | yes | must be an operation that backend exposes |
 | `model` | yes | the concrete model identifier sent to the backend, and what `{{ args.model }}` substitutes in a `[docker]` table |
 | `fallback` | no | another model `id`, retried once on a backend failure |
-| `[generation]` | no | `temperature`, `max_tokens` |
+| `[generation]` | no | `temperature`, `max_tokens`, `seed`, `top_p`, `stop`, `[generation.extra]` |
 
 `id` and `model` are different things on purpose: `id` is the stable alias
 your commands reference, `model` is whatever the server happens to call the
@@ -51,6 +51,20 @@ A field left out of `[generation]` is **not serialised at all**; no `null` is
 ever sent, and the backend's own default applies. Set `temperature = 0.0`
 explicitly when determinism matters — for a command whose output is parsed by
 another program, that is usually what you want.
+
+`seed` (integer) and `top_p` (float) follow the same rule. `stop` is a
+non-empty list of non-empty strings, no upper bound. `[generation.extra]` is
+a free-form table forwarded VERBATIM at the top level of the request, after
+the typed keys — the escape hatch for an engine-specific knob
+(`chat_template_kwargs.enable_thinking = false` on Qwen3). A key of `extra`
+colliding with a typed key, or carrying a TOML datetime or a non-finite float
+anywhere in its structure, is rejected at load time naming the file.
+
+A command's own frontmatter may declare `[generation]` too: it MERGES onto
+the model's, key by key, command winning — the one field-by-field merge in
+the project (`docs/configuration.md` documents it as the explicit
+exception). The fallback model uses its own base `[generation]` merged with
+that same command override.
 
 ## `fallback` — one retry, one hop
 
@@ -93,6 +107,9 @@ Configuration errors (exit `2`), each naming what *is* available:
 - `fallback` naming a model that does not exist, or naming this model itself
   — checked at load, not the day the recovery fires;
 - any unknown key, at the top level or under `[generation]`;
+- `[generation].stop` present but empty, or containing an empty string;
+- a `[generation.extra]` key colliding with a typed `[generation]` key, or
+  carrying a TOML datetime or a non-finite float anywhere in its structure;
 - two files in the same scope sharing an `id`.
 
 Resolution runs **after** the scopes are merged, so a model in `./.npu` may

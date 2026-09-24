@@ -12,6 +12,12 @@ pub(crate) struct Ask<'a> {
     pub(crate) messages: &'a [crate::backend::Message],
     pub(crate) schema: Option<&'a serde_json::Value>,
     pub(crate) stream: Option<TokenSink<'a>>,
+    /// The command's own `[generation]` override, if declared — merged
+    /// (B3, key by key, command wins) onto EACH candidate model's own
+    /// `[generation]` inside `chat_with_fallback`'s `call`: the fallback
+    /// model uses its own base `[generation]` merged with this SAME
+    /// override, never the primary's merged result.
+    pub(crate) command_generation: Option<&'a crate::config::Generation>,
 }
 
 // `&dyn Fn` cannot derive `Debug`: the closure has nothing to print.
@@ -51,6 +57,7 @@ pub(crate) fn chat_with_fallback(
         messages,
         schema,
         stream,
+        command_generation,
     } = *ask;
     // Resolving the URL is part of reaching the backend, not a step before
     // it: a `port = "auto"` backend whose container is down fails here, and
@@ -74,6 +81,10 @@ pub(crate) fn chat_with_fallback(
         };
         let on_token: Option<&dyn Fn(&str)> = stream.map(|_| &on_token as &dyn Fn(&str));
         let headers = crate::config::resolve_headers(backend, env)?;
+        // B3: this model's OWN `[generation]` merged with the command's
+        // override — recomputed per candidate, never precomputed once for
+        // the primary and reused for the fallback (see `Ask`'s doc).
+        let generation = crate::config::Generation::merged(&model.generation, command_generation);
         crate::runtime::resolve_base_url(backend, &crate::runtime::docker::runner).and_then(
             |base_url| {
                 let request = crate::backend::Request {
@@ -81,6 +92,7 @@ pub(crate) fn chat_with_fallback(
                     schema,
                     on_token,
                     headers: &headers,
+                    generation: &generation,
                 };
                 crate::backend::chat(backend, model, &base_url, &request, logger)
             },
@@ -340,6 +352,7 @@ pub(crate) fn execute_business_command(
         messages: &messages,
         schema: output_schema.as_ref(),
         stream: streaming.then_some(&print_token as TokenSink<'_>),
+        command_generation: spec.generation.as_ref(),
     };
     let (answer, answered_by) = chat_with_fallback(config, model, backend, &ask, env, logger)?;
 
@@ -587,6 +600,7 @@ mod tests {
                 messages: &[crate::backend::Message::user("hello")],
                 schema: None,
                 stream: None,
+                command_generation: None,
             },
             &|_: &str| None,
             log::Logger::new(log::Level::Error),
@@ -629,6 +643,7 @@ mod tests {
                 messages: &[crate::backend::Message::user("hello")],
                 schema: None,
                 stream: None,
+                command_generation: None,
             },
             &|_: &str| None,
             log::Logger::new(log::Level::Error),
@@ -665,6 +680,7 @@ mod tests {
                 messages: &[crate::backend::Message::user("hello")],
                 schema: None,
                 stream: None,
+                command_generation: None,
             },
             &|_: &str| None,
             log::Logger::new(log::Level::Error),
@@ -702,6 +718,7 @@ mod tests {
             schemas: std::collections::BTreeMap::new(),
             system: None,
             examples: Vec::new(),
+            generation: None,
             file: std::path::PathBuf::new(),
         }];
         let cli = crate::cli::build_cli(&specs);
@@ -759,6 +776,7 @@ mod tests {
             schemas: std::collections::BTreeMap::new(),
             system: None,
             examples: Vec::new(),
+            generation: None,
             file: std::path::PathBuf::new(),
         }];
         let cli = crate::cli::build_cli(&specs);
@@ -832,6 +850,7 @@ mod tests {
                 messages: &[crate::backend::Message::user("hello")],
                 schema: None,
                 stream: Some(&sink),
+                command_generation: None,
             },
             &|_: &str| None,
             log::Logger::new(log::Level::Error),
@@ -882,6 +901,7 @@ mod tests {
             schemas: std::collections::BTreeMap::new(),
             system: None,
             examples: Vec::new(),
+            generation: None,
             file: std::path::PathBuf::new(),
         }];
         let cli = crate::cli::build_cli(&specs);
@@ -944,6 +964,7 @@ mod tests {
                 user: "ticket: printer on fire".to_string(),
                 assistant: r#"{"category":"hardware"}"#.to_string(),
             }],
+            generation: None,
             file: std::path::PathBuf::new(),
         }];
         let cli = crate::cli::build_cli(&specs);
@@ -1011,6 +1032,7 @@ mod tests {
             schemas: std::collections::BTreeMap::new(),
             system: Some("{{ env.NPU_TEST_UNSET_SYSTEM_VAR }}".to_string()),
             examples: Vec::new(),
+            generation: None,
             file: std::path::PathBuf::new(),
         }];
         let cli = crate::cli::build_cli(&specs);

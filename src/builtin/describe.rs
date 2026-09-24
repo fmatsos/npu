@@ -129,6 +129,37 @@ struct Describe<'a> {
     /// Only the COUNT of `[[examples]]`: their content can carry business
     /// data an agent listing commands should not have to receive.
     examples: usize,
+    /// The EFFECTIVE generation table: the model's own `[generation]`
+    /// merged with this command's override (B3), so an agent sees what
+    /// will actually be sent. `null` when the model does not resolve
+    /// (unknown id — `describe` reports rather than fails, see `backend`
+    /// above).
+    generation: Option<DescribeGeneration>,
+}
+
+/// The effective `[generation]` table, as serialized by [`describe`]: same
+/// data as `config::Generation`, with `extra` converted to plain JSON.
+#[derive(Serialize)]
+struct DescribeGeneration {
+    temperature: Option<f32>,
+    max_tokens: Option<u32>,
+    seed: Option<u64>,
+    top_p: Option<f32>,
+    stop: Option<Vec<String>>,
+    extra: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+impl From<&crate::config::Generation> for DescribeGeneration {
+    fn from(generation: &crate::config::Generation) -> Self {
+        Self {
+            temperature: generation.temperature,
+            max_tokens: generation.max_tokens,
+            seed: generation.seed,
+            top_p: generation.top_p,
+            stop: generation.stop.clone(),
+            extra: generation.extra.as_ref().map(crate::config::extra_to_json),
+        }
+    }
 }
 
 /// Describes a dynamically configured command: produces JSON on stdout,
@@ -195,6 +226,12 @@ pub fn describe(
         },
         system: spec.system.as_deref(),
         examples: spec.examples.len(),
+        generation: model.map(|model| {
+            DescribeGeneration::from(&crate::config::Generation::merged(
+                &model.generation,
+                spec.generation.as_ref(),
+            ))
+        }),
     };
 
     serde_json::to_string(&dto)

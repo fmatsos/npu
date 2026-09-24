@@ -92,6 +92,7 @@ cat README.md | npu translate --language french
 | `[schemas]` | table | none | `<id> = "<name or path>"`, for `{{ schemas.<id> }}` — see [Schemas in the prompt](output.md#schemas-in-the-prompt) |
 | `system` | string | none | a system-role message sent before the examples and the body — see [System prompt and examples](#system-prompt-and-examples) |
 | `[[examples]]` | array of tables | none | fixed few-shot `user`/`assistant` turns — see [System prompt and examples](#system-prompt-and-examples) |
+| `[generation]` | table | none | overrides the model's own `[generation]`, key by key — see [Generation parameters](configuration.md#generation-parameters) |
 
 > [!IMPORTANT]
 > Unknown keys are **rejected**, not ignored — at the top level, under `[input]`, under
