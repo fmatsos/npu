@@ -1,4 +1,4 @@
-//! Resolution of layered configuration scopes (phase 2).
+//! Resolution of layered configuration scopes.
 //!
 //! General -> local precedence: `/etc/npu`, then `$XDG_CONFIG_HOME/npu`
 //! (falling back to

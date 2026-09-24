@@ -214,5 +214,8 @@ build time — which is not an acceptable way to report a configuration error.
 - Source, comments, rustdoc, messages, documentation and **commit messages**:
   **English**, Conventional Commits. The whole history was translated in one
   pass; do not reintroduce French in a message.
+- A `ponytail:` comment marks a deliberate trade-off: it names its ceiling
+  and the upgrade path. Comments state the rule, never where it came from
+  (no phase, review or section numbers — `make lint` rejects them).
 - Non-ASCII test fixtures (`café`, `Montréal`) are deliberate: they exercise
   multibyte boundaries and non-ASCII argument rejection. Leave them.

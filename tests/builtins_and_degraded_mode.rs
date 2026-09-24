@@ -141,8 +141,8 @@ fn write_healthy_scope(xdg_root: &Path, base_url: &str) {
 
 // -- (a)/(b)/(c): broken configuration ---------------------------------------
 
-/// (a) A BROKEN configuration leaves `--help` usable (degraded mode, point 1
-/// of the shared contract): exit 0, stdout lists the built-ins,
+/// (a) A BROKEN configuration leaves `--help` usable (degraded mode):
+/// exit 0, stdout lists the built-ins,
 /// stderr signals the load failure.
 #[test]
 fn broken_config_help_still_works_and_lists_builtins_with_stderr_signal() {
@@ -252,7 +252,7 @@ fn broken_config_doctor_reports_load_error_on_stdout_with_exit_code_two() {
 ///   tree (added unconditionally by `add_builtins`): their code 2 really
 ///   does traverse `loaded?`, so it carries the PRESERVED load error —
 ///   verified here by requiring that stderr name the offending file, not
-///   just the exit code (point 1 of the shared contract).
+///   just the exit code.
 #[test]
 fn broken_config_any_other_invocation_exits_with_code_two() {
     let xdg = fixture_dir("broken-any-xdg");
@@ -345,7 +345,7 @@ fn healthy_config_with_dead_backend_doctor_exits_three_with_reachability_failure
 }
 
 /// (e) Healthy configuration, `npu models`: exit 0, stdout contains
-/// `qwen-fast`, `ovms` and `chat` (NAME/BACKEND/OPERATION columns, §16).
+/// `qwen-fast`, `ovms` and `chat` (NAME/BACKEND/OPERATION columns).
 #[test]
 fn healthy_config_models_lists_configured_model_with_its_backend_and_operation() {
     let xdg = fixture_dir("healthy-models-xdg");

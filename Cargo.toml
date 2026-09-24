@@ -48,7 +48,7 @@ rust_2018_idioms = { level = "warn", priority = -1 }
 [lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
-# Must fix: these patterns break the CLI contract (spec §14, stdout reserved
+# Must fix: these patterns break the CLI contract (stdout reserved
 # for the result) or hide an error.
 unwrap_used = "warn"
 expect_used = "warn"
@@ -63,8 +63,9 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
 # --- Profiles ---------------------------------------------------------------
-# panic = "abort" deliberately absent: the CLI exposes distinct exit codes
-# (`docs/output.md`, "Exit codes") that an abort would replace with a SIGABRT.
+# panic = "unwind" is set explicitly below: the CLI exposes distinct exit
+# codes (`docs/output.md`, "Exit codes") that panic = "abort" would replace
+# with a SIGABRT.
 
 [profile.release]
 # `thin` rather than `true`: fat LTO re-codegens the whole 174-crate graph in

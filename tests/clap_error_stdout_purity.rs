@@ -4,10 +4,10 @@
 //! internal to `clap` — WITHOUT going through `main()`'s error handler
 //! (`src/main.rs`).
 //!
-//! Evidence requested by the L1+L2 review (gap not covered by
+//! Covers a gap not covered by
 //! `output_contract_e2e.rs`, which only checks stdout purity on the
 //! application error path — `Error::Config`/`Error::Output`, handled by
-//! `main()` — never on `clap`'s own path): §23 makes `npu` a CLI invoked
+//! `main()` — never on `clap`'s own path: `npu` is a CLI meant to be invoked
 //! by an agent, for whom non-empty output on stdout on failure is
 //! just as dangerous here as on any other error path — an
 //! agent piping stdout must never receive a `clap` usage message

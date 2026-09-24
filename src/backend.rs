@@ -2,8 +2,8 @@
 //!
 //! Architecture decision: the core embeds knowledge
 //! of the `OpenAI` **protocol** (request body shape, response extraction
-//! path), not business semantics. `chat` is the only operation supported in
-//! phase 1; the other `OpenAI` operations (`embeddings`,
+//! path), not business semantics. `chat` is the only operation currently
+//! supported; the other `OpenAI` operations (`embeddings`,
 //! `audio_transcriptions`, ...) will extend this adapter without touching
 //! the domain model (`config.rs`).
 

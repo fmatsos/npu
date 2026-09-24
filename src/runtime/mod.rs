@@ -38,7 +38,7 @@ pub mod state;
 /// it declares a backend unreachable, and [`docker::probe`] before it
 /// declares the container runtime unusable.
 ///
-/// Short by design (point 4 of the shared contract): `doctor` is a
+/// Short by design: `doctor` is a
 /// diagnostic command meant to stay fast even when several backends are
 /// queried, never meant to wait out a full network timeout — and an
 /// unreachable backend or a wedged container daemon is precisely the case
