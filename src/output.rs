@@ -69,6 +69,10 @@ pub struct OutputSpec {
     /// `max_tokens`) is accepted as-is. `false` by default: a truncated
     /// answer is an `Error::Output` (exit 4) unless the command opts in.
     pub allow_truncated: bool,
+    /// Whether one leading `<think>...</think>` block is removed from the
+    /// answer before the rest of the pipeline (fences, parsing, schema, or
+    /// trim/`max_lines`) runs. `false` by default. See [`strip_reasoning`].
+    pub strip_reasoning: bool,
 }
 
 /// Maximum number of characters kept in the response excerpt quoted by a
@@ -150,6 +154,50 @@ pub fn strip_fences(raw: &str) -> &str {
     };
 
     s[body_start..body_end].trim()
+}
+
+/// Removes exactly ONE leading `<think>...</think>` block from `raw`, when
+/// `enabled` and the block is well-formed. Whitespace-tolerant before the
+/// opening tag (a model may prefix its reasoning with a blank line), but
+/// the CLOSING tag is required: an unclosed block is content, not
+/// reasoning — same philosophy as `strip_fences`'s opening-without-closing
+/// rule. A block anywhere other than the very start (in particular, in the
+/// MIDDLE of the answer) is left untouched: only the first, leading
+/// occurrence is reasoning by construction; a later one is content the
+/// model chose to write.
+///
+/// Returns the (possibly unchanged) text and the number of CHARACTERS
+/// removed (`0` when nothing was stripped) — the caller logs this count,
+/// never the removed text itself (cf. `exec.rs`: reasoning may be long and
+/// the diagnostic stream is not a transcript).
+///
+/// Every slice point is anchored on an ASCII marker (`<think>`,
+/// `</think>`) found via `str::find`, which always returns a valid
+/// character boundary — safe on multibyte content inside the block.
+#[must_use]
+pub fn strip_reasoning(raw: &str, enabled: bool) -> (&str, usize) {
+    const OPEN: &str = "<think>";
+    const CLOSE: &str = "</think>";
+
+    if !enabled {
+        return (raw, 0);
+    }
+
+    let trimmed = raw.trim_start();
+    if !trimmed.starts_with(OPEN) {
+        return (raw, 0);
+    }
+
+    let after_open = &trimmed[OPEN.len()..];
+    let Some(close_offset) = after_open.find(CLOSE) else {
+        // No closing tag: an unclosed block is content, left untouched.
+        return (raw, 0);
+    };
+
+    let rest_start = OPEN.len() + close_offset + CLOSE.len();
+    let stripped = &trimmed[rest_start..];
+    let removed_chars = raw.chars().count() - stripped.chars().count();
+    (stripped, removed_chars)
 }
 
 /// Applies the output contract `spec` to the model's raw response `raw` and
@@ -415,6 +463,72 @@ mod tests {
         assert_eq!(strip_fences(text), text);
     }
 
+    // -- strip_reasoning (B4) ------------------------------------------
+
+    #[test]
+    fn strip_reasoning_removes_a_leading_block() {
+        let (stripped, removed) =
+            strip_reasoning("<think>internal musing</think>final answer", true);
+        assert_eq!(stripped, "final answer");
+        assert_eq!(removed, "<think>internal musing</think>".chars().count());
+    }
+
+    #[test]
+    fn strip_reasoning_tolerates_leading_whitespace_before_the_tag() {
+        let (stripped, removed) = strip_reasoning("\n  <think>x</think>final", true);
+        assert_eq!(stripped, "final");
+        assert!(removed > 0);
+    }
+
+    #[test]
+    fn strip_reasoning_disabled_leaves_text_untouched() {
+        let raw = "<think>x</think>final";
+        let (stripped, removed) = strip_reasoning(raw, false);
+        assert_eq!(stripped, raw);
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn strip_reasoning_an_unclosed_block_is_left_as_content() {
+        let raw = "<think>never closed, this is content";
+        let (stripped, removed) = strip_reasoning(raw, true);
+        assert_eq!(stripped, raw);
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn strip_reasoning_a_block_in_the_middle_is_untouched() {
+        let raw = "intro text <think>reasoning</think> tail";
+        let (stripped, removed) = strip_reasoning(raw, true);
+        assert_eq!(stripped, raw);
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn strip_reasoning_no_block_at_all_is_untouched() {
+        let raw = "just an answer";
+        let (stripped, removed) = strip_reasoning(raw, true);
+        assert_eq!(stripped, raw);
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn strip_reasoning_multibyte_content_inside_the_block_does_not_panic() {
+        let raw = "<think>café à Montréal 🎉</think>réponse finale";
+        let (stripped, removed) = strip_reasoning(raw, true);
+        assert_eq!(stripped, "réponse finale");
+        assert!(removed > 0);
+    }
+
+    #[test]
+    fn strip_reasoning_runs_before_fences_and_schema() {
+        // A stripped block followed by a fenced JSON body must still be
+        // recognized by the rest of the pipeline once stripped.
+        let raw = "<think>t</think>```json\n{\"a\":1}\n```";
+        let (stripped, _) = strip_reasoning(raw, true);
+        assert_eq!(strip_fences(stripped), "{\"a\":1}");
+    }
+
     // -- format text --------------------------------------------------------
 
     #[test]
@@ -424,6 +538,7 @@ mod tests {
             schema: None,
             max_lines: None,
             allow_truncated: false,
+            strip_reasoning: false,
         };
         let out =
             finalize(&spec, "  \n  hello world  \n\n", &test_command_file()).expect("must succeed");
@@ -437,6 +552,7 @@ mod tests {
             schema: None,
             max_lines: Some(2),
             allow_truncated: false,
+            strip_reasoning: false,
         };
         let out = finalize(&spec, "line 1\nline 2", &test_command_file()).expect("must succeed");
         assert_eq!(out, "line 1\nline 2");
@@ -449,6 +565,7 @@ mod tests {
             schema: None,
             max_lines: Some(1),
             allow_truncated: false,
+            strip_reasoning: false,
         };
         let err = finalize(&spec, "line 1\nline 2", &test_command_file()).expect_err("must fail");
         assert!(matches!(err, crate::Error::Output(_)));
@@ -461,6 +578,7 @@ mod tests {
             schema: None,
             max_lines: Some(2),
             allow_truncated: false,
+            strip_reasoning: false,
         };
         // 2 non-empty lines, 2 empty lines (one of which has only
         // whitespace): must not exceed max_lines = 2.
@@ -476,6 +594,7 @@ mod tests {
             schema: None,
             max_lines: None,
             allow_truncated: false,
+            strip_reasoning: false,
         };
         let out =
             finalize(&spec, "l1\nl2\nl3\nl4\nl5", &test_command_file()).expect("must succeed");
@@ -491,6 +610,7 @@ mod tests {
             schema: None,
             max_lines: None,
             allow_truncated: false,
+            strip_reasoning: false,
         };
         let out =
             finalize(&spec, "{\n  \"a\": 1\n}\n", &test_command_file()).expect("must succeed");
@@ -504,6 +624,7 @@ mod tests {
             schema: None,
             max_lines: None,
             allow_truncated: false,
+            strip_reasoning: false,
         };
         let out = finalize(
             &spec,
@@ -521,6 +642,7 @@ mod tests {
             schema: None,
             max_lines: None,
             allow_truncated: false,
+            strip_reasoning: false,
         };
         let err = finalize(&spec, "not JSON at all", &test_command_file()).expect_err("must fail");
         assert!(matches!(err, crate::Error::Output(_)));
@@ -543,6 +665,7 @@ mod tests {
             schema: None,
             max_lines: None,
             allow_truncated: false,
+            strip_reasoning: false,
         };
         // Emojis (4 bytes each) rather than "é" (2 bytes): with a 2-byte
         // step, a regression that sliced by byte index would have a
@@ -569,6 +692,7 @@ mod tests {
             schema: None,
             max_lines: None,
             allow_truncated: false,
+            strip_reasoning: false,
         };
         let out = finalize(
             &spec,
@@ -602,6 +726,7 @@ mod tests {
             schema: Some(schema_path),
             max_lines: None,
             allow_truncated: false,
+            strip_reasoning: false,
         };
         let out = finalize(
             &spec,
@@ -631,6 +756,7 @@ mod tests {
             schema: Some(schema_path),
             max_lines: None,
             allow_truncated: false,
+            strip_reasoning: false,
         };
         // "confidence" missing (required) AND "category" of the wrong type:
         // two distinct violations.
@@ -651,6 +777,7 @@ mod tests {
             schema: Some(missing),
             max_lines: None,
             allow_truncated: false,
+            strip_reasoning: false,
         };
         let err = finalize(&spec, "{\"a\": 1}", &test_command_file()).expect_err("must fail");
         assert!(
@@ -667,6 +794,7 @@ mod tests {
             schema: Some(schema_path),
             max_lines: None,
             allow_truncated: false,
+            strip_reasoning: false,
         };
         let err = finalize(&spec, "{\"a\": 1}", &test_command_file()).expect_err("must fail");
         assert!(
@@ -684,6 +812,7 @@ mod tests {
             schema: None,
             max_lines: Some(0),
             allow_truncated: false,
+            strip_reasoning: false,
         };
         let err = finalize(&spec, "one line", &test_command_file()).expect_err("must fail");
         assert!(matches!(err, crate::Error::Output(_)));

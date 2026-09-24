@@ -191,6 +191,11 @@ struct RawOutputSpec {
     /// instead of failing with `Error::Output`. `false` by default.
     #[serde(default)]
     allow_truncated: bool,
+    /// Strips one leading `<think>...</think>` block before the rest of
+    /// the output pipeline runs, and disables streaming for this command
+    /// (see `exec::execute_business_command`). `false` by default.
+    #[serde(default)]
+    strip_reasoning: bool,
 }
 
 /// `[input]` section of the frontmatter.
@@ -663,6 +668,7 @@ fn convert_output(
                 schema: None,
                 max_lines: raw.max_lines,
                 allow_truncated: raw.allow_truncated,
+                strip_reasoning: raw.strip_reasoning,
             })
         }
         crate::output::Format::Json => {
@@ -682,6 +688,7 @@ fn convert_output(
                 schema,
                 max_lines: None,
                 allow_truncated: raw.allow_truncated,
+                strip_reasoning: raw.strip_reasoning,
             })
         }
     }

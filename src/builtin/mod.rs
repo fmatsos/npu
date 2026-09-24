@@ -474,6 +474,7 @@ mod tests {
             )),
             max_lines: None,
             allow_truncated: false,
+            strip_reasoning: false,
         };
         let config = crate::config::Config::default();
 
@@ -692,6 +693,7 @@ mod tests {
                 schema: Some(std::path::PathBuf::from("schemas/translation.json")),
                 max_lines: None,
                 allow_truncated: false,
+                strip_reasoning: false,
             },
             schemas: std::collections::BTreeMap::new(),
             system: None,
@@ -729,6 +731,7 @@ mod tests {
             schema: None,
             max_lines: Some(1),
             allow_truncated: false,
+            strip_reasoning: false,
         };
 
         let json_text =

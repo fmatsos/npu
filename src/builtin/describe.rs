@@ -27,6 +27,7 @@ struct DescribeOutput<'a> {
     schema: Option<String>,
     max_lines: Option<usize>,
     allow_truncated: bool,
+    strip_reasoning: bool,
 }
 
 /// Where a command comes from: the file that won, and the scope root it was
@@ -223,6 +224,7 @@ pub fn describe(
                 .map(|path| format!("{}", path.display())),
             max_lines: spec.output.max_lines,
             allow_truncated: spec.output.allow_truncated,
+            strip_reasoning: spec.output.strip_reasoning,
         },
         system: spec.system.as_deref(),
         examples: spec.examples.len(),

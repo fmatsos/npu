@@ -44,6 +44,7 @@ schema = "schemas/classification.json"
 | `schema` | name or path | none | JSON only; see [Schema paths](#schema-paths) |
 | `max_lines` | integer | none | text only |
 | `allow_truncated` | boolean | `false` | accept an answer cut short by `max_tokens`; see [Truncated answers](#truncated-answers) |
+| `strip_reasoning` | boolean | `false` | remove a leading `<think>...</think>` block; see [Reasoning models](#reasoning-models) |
 
 Rejected at load time, naming the command file:
 
@@ -153,6 +154,45 @@ The behavior differs slightly with the terminal versus a pipe:
   know the stream would end truncated. The exit code is still `4`; only the closing frame is
   skipped. A calling agent reads the exit code and stderr, never the terminal's screen, so this is
   not a contract violation — only a human-facing display detail.
+
+---
+
+## Reasoning models
+
+Some backends inline the model's reasoning into `content` itself, wrapped in `<think>...</think>`
+(a convention the `OpenAI`-compatible ecosystem converged on). Left as-is, that breaks
+`format = "json"` (the reasoning is not valid JSON, or sits before the JSON body) and
+`max_lines = 1` (the reasoning adds lines the contract did not expect).
+
+```toml
+[output]
+format = "json"
+schema = "classification"
+strip_reasoning = true
+```
+
+`strip_reasoning = true` removes exactly **one leading** `<think>...</think>` block —
+whitespace-tolerant before the opening tag, but the closing tag is required: an unclosed block is
+treated as content, never guessed at. This runs **before** the rest of the pipeline (fence
+removal, JSON parsing, schema validation, or the text branch's trim/`max_lines`). A block found
+anywhere other than the very start — in particular, in the middle of the answer — is left
+untouched: only the leading occurrence is reasoning by construction.
+
+The removed text is logged at `info` by **length only**
+(`stripped 412 characters of reasoning`), never by content: reasoning can be long, and the
+diagnostic stream is not a transcript.
+
+**Streaming is disabled when `strip_reasoning = true`**, even on a terminal that would otherwise
+stream a plain-text answer: printing tokens as they arrive would show the reasoning block before
+`npu` has a chance to strip it, which defeats the whole point. The answer then arrives in one
+piece, exactly as it already does for a JSON output contract. `npu describe` reports the key, so
+the behavior is discoverable without reading the command file.
+
+A server that reports reasoning in a separate `reasoning_content` field rather than inlining it
+into `content` needs no handling here: only `content` is ever read, by design.
+`strip_reasoning` is for the inline `<think>` case specifically. The tag itself is not
+configurable — a configurable tag is a regex-shaped foot-gun better added the day a second real
+tag shows up, not speculatively.
 
 ---
 
