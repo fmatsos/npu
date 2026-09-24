@@ -45,6 +45,7 @@ next reader.
 | `[runtime]` | no | how `npu backend serve` starts this backend; `type` picks the family — `"docker"` or `"process"` |
 | `[timeouts]` | no | `request_secs` — overrides the default request timeout (120s) |
 | `structured_output` | no | `true` when the server accepts `response_format: json_schema` (OVMS, `llama-server`, vLLM): a command's output schema is then sent with the request. Default `false` |
+| `[headers]` | no | extra HTTP headers sent with every `chat` request; values accept only `{{ env.NAME }}` |
 
 ## What is rejected at load time
 
@@ -66,6 +67,12 @@ silently ignored:
 - a backend declaring both `[runtime]` and the legacy `[docker]` table;
 - `[runtime].startup_timeout_secs = 0` (process family), on the `[timeouts].request_secs`
   precedent;
+- a `[headers]` value referencing anything other than `{{ env.NAME }}` (`{{ input }}`,
+  `{{ args.* }}`, `{{ schemas.* }}` are rejected — a header cannot depend on the command run);
+- a `[headers]` name that is `Content-Type`/`Content-Length` (case-insensitively; `npu` owns
+  both), is not a legal HTTP token, or collides with another name once case is ignored;
+- at request time, a `[headers]` value whose `{{ env.NAME }}` is undefined — resolved at
+  preflight, before the input is read, naming the file and the header;
 - inside `[runtime]`: a placeholder other than `{{ args.model }}` / `{{ env.NAME }}` /
   `{{ backend.port }}`, and an `id` unusable as a container name — or, for the process family, as
   a state file name (same rule: ASCII letters, digits, `_`, `.`, `-`, starting alphanumeric).

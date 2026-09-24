@@ -44,6 +44,7 @@ pub(crate) fn chat_with_fallback(
     model: &crate::config::Model,
     backend: &crate::config::Backend,
     ask: &Ask<'_>,
+    env: &dyn Fn(&str) -> Option<String>,
     logger: crate::log::Logger,
 ) -> crate::Result<(crate::backend::ChatAnswer, String)> {
     let Ask {
@@ -72,12 +73,14 @@ pub(crate) fn chat_with_fallback(
             }
         };
         let on_token: Option<&dyn Fn(&str)> = stream.map(|_| &on_token as &dyn Fn(&str));
+        let headers = crate::config::resolve_headers(backend, env)?;
         crate::runtime::resolve_base_url(backend, &crate::runtime::docker::runner).and_then(
             |base_url| {
                 let request = crate::backend::Request {
                     prompt,
                     schema,
                     on_token,
+                    headers: &headers,
                 };
                 crate::backend::chat(backend, model, &base_url, &request, logger)
             },
@@ -201,6 +204,20 @@ pub(crate) fn execute_business_command(
 
     crate::prompt::preflight(&spec.prompt, &args, env, &schemas)?;
 
+    // Headers are resolved at preflight too, for the primary backend AND
+    // (when declared) the fallback's: the fallback fires after the input
+    // has already been consumed, so a missing environment variable there
+    // must be caught here rather than at call time, same invariant as the
+    // prompt's own preflight above. The resolved values are discarded here
+    // (only the possibility of resolving them matters): `chat_with_fallback`
+    // resolves them again, once it knows which backend it is actually
+    // calling.
+    crate::config::resolve_headers(backend, env)?;
+    if let Some(fallback_id) = &model.fallback {
+        let (_, fallback_backend) = config.resolve(fallback_id)?;
+        crate::config::resolve_headers(fallback_backend, env)?;
+    }
+
     // The `FILE` argument is only declared (cf. `build_clap_node`) for the
     // modes that accept a file: reproducing the same condition here avoids
     // calling `get_one` on an absent id (panic) and keeps the two spots in
@@ -264,7 +281,7 @@ pub(crate) fn execute_business_command(
         schema: output_schema.as_ref(),
         stream: streaming.then_some(&print_token as TokenSink<'_>),
     };
-    let (answer, answered_by) = chat_with_fallback(config, model, backend, &ask, logger)?;
+    let (answer, answered_by) = chat_with_fallback(config, model, backend, &ask, env, logger)?;
 
     // Truncation is a defect of the ANSWER, not of the prompt: it must never
     // trigger the fallback (that retry exists for a prompt too long, cf.
@@ -409,6 +426,7 @@ mod tests {
             docker: None,
             timeouts: None,
             structured_output: false,
+            headers: std::collections::BTreeMap::new(),
             source: std::path::PathBuf::new(),
         }
     }
@@ -463,6 +481,7 @@ mod tests {
                 schema: None,
                 stream: None,
             },
+            &|_: &str| None,
             log::Logger::new(log::Level::Error),
         )
         .expect("the fallback must answer");
@@ -504,6 +523,7 @@ mod tests {
                 schema: None,
                 stream: None,
             },
+            &|_: &str| None,
             log::Logger::new(log::Level::Error),
         )
         .expect_err("both backends failing must fail");
@@ -539,6 +559,7 @@ mod tests {
                 schema: None,
                 stream: None,
             },
+            &|_: &str| None,
             log::Logger::new(log::Level::Error),
         )
         .expect_err("a backend failure without fallback must stay a failure");
@@ -600,6 +621,61 @@ mod tests {
         assert!(err.to_string().contains("NPU_TEST_UNSET"));
     }
 
+    /// Same invariant as above, but for a backend `[headers]` value
+    /// referencing an undefined environment variable: preflight must
+    /// resolve headers (B1) before `input::resolve` runs, exactly like the
+    /// prompt's own placeholders.
+    #[test]
+    #[allow(clippy::panic)] // the panic is the assertion: read_input must not run.
+    fn a_missing_header_env_var_is_rejected_before_read_input_is_called() {
+        let mut backend = backend_at("b", "http://127.0.0.1:9".to_string());
+        backend.headers.insert(
+            "Authorization".to_string(),
+            "Bearer {{ env.NPU_TEST_UNSET_HEADER_VAR }}".to_string(),
+        );
+        let mut config = config::Config::default();
+        config.backends.insert("b".to_string(), backend);
+        config
+            .models
+            .insert("qwen-fast".to_string(), model_on("qwen-fast", "b", None));
+
+        let specs = vec![crate::command::CommandSpec {
+            path: vec!["x".to_string()],
+            description: "desc x".to_string(),
+            model: "qwen-fast".to_string(),
+            input: crate::command::InputMode::Stdin,
+            prompt: "{{ input }}".to_string(),
+            args: std::collections::BTreeMap::new(),
+            output: crate::output::OutputSpec::default(),
+            schemas: std::collections::BTreeMap::new(),
+            file: std::path::PathBuf::new(),
+        }];
+        let cli = crate::cli::build_cli(&specs);
+        let matches = cli
+            .try_get_matches_from(["npu", "x"])
+            .expect("the command line must be accepted");
+        let (_, leaf_matches) = crate::cli::selected_path(&matches);
+
+        let env = |_: &str| None;
+        let read_input = |_: &crate::command::InputMode, _: Option<&std::path::Path>| {
+            panic!("read_input must not be called when header preflight already fails")
+        };
+
+        let err = execute_business_command(
+            &specs[0],
+            &config,
+            leaf_matches,
+            log::Logger::new(log::Level::Error),
+            &env,
+            &read_input,
+            false,
+        )
+        .expect_err("a header referencing an undefined environment variable must be rejected");
+
+        assert!(matches!(err, Error::Config(_)));
+        assert!(err.to_string().contains("NPU_TEST_UNSET_HEADER_VAR"));
+    }
+
     /// Spec: `chat_with_fallback` streaming a couple of deltas (so `emitted`
     /// is set) and then failing must return `Err(Backend)` WITHOUT ever
     /// attempting the fallback: the fallback backend below is unreachable,
@@ -646,6 +722,7 @@ mod tests {
                 schema: None,
                 stream: Some(&sink),
             },
+            &|_: &str| None,
             log::Logger::new(log::Level::Error),
         )
         .expect_err("a mid-stream error after emitted tokens must stay a failure");

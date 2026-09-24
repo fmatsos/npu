@@ -2,7 +2,7 @@
 //! the validation that runs on it after scope merging.
 
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use super::port::Port;
@@ -80,6 +80,16 @@ pub struct Backend {
     /// arrives — a server that rejects the field must never receive it.
     #[serde(default)]
     pub structured_output: bool,
+    /// Optional `[headers]` table: extra HTTP headers sent with every
+    /// `chat` request to this backend (e.g. `Authorization = "Bearer {{
+    /// env.OPENAI_API_KEY }}"`). Values are templates accepting ONLY
+    /// `{{ env.NAME }}` (validated by [`validate_headers`]); the environment
+    /// variable is resolved at preflight, before the input is read. Header
+    /// names are validated at load time and `Content-Type`/`Content-Length`
+    /// are rejected: `ureq` sets both itself, and a silently overridden
+    /// header is a key read and ignored.
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
     /// The file this backend was loaded from, filled in by [`super::load_scopes`]
     /// once the merge picked a winner.
     ///
@@ -229,6 +239,107 @@ fn validate_runtime_template(template: &str, backend_id: &str, source: &Path) ->
                     ),
                 )));
             }
+        }
+    }
+    Ok(())
+}
+
+/// Header names `ureq` sets itself for every request body it sends as
+/// JSON: silently overriding either from `[headers]` would be a key read
+/// and ignored, so both are rejected at load time instead.
+const RESERVED_HEADER_NAMES: [&str; 2] = ["content-type", "content-length"];
+
+/// Whether `c` is a legal RFC 9110 `tchar` (the character set an HTTP field
+/// name may use).
+fn is_tchar(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c)
+}
+
+/// Validates one `[headers]` name: non-empty, made only of RFC 9110 `tchar`
+/// characters, and not one `ureq` already sets itself.
+fn validate_header_name(name: &str, backend_id: &str, source: &Path) -> crate::Result<()> {
+    if name.is_empty() || !name.chars().all(is_tchar) {
+        return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            Some(backend_id),
+            format!(
+                "backend \"{backend_id}\": [headers] name \"{name}\" is not a legal HTTP \
+                 header name (RFC 9110 token characters only)"
+            ),
+        )));
+    }
+    if RESERVED_HEADER_NAMES.contains(&name.to_ascii_lowercase().as_str()) {
+        return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            Some(backend_id),
+            format!(
+                "backend \"{backend_id}\": [headers] cannot set \"{name}\": npu owns this \
+                 header (set by the HTTP client for every JSON request)"
+            ),
+        )));
+    }
+    Ok(())
+}
+
+/// Validates one `[headers]` VALUE template: only `{{ env.NAME }}` is
+/// accepted (the same reasoning as `[runtime]`'s templates, but even more
+/// restricted — a header cannot depend on the command's input, its
+/// arguments or a schema, none of which exist yet when the backend is
+/// loaded nor make sense as an HTTP header).
+fn validate_header_value(
+    template: &str,
+    name: &str,
+    backend_id: &str,
+    source: &Path,
+) -> crate::Result<()> {
+    let found = crate::prompt::placeholders(template).map_err(|err| {
+        let detail = match err {
+            crate::Error::Config(config_err) => config_err.message,
+            other => other.to_string(),
+        };
+        crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            Some(backend_id),
+            format!("backend \"{backend_id}\": [headers].{name}: {detail}"),
+        ))
+    })?;
+
+    for placeholder in found {
+        if !matches!(placeholder, crate::prompt::Placeholder::Env(_)) {
+            return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+                source,
+                Some(backend_id),
+                format!(
+                    "backend \"{backend_id}\": [headers].{name}: only {{{{ env.NAME }}}} is \
+                     accepted here (a header cannot depend on the command's input, arguments \
+                     or schemas)"
+                ),
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Validates the optional `[headers]` table of a backend: legal names,
+/// `Content-Type`/`Content-Length` rejected, no two names colliding once
+/// lower-cased (two TOML keys folding onto the same HTTP header would leave
+/// one of them silently overridden), and values restricted to
+/// `{{ env.NAME }}`.
+fn validate_headers(backend: &Backend, source: &Path) -> crate::Result<()> {
+    let mut seen: HashMap<String, &str> = HashMap::new();
+    for (name, value) in &backend.headers {
+        validate_header_name(name, &backend.id, source)?;
+        validate_header_value(value, name, &backend.id, source)?;
+        if let Some(existing) = seen.insert(name.to_ascii_lowercase(), name) {
+            return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+                source,
+                Some(&backend.id),
+                format!(
+                    "backend \"{}\": [headers] \"{existing}\" and \"{name}\" collide once \
+                     case is ignored (HTTP header names are case-insensitive)",
+                    backend.id
+                ),
+            )));
         }
     }
     Ok(())
@@ -455,6 +566,53 @@ pub(crate) fn validate_backend(backend: &Backend, source: &Path) -> crate::Resul
 
     validate_docker(backend, source)?;
     validate_process(backend, source)?;
+    validate_headers(backend, source)?;
 
     Ok(())
+}
+
+/// Resolves the `[headers]` table of `backend` for one request: each
+/// `{{ env.NAME }}` template is substituted with the variable's actual
+/// value, via the injected `env` (never `std::env::var` directly, for the
+/// same testability reason as `prompt::render`). An undefined variable is
+/// `Error::Config` naming the file and the header — resolved at preflight,
+/// before the input is read (see `exec::execute_business_command`'s
+/// invariant), so `git diff | npu ...` fails before the diff is consumed.
+/// A resolved value containing a CR, LF or NUL is also rejected here: `ureq`
+/// would otherwise fail later, at request time, with a less actionable
+/// message (exit 3 instead of 2) for what is a configuration defect.
+pub fn resolve_headers(
+    backend: &Backend,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> crate::Result<BTreeMap<String, String>> {
+    let mut resolved = BTreeMap::new();
+    for (name, template) in &backend.headers {
+        let value = crate::prompt::render(template, "", &BTreeMap::new(), env, &BTreeMap::new())
+            .map_err(|err| match err {
+                crate::Error::Config(config_err) => {
+                    crate::Error::Config(crate::error::ConfigError::in_file(
+                        &backend.source,
+                        Some(&backend.id),
+                        format!(
+                            "backend \"{}\": [headers].{name}: {}",
+                            backend.id, config_err.message
+                        ),
+                    ))
+                }
+                other => other,
+            })?;
+        if value.contains(['\r', '\n', '\0']) {
+            return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+                &backend.source,
+                Some(&backend.id),
+                format!(
+                    "backend \"{}\": [headers].{name} resolves to a value containing a \
+                     control character (CR, LF or NUL), which is not a legal HTTP header value",
+                    backend.id
+                ),
+            )));
+        }
+        resolved.insert(name.clone(), value);
+    }
+    Ok(resolved)
 }

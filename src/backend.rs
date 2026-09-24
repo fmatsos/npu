@@ -56,6 +56,7 @@ pub fn chat(
         prompt,
         schema,
         on_token,
+        headers,
     } = *request;
     let operation = backend.operations.get(&model.operation).ok_or_else(|| {
         crate::Error::Config(crate::error::ConfigError::bare(
@@ -96,18 +97,30 @@ pub fn chat(
         .new_agent();
 
     logger.info(&format!(
-        "POST {url} (model \"{}\", timeout {} s{})",
+        "POST {url} (model \"{}\", timeout {} s{}{})",
         model.model,
         timeout.as_secs(),
         if schema.is_some() {
             ", output schema sent as response_format"
         } else {
             ""
+        },
+        if headers.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ", with headers: {}",
+                headers.keys().cloned().collect::<Vec<_>>().join(", ")
+            )
         }
     ));
 
     let started = std::time::Instant::now();
-    let mut response = agent.post(&url).send_json(&body).map_err(|err| {
+    let mut post = agent.post(&url);
+    for (name, value) in headers {
+        post = post.header(name.as_str(), value.as_str());
+    }
+    let mut response = post.send_json(&body).map_err(|err| {
         backend_err(format!(
             "request to backend \"{}\" ({url}) failed: {err}",
             backend.id
@@ -361,15 +374,21 @@ pub struct Request<'a> {
     pub prompt: &'a str,
     pub schema: Option<&'a Value>,
     pub on_token: Option<&'a dyn Fn(&str)>,
+    /// Resolved `[headers]` of the backend being called (name -> resolved
+    /// value, `{{ env.NAME }}` already substituted): see
+    /// `config::resolve_headers`. Never logged.
+    pub headers: &'a std::collections::BTreeMap<String, String>,
 }
 
-// `&dyn Fn` cannot derive `Debug`: the closure has nothing to print.
+// `&dyn Fn` cannot derive `Debug`: the closure has nothing to print. Header
+// VALUES are deliberately excluded, even in Debug output: only their names.
 impl std::fmt::Debug for Request<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Request")
             .field("prompt", &self.prompt)
             .field("schema", &self.schema)
             .field("streamed", &self.on_token.is_some())
+            .field("header_names", &self.headers.keys().collect::<Vec<_>>())
             .finish()
     }
 }
@@ -485,6 +504,7 @@ mod tests {
             docker: None,
             timeouts,
             structured_output: false,
+            headers: std::collections::BTreeMap::new(),
             source: std::path::PathBuf::new(),
         }
     }
@@ -633,14 +653,17 @@ mod tests {
             .local_addr()
             .expect("local address of the listener");
 
+        let (header_tx, header_rx) = std::sync::mpsc::channel::<Option<String>>();
         let server = std::thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accepting the connection");
             let mut reader = BufReader::new(stream.try_clone().expect("cloning the TCP stream"));
 
             // Drains the request headers up to the empty line, then the
             // body announced by Content-Length; its exact content does not
-            // need to be checked for this end-to-end test.
+            // need to be checked for this end-to-end test, except the
+            // custom header under test.
             let mut content_length = 0usize;
+            let mut authorization = None;
             loop {
                 let mut line = String::new();
                 reader.read_line(&mut line).expect("reading a header line");
@@ -650,7 +673,16 @@ mod tests {
                 if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
                     content_length = value.trim().parse().unwrap_or(0);
                 }
+                if let Some(value) = line
+                    .strip_prefix("Authorization:")
+                    .or_else(|| line.strip_prefix("authorization:"))
+                {
+                    authorization = Some(value.trim().to_string());
+                }
             }
+            header_tx
+                .send(authorization)
+                .expect("sending the captured header back to the test");
             let mut body = vec![0u8; content_length];
             reader
                 .read_exact(&mut body)
@@ -687,6 +719,7 @@ mod tests {
             docker: None,
             timeouts: None,
             structured_output: false,
+            headers: std::collections::BTreeMap::new(),
             source: std::path::PathBuf::new(),
         };
         let model = crate::config::Model {
@@ -699,6 +732,13 @@ mod tests {
             source: std::path::PathBuf::new(),
         };
 
+        let sent_headers: std::collections::BTreeMap<String, String> = [(
+            "Authorization".to_string(),
+            "Bearer secret-token".to_string(),
+        )]
+        .into_iter()
+        .collect();
+
         let result = chat(
             &backend,
             &model,
@@ -707,6 +747,7 @@ mod tests {
                 prompt: "hello",
                 schema: None,
                 on_token: None,
+                headers: &sent_headers,
             },
             crate::log::Logger::new(crate::log::Level::Error),
         )
@@ -714,6 +755,15 @@ mod tests {
         assert_eq!(result.content, "stubbed reply");
         assert_eq!(result.finish_reason, None);
         assert!(result.usage.is_none());
+
+        let captured_authorization = header_rx
+            .recv()
+            .expect("the stub must send back what it captured");
+        assert_eq!(
+            captured_authorization.as_deref(),
+            Some("Bearer secret-token"),
+            "the resolved header value must reach the backend"
+        );
 
         server.join().expect("the server thread must not panic");
     }
