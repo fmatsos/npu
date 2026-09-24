@@ -239,8 +239,8 @@ mod tests {
     #[test]
     fn filter_existing_dirs_keeps_only_directories_that_exist_and_preserves_order() {
         // No `ScopeEnv::from_env()` here: this test must depend neither on
-        // real environment variables, nor on `/etc`, nor on `~/.config`
-        // (see review L2), to stay safe under parallel execution.
+        // real environment variables, nor on `/etc`, nor on `~/.config`,
+        // to stay safe under parallel execution.
         let existing_a = fixture_dir("existing-a");
         let existing_b = fixture_dir("existing-b");
         let missing = existing_a.join("does-not-exist");

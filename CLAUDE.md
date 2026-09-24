@@ -189,7 +189,7 @@ Adding one is a measured decision: check the binary size and the crate count
 before and after, and record the numbers. A version bump of an existing
 dependency (Dependabot's weekly PRs) needs no measurement.
 
-At 0.5.1: 205 packages in `Cargo.lock`, 9 015 408 bytes release binary on
+At 0.5.1: 118 crates in `cargo tree --edges normal` (the metric of the deltas above; `Cargo.lock` lists 205 packages, other targets included), 9 015 408 bytes release binary on
 x86_64 Linux.
 
 ## Documentation
