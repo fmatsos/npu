@@ -53,7 +53,7 @@ pub fn chat(
     logger: crate::log::Logger,
 ) -> crate::Result<ChatAnswer> {
     let Request {
-        prompt,
+        messages,
         schema,
         on_token,
         headers,
@@ -79,7 +79,7 @@ pub fn chat(
         ))
     };
     let schema = schema.filter(|_| backend.structured_output);
-    let mut body = build_chat_request(&model.model, prompt, &model.generation, schema);
+    let mut body = build_chat_request(&model.model, messages, &model.generation, schema);
     if on_token.is_some()
         && let Value::Object(map) = &mut body
     {
@@ -366,12 +366,31 @@ fn read_stream(
     })
 }
 
-/// What one chat call asks: the prompt, the schema constraining the answer
+/// One chat message: `role` is `"system"`, `"user"` or `"assistant"`.
+#[derive(Debug, Clone)]
+pub struct Message {
+    pub role: String,
+    pub content: String,
+}
+
+impl Message {
+    #[must_use]
+    pub fn user(content: impl Into<String>) -> Self {
+        Self {
+            role: "user".to_string(),
+            content: content.into(),
+        }
+    }
+}
+
+/// What one chat call asks: the messages (system?, examples×[user,
+/// assistant], the rendered body as the final user message — see
+/// `exec::execute_business_command`), the schema constraining the answer
 /// (sent only to a backend declaring `structured_output`), and where the
 /// answer's tokens go as they arrive — `None` waits for the whole answer.
 #[derive(Clone, Copy)]
 pub struct Request<'a> {
-    pub prompt: &'a str,
+    pub messages: &'a [Message],
     pub schema: Option<&'a Value>,
     pub on_token: Option<&'a dyn Fn(&str)>,
     /// Resolved `[headers]` of the backend being called (name -> resolved
@@ -385,7 +404,7 @@ pub struct Request<'a> {
 impl std::fmt::Debug for Request<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Request")
-            .field("prompt", &self.prompt)
+            .field("message_count", &self.messages.len())
             .field("schema", &self.schema)
             .field("streamed", &self.on_token.is_some())
             .field("header_names", &self.headers.keys().collect::<Vec<_>>())
@@ -410,15 +429,17 @@ fn join_url(base_url: &str, path: &str) -> String {
 /// `response_format`, only for `Some(schema)`.
 fn build_chat_request(
     model: &str,
-    prompt: &str,
+    messages: &[Message],
     generation: &crate::config::Generation,
     schema: Option<&Value>,
 ) -> Value {
+    let messages: Vec<Value> = messages
+        .iter()
+        .map(|message| serde_json::json!({ "role": message.role, "content": message.content }))
+        .collect();
     let mut body = serde_json::json!({
         "model": model,
-        "messages": [
-            { "role": "user", "content": prompt }
-        ]
+        "messages": messages
     });
 
     if let Value::Object(map) = &mut body {
@@ -551,7 +572,12 @@ mod tests {
             temperature: None,
             max_tokens: None,
         };
-        let body = build_chat_request("qwen-2.5-1.5b", "hello", &generation, None);
+        let body = build_chat_request(
+            "qwen-2.5-1.5b",
+            &[Message::user("hello")],
+            &generation,
+            None,
+        );
 
         assert_eq!(body["model"], "qwen-2.5-1.5b");
         assert_eq!(body["messages"][0]["role"], "user");
@@ -560,17 +586,70 @@ mod tests {
         assert!(body.get("max_tokens").is_none());
     }
 
+    /// B2 invariant: a command declaring neither `system` nor `examples`
+    /// must produce a request body BYTE-IDENTICAL to what `npu` sent
+    /// before B2 existed — a single-element `messages` array holding only
+    /// the rendered body as a `user` message.
+    #[test]
+    fn build_chat_request_without_system_or_examples_is_byte_identical_to_the_pre_b2_body() {
+        let body = build_chat_request(
+            "qwen-2.5-1.5b",
+            &[Message::user("hello")],
+            &Generation::default(),
+            None,
+        );
+        assert_eq!(
+            serde_json::to_string(&body).expect("body must serialize"),
+            r#"{"messages":[{"content":"hello","role":"user"}],"model":"qwen-2.5-1.5b"}"#
+        );
+    }
+
+    /// B2: `system`, then each example's `[user, assistant]` pair in file
+    /// order, then the rendered body as the final `user` message.
+    #[test]
+    fn build_chat_request_orders_system_then_examples_then_body() {
+        let messages = [
+            Message {
+                role: "system".to_string(),
+                content: "be terse".to_string(),
+            },
+            Message {
+                role: "user".to_string(),
+                content: "ticket: printer on fire".to_string(),
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: r#"{"category":"hardware"}"#.to_string(),
+            },
+            Message::user("ticket: mouse missing"),
+        ];
+        let body = build_chat_request("m", &messages, &Generation::default(), None);
+        let roles: Vec<&str> = body["messages"]
+            .as_array()
+            .expect("messages must be an array")
+            .iter()
+            .map(|m| m["role"].as_str().expect("role must be a string"))
+            .collect();
+        assert_eq!(roles, ["system", "user", "assistant", "user"]);
+        assert_eq!(body["messages"][3]["content"], "ticket: mouse missing");
+    }
+
     #[test]
     fn build_chat_request_with_schema_sends_json_schema_response_format() {
         let schema = serde_json::json!({ "type": "object" });
-        let body = build_chat_request("m", "hello", &Generation::default(), Some(&schema));
+        let body = build_chat_request(
+            "m",
+            &[Message::user("hello")],
+            &Generation::default(),
+            Some(&schema),
+        );
         assert_eq!(body["response_format"]["type"], "json_schema");
         assert_eq!(body["response_format"]["json_schema"]["schema"], schema);
     }
 
     #[test]
     fn build_chat_request_without_schema_sends_no_response_format() {
-        let body = build_chat_request("m", "hello", &Generation::default(), None);
+        let body = build_chat_request("m", &[Message::user("hello")], &Generation::default(), None);
         assert!(body.get("response_format").is_none());
     }
 
@@ -580,7 +659,12 @@ mod tests {
             temperature: Some(0.0),
             max_tokens: Some(512),
         };
-        let body = build_chat_request("qwen-2.5-1.5b", "hello", &generation, None);
+        let body = build_chat_request(
+            "qwen-2.5-1.5b",
+            &[Message::user("hello")],
+            &generation,
+            None,
+        );
 
         assert_eq!(body["temperature"], 0.0);
         assert_eq!(body["max_tokens"], 512);
@@ -595,7 +679,12 @@ mod tests {
             temperature: Some(0.7),
             max_tokens: None,
         };
-        let body = build_chat_request("qwen-2.5-1.5b", "hello", &generation, None);
+        let body = build_chat_request(
+            "qwen-2.5-1.5b",
+            &[Message::user("hello")],
+            &generation,
+            None,
+        );
 
         assert_eq!(body["temperature"].to_string(), "0.7");
     }
@@ -744,7 +833,7 @@ mod tests {
             &model,
             &backend.base_url.clone(),
             &Request {
-                prompt: "hello",
+                messages: &[Message::user("hello")],
                 schema: None,
                 on_token: None,
                 headers: &sent_headers,

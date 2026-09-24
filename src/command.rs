@@ -49,6 +49,16 @@ pub struct CommandSpec {
     /// as `[output].schema`, see [`resolve_schema_path`]). Read lazily, when
     /// the command runs — never at load time.
     pub schemas: BTreeMap<String, std::path::PathBuf>,
+    /// Optional `system` frontmatter key: a templated system-role message
+    /// sent before the examples and the rendered body. Same placeholders as
+    /// the body (`{{ args.* }}`, `{{ env.* }}`, `{{ schemas.* }}`), except
+    /// `{{ input }}`, rejected at load time (the input is the user's turn,
+    /// not the system's).
+    pub system: Option<String>,
+    /// Optional `[[examples]]` array: fixed few-shot user/assistant pairs,
+    /// in file order, emitted after `system` and before the rendered body.
+    /// Same placeholder rules as `system`.
+    pub examples: Vec<Example>,
     /// Path of the source command file (e.g. `.npu/commands/classify.md`)
     /// this `CommandSpec` was parsed from. Needed by `output::finalize`
     /// to name, at real execution time, the command
@@ -62,6 +72,25 @@ pub struct CommandSpec {
     /// since they don't care about this field) therefore carries an
     /// empty `PathBuf` — never reached outside `discover`/`discover_scopes`.
     pub file: std::path::PathBuf,
+}
+
+/// One `[[examples]]` entry: a fixed user/assistant turn shown to the model
+/// before the command's actual body, both templated like `system` (same
+/// placeholder rules, see [`CommandSpec::system`]'s doc).
+#[derive(Debug, Clone)]
+pub struct Example {
+    pub user: String,
+    pub assistant: String,
+}
+
+/// Raw version of `[[examples]]` as written in TOML: `deny_unknown_fields`
+/// like every other frontmatter section, both fields required (an example
+/// missing either half is not a usable turn).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawExample {
+    user: String,
+    assistant: String,
 }
 
 /// Raw version of `ArgSpec` as written in TOML: `short` is a string
@@ -118,6 +147,12 @@ struct Frontmatter {
     /// [`resolve_schema_path`].
     #[serde(default)]
     schemas: BTreeMap<String, String>,
+    /// Optional `system` key: see [`CommandSpec::system`]'s doc.
+    #[serde(default)]
+    system: Option<String>,
+    /// Optional `[[examples]]` array: see [`CommandSpec::examples`]'s doc.
+    #[serde(default)]
+    examples: Vec<RawExample>,
 }
 
 /// Raw version of the `[output]` section as written in TOML: `schema` is
@@ -661,6 +696,58 @@ fn convert_schemas(
         .collect()
 }
 
+/// Validates a `system`/`[[examples]]` template: the same unknown-argument
+/// and unknown-schema checks as the body ([`crate::prompt::validate`]),
+/// plus a rejection of `{{ input }}` — which has no meaning outside the
+/// body (see [`CommandSpec::system`]'s doc). `label` names the offending
+/// section in the error message (`"system"`, `"examples[0].user"`, ...).
+fn validate_message_template(
+    template: &str,
+    label: &str,
+    declared_args: &BTreeSet<String>,
+    declared_schemas: &BTreeSet<String>,
+) -> crate::Result<()> {
+    crate::prompt::validate(template, declared_args, declared_schemas)?;
+    for placeholder in crate::prompt::placeholders(template)? {
+        if matches!(placeholder, crate::prompt::Placeholder::Input) {
+            return Err(crate::Error::config(format!(
+                "\"{label}\" references {{{{ input }}}}, which has no meaning there (the \
+                 input is rendered as the final user message, not part of {label})"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// An argument referenced by `{{ args.NAME }}` in ANY templated section of
+/// the command (body, `system`, an example) but declared `required =
+/// false` is a contradiction within the file itself — rendering can never
+/// succeed without the argument, whatever the command line actually typed.
+/// See `parse`'s doc for why this is rejected at load time rather than at
+/// render time or by silently promoting the argument.
+fn reject_optional_arg_placeholders(
+    template: &str,
+    args: &BTreeMap<String, ArgSpec>,
+) -> crate::Result<()> {
+    for placeholder in crate::prompt::placeholders(template)? {
+        if let crate::prompt::Placeholder::Arg(name) = placeholder {
+            // `args` is guaranteed to contain `name`: `prompt::validate`
+            // has already run on this same template and would have failed
+            // otherwise.
+            let spec = &args[&name];
+            if !spec.required {
+                return Err(crate::Error::config(format!(
+                    "argument \"{name}\" referenced by {{{{ args.{name} }}}} but declared \
+                     required = false: an argument referenced by the prompt must be \
+                     required = true (no default value exists yet for \
+                     `[args.*]`)"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Line delimiting the TOML frontmatter of a command file, opening and
 /// closing. `---` is what every other Markdown-with-frontmatter tool uses,
 /// so an editor highlights the header instead of showing three plus signs
@@ -749,6 +836,52 @@ pub fn parse(
     let declared_schemas: BTreeSet<String> = schemas.keys().cloned().collect();
     crate::prompt::validate(&prompt, &declared, &declared_schemas)?;
 
+    // `system` and each `[[examples]]` turn are templated exactly like the
+    // body, with one restriction: `{{ input }}` has no meaning there (the
+    // input IS the user's turn, rendered separately as the last message) —
+    // rejected at load time, naming the offending section, rather than
+    // silently rendering to an empty string.
+    let system = match frontmatter.system {
+        None => None,
+        Some(raw) => {
+            if raw.trim().is_empty() {
+                return Err(crate::Error::config(
+                    "\"system\" is present but empty (or blank): remove the key or give it \
+                     content",
+                ));
+            }
+            validate_message_template(&raw, "system", &declared, &declared_schemas)?;
+            Some(raw)
+        }
+    };
+
+    let examples = frontmatter
+        .examples
+        .into_iter()
+        .enumerate()
+        .map(|(index, raw)| {
+            if raw.user.trim().is_empty() || raw.assistant.trim().is_empty() {
+                return Err(crate::Error::config(format!(
+                    "[[examples]] entry {index}: both \"user\" and \"assistant\" must be \
+                     non-empty"
+                )));
+            }
+            let label_user = format!("examples[{index}].user");
+            let label_assistant = format!("examples[{index}].assistant");
+            validate_message_template(&raw.user, &label_user, &declared, &declared_schemas)?;
+            validate_message_template(
+                &raw.assistant,
+                &label_assistant,
+                &declared,
+                &declared_schemas,
+            )?;
+            Ok(Example {
+                user: raw.user,
+                assistant: raw.assistant,
+            })
+        })
+        .collect::<crate::Result<Vec<_>>>()?;
+
     // An argument referenced by the prompt via
     // {{ args.NAME }} but declared `required = false` is a contradiction
     // within the command file itself — a prompt that interpolates NAME
@@ -772,20 +905,13 @@ pub fn parse(
     // optional argument with a default value will be able to be
     // referenced by the prompt again without contradiction, and this
     // rejection will need to be relaxed accordingly.
-    for placeholder in crate::prompt::placeholders(&prompt)? {
-        if let crate::prompt::Placeholder::Arg(name) = placeholder {
-            // `declared` is guaranteed to contain `name`: `prompt::validate`
-            // above would already have failed otherwise.
-            let spec = &args[&name];
-            if !spec.required {
-                return Err(crate::Error::config(format!(
-                    "argument \"{name}\" referenced by {{{{ args.{name} }}}} but declared \
-                     required = false: an argument referenced by the prompt must be \
-                     required = true (no default value exists yet for \
-                     `[args.*]`)"
-                )));
-            }
-        }
+    reject_optional_arg_placeholders(&prompt, &args)?;
+    if let Some(system) = &system {
+        reject_optional_arg_placeholders(system, &args)?;
+    }
+    for example in &examples {
+        reject_optional_arg_placeholders(&example.user, &args)?;
+        reject_optional_arg_placeholders(&example.assistant, &args)?;
     }
 
     // `[output]` section: forbidden
@@ -803,6 +929,8 @@ pub fn parse(
         args,
         output,
         schemas,
+        system,
+        examples,
         // Filled in by `read_and_parse`, the only caller that knows the
         // path of the file actually read (see the field's doc on
         // `CommandSpec`).
@@ -1916,5 +2044,127 @@ mod tests {
             "max_lines must be effective, not just accepted"
         );
         assert_eq!(commit_message.output.schema, None);
+    }
+
+    // -- system / [[examples]] (B2) -----------------------------------
+
+    #[test]
+    fn system_and_examples_parse() {
+        let source = r#"---
+model = "qwen-fast"
+system = "You are a deterministic classifier. Answer with JSON only."
+
+[[examples]]
+user = "ticket: printer on fire"
+assistant = '{"category":"hardware","confidence":0.98}'
+
+[[examples]]
+user = "ticket: mouse missing"
+assistant = '{"category":"hardware","confidence":0.5}'
+---
+Classify: {{ input }}
+"#;
+        let spec = parse(source, vec!["x".to_string()], &test_scope_root()).expect("must parse");
+        assert_eq!(
+            spec.system.as_deref(),
+            Some("You are a deterministic classifier. Answer with JSON only.")
+        );
+        assert_eq!(spec.examples.len(), 2);
+        assert_eq!(spec.examples[0].user, "ticket: printer on fire");
+        assert_eq!(
+            spec.examples[1].assistant,
+            r#"{"category":"hardware","confidence":0.5}"#
+        );
+    }
+
+    #[test]
+    fn without_system_or_examples_both_are_absent() {
+        let source = "---\nmodel = \"qwen-fast\"\n---\n{{ input }}\n";
+        let spec = parse(source, vec!["x".to_string()], &test_scope_root()).expect("must parse");
+        assert_eq!(spec.system, None);
+        assert!(spec.examples.is_empty());
+    }
+
+    #[test]
+    fn input_placeholder_in_system_is_rejected_at_load_time() {
+        let source = "---\nmodel = \"qwen-fast\"\nsystem = \"{{ input }}\"\n---\nbody\n";
+        let err = parse(source, vec!["x".to_string()], &test_scope_root()).expect_err("must fail");
+        assert!(matches!(err, crate::Error::Config(_)));
+    }
+
+    #[test]
+    fn input_placeholder_in_an_example_is_rejected_at_load_time() {
+        let source = r#"---
+model = "qwen-fast"
+
+[[examples]]
+user = "{{ input }}"
+assistant = "ok"
+---
+body
+"#;
+        let err = parse(source, vec!["x".to_string()], &test_scope_root()).expect_err("must fail");
+        assert!(matches!(err, crate::Error::Config(_)));
+    }
+
+    #[test]
+    fn an_empty_system_is_rejected() {
+        let source = "---\nmodel = \"qwen-fast\"\nsystem = \"   \"\n---\nbody\n";
+        let err = parse(source, vec!["x".to_string()], &test_scope_root()).expect_err("must fail");
+        assert!(matches!(err, crate::Error::Config(_)));
+    }
+
+    #[test]
+    fn an_example_missing_assistant_is_rejected() {
+        let source = r#"---
+model = "qwen-fast"
+
+[[examples]]
+user = "hi"
+---
+body
+"#;
+        let err = parse(source, vec!["x".to_string()], &test_scope_root()).expect_err("must fail");
+        assert!(matches!(err, crate::Error::Config(_)));
+    }
+
+    #[test]
+    fn an_example_with_an_empty_field_is_rejected() {
+        let source = r#"---
+model = "qwen-fast"
+
+[[examples]]
+user = "hi"
+assistant = "   "
+---
+body
+"#;
+        let err = parse(source, vec!["x".to_string()], &test_scope_root()).expect_err("must fail");
+        assert!(matches!(err, crate::Error::Config(_)));
+    }
+
+    #[test]
+    fn an_undeclared_arg_in_system_is_rejected_at_load_time() {
+        let source = "---\nmodel = \"qwen-fast\"\nsystem = \"{{ args.unknown }}\"\n---\nbody\n";
+        let err = parse(source, vec!["x".to_string()], &test_scope_root()).expect_err("must fail");
+        assert!(matches!(err, crate::Error::Config(_)));
+    }
+
+    #[test]
+    fn an_arg_referenced_only_by_an_example_must_be_required() {
+        let source = r#"---
+model = "qwen-fast"
+
+[args.lang]
+required = false
+
+[[examples]]
+user = "{{ args.lang }}"
+assistant = "ok"
+---
+body
+"#;
+        let err = parse(source, vec!["x".to_string()], &test_scope_root()).expect_err("must fail");
+        assert!(matches!(err, crate::Error::Config(_)));
     }
 }

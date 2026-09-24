@@ -90,6 +90,8 @@ cat README.md | npu translate --language french
 | `[args.<name>]` | table | none | see [CLI arguments](#cli-arguments) |
 | `[output]` | table | text, no limit | see [Output contracts](output.md) |
 | `[schemas]` | table | none | `<id> = "<name or path>"`, for `{{ schemas.<id> }}` — see [Schemas in the prompt](output.md#schemas-in-the-prompt) |
+| `system` | string | none | a system-role message sent before the examples and the body — see [System prompt and examples](#system-prompt-and-examples) |
+| `[[examples]]` | array of tables | none | fixed few-shot `user`/`assistant` turns — see [System prompt and examples](#system-prompt-and-examples) |
 
 > [!IMPORTANT]
 > Unknown keys are **rejected**, not ignored — at the top level, under `[input]`, under
@@ -193,6 +195,49 @@ One that is **unset** is an error.
 >
 > This constraint will stop making sense the day default values exist. It reflects the current
 > state, not a permanent truth.
+
+---
+
+## System prompt and examples
+
+```toml
+---
+description = "Classify a support ticket"
+model = "qwen-fast"
+system = "You are a deterministic classifier. Answer with JSON only."
+
+[[examples]]
+user = "ticket: printer on fire"
+assistant = '{"category":"hardware","confidence":0.98}'
+---
+Classify: {{ input }}
+```
+
+`system` (optional string) and `[[examples]]` (optional array of `{ user, assistant }` pairs) let
+a command steer a model that follows a fixed system instruction and a few fixed demonstrations
+more reliably than a single free-text prompt — the most effective non-agentic lever on output
+shape for a small local model.
+
+The request sent to the backend becomes, in this order: the `system` message (if declared), each
+example's `user`/`assistant` pair (in file order), then the rendered body as the final `user`
+message. **A command declaring neither key sends exactly what it always has** — a single `user`
+message.
+
+Both `system` and every example field are templated with the same placeholders as the body
+(`{{ args.* }}`, `{{ env.* }}`, `{{ schemas.* }}`), with one exception: **`{{ input }}` is
+rejected there at load time.** The input is the user's own turn, rendered separately as the last
+message — referencing it from `system` or an example would not mean what it looks like it means.
+
+An argument referenced only from `system` or an example is held to the same rule as one
+referenced from the body: it must be declared `required = true` ([see above](#two-deliberate-constraints)).
+An environment variable they reference is resolved at the same preflight step as the body's own
+placeholders — before the input is read.
+
+`system` cannot be blank (empty after trimming), and every example needs both non-empty `user`
+and `assistant` fields: a key present but pointless is read and rejected, not silently ignored.
+
+`npu describe` reports the raw `system` template (never resolved — `describe` documents the file,
+it does not run it) and the **count** of declared examples, never their content.
 
 ---
 
