@@ -209,6 +209,34 @@ Declares that the server accepts an OpenAI `response_format` of type `json_schem
 constrains the model's answer. Omitted or `false`, nothing is sent and the answer is only
 validated after it arrives — a server that rejects unknown request fields never receives one.
 
+### `[headers]` (optional)
+
+```toml
+[headers]
+Authorization = "Bearer {{ env.OPENAI_API_KEY }}"
+X-Org = "acme"
+```
+
+A table of extra HTTP headers sent with every `chat` request to this backend — what makes it
+possible to talk to `llama-server --api-key`, LiteLLM, an Ollama behind a proxy, or a hosted
+OpenAI-compatible endpoint that requires authentication.
+
+- A value is a template accepting **only** `{{ env.NAME }}`: `{{ input }}`, `{{ args.* }}` and
+  `{{ schemas.* }}` are configuration errors here, at load time, naming the file and the header —
+  a header cannot depend on the command being run.
+- `Content-Type` and `Content-Length` are rejected (case-insensitively): `npu` owns both, and
+  overriding either silently would be a key read and then ignored.
+- A header name must be a legal HTTP token (RFC 9110); two names colliding once case is ignored
+  (`Authorization` next to `authorization`) are rejected too — one of them would silently win.
+- The environment variable is resolved at **preflight**, before the command's input is read
+  (for the model's backend and, when the model declares a `fallback`, for the fallback's backend
+  too) — an undefined variable is a configuration error naming the file and the header, and
+  `git diff | npu ...` fails before the diff is consumed.
+- Header **values are never logged**, at any `--verbose` level, and never shown by `npu
+  describe`: the trace line names the headers sent (`with headers: Authorization, X-Org`), never
+  their values.
+- `npu doctor`'s TCP probe does not send headers — it only checks the port is open.
+
 ---
 
 ## Starting a backend with Docker

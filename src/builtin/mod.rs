@@ -122,6 +122,7 @@ mod tests {
             docker: None,
             timeouts: None,
             structured_output: false,
+            headers: std::collections::BTreeMap::new(),
             source: std::path::PathBuf::new(),
         }
     }

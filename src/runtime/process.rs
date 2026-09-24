@@ -1881,6 +1881,7 @@ mod tests {
             docker: None,
             timeouts: None,
             structured_output: false,
+            headers: std::collections::BTreeMap::new(),
             source: PathBuf::from(SOURCE),
         }
     }

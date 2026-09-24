@@ -17,7 +17,7 @@ mod model;
 mod port;
 mod runtime;
 
-pub use backend::{Backend, Operation, Timeouts};
+pub use backend::{Backend, Operation, Timeouts, resolve_headers};
 pub use model::{Generation, Model};
 pub use port::Port;
 pub use runtime::{Docker, Process, Runtime};
@@ -2007,5 +2007,145 @@ mod tests {
         );
         assert!(matches!(err, crate::Error::Config(_)));
         assert!(err.to_string().contains("ovms.toml"));
+    }
+
+    // -- [headers] ------------------------------------------------------
+
+    fn write_headers_backend(root: &Path, headers_table: &str) {
+        write(
+            root,
+            "backends/h.toml",
+            &format!(
+                r#"
+                id = "h"
+                base_url = "http://127.0.0.1:8000"
+                type = "openai-compatible"
+
+                [operations.chat]
+                method = "POST"
+                path = "/v1/chat/completions"
+
+                [headers]
+                {headers_table}
+                "#
+            ),
+        );
+    }
+
+    #[test]
+    fn a_valid_headers_table_loads() {
+        let root = fixture_dir("headers-valid");
+        write_headers_backend(
+            &root,
+            r#"Authorization = "Bearer {{ env.NPU_TEST_TOKEN }}"
+               X-Org = "acme""#,
+        );
+
+        let config = load(&root).expect("a valid [headers] table must load");
+        let backend = config.backends.get("h").expect("backend h");
+        assert_eq!(
+            backend.headers.get("X-Org").map(String::as_str),
+            Some("acme")
+        );
+    }
+
+    #[test]
+    fn a_header_value_referencing_args_is_rejected_naming_the_file_and_header() {
+        let root = fixture_dir("headers-args");
+        write_headers_backend(&root, r#"Authorization = "{{ args.x }}""#);
+
+        let err = load(&root).expect_err("a header cannot reference args.*");
+        assert!(matches!(err, crate::Error::Config(_)));
+        let message = err.to_string();
+        assert!(message.contains("h.toml"), "got: {message}");
+        assert!(message.contains("Authorization"), "got: {message}");
+    }
+
+    #[test]
+    fn a_header_value_referencing_input_is_rejected() {
+        let root = fixture_dir("headers-input");
+        write_headers_backend(&root, r#"Authorization = "{{ input }}""#);
+
+        let err = load(&root).expect_err("a header cannot reference input");
+        assert!(matches!(err, crate::Error::Config(_)));
+    }
+
+    #[test]
+    fn content_type_header_is_rejected_case_insensitively() {
+        let root = fixture_dir("headers-content-type");
+        write_headers_backend(&root, r#"content-TYPE = "text/plain""#);
+
+        let err = load(&root).expect_err("Content-Type is owned by npu");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("h.toml"));
+    }
+
+    #[test]
+    fn content_length_header_is_rejected() {
+        let root = fixture_dir("headers-content-length");
+        write_headers_backend(&root, r#"Content-Length = "0""#);
+
+        let err = load(&root).expect_err("Content-Length is owned by npu");
+        assert!(matches!(err, crate::Error::Config(_)));
+    }
+
+    #[test]
+    fn an_illegal_header_name_is_rejected() {
+        let root = fixture_dir("headers-illegal-name");
+        write_headers_backend(&root, r#""X Space" = "v""#);
+
+        let err = load(&root).expect_err("a header name with a space is not a legal tchar name");
+        assert!(matches!(err, crate::Error::Config(_)));
+    }
+
+    #[test]
+    fn two_header_names_colliding_once_lower_cased_are_rejected() {
+        let root = fixture_dir("headers-collide");
+        write_headers_backend(
+            &root,
+            r#"Authorization = "a"
+               authorization = "b""#,
+        );
+
+        // TOML itself rejects a table with the key spelled twice at the
+        // syntax level only if the keys are byte-identical; these differ
+        // by case, so this reaches our own collision check.
+        let err = load(&root).expect_err("headers colliding once lower-cased must be rejected");
+        assert!(matches!(err, crate::Error::Config(_)));
+    }
+
+    #[test]
+    fn resolve_headers_substitutes_the_environment_variable() {
+        let root = fixture_dir("headers-resolve");
+        write_headers_backend(
+            &root,
+            r#"Authorization = "Bearer {{ env.NPU_TEST_TOKEN }}""#,
+        );
+        let config = load(&root).expect("must load");
+        let backend = config.backends.get("h").expect("backend h");
+
+        let env = |name: &str| (name == "NPU_TEST_TOKEN").then(|| "s3cr3t".to_string());
+        let resolved = backend::resolve_headers(backend, &env).expect("must resolve");
+        assert_eq!(
+            resolved.get("Authorization").map(String::as_str),
+            Some("Bearer s3cr3t")
+        );
+    }
+
+    #[test]
+    fn resolve_headers_on_an_undefined_variable_is_a_config_error_naming_the_header() {
+        let root = fixture_dir("headers-resolve-missing");
+        write_headers_backend(
+            &root,
+            r#"Authorization = "Bearer {{ env.NPU_TEST_TOKEN }}""#,
+        );
+        let config = load(&root).expect("must load");
+        let backend = config.backends.get("h").expect("backend h");
+
+        let env = |_: &str| None;
+        let err = backend::resolve_headers(backend, &env)
+            .expect_err("an undefined variable must fail resolution");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("Authorization"));
     }
 }
