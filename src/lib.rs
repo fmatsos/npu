@@ -77,6 +77,15 @@ pub use error::{Error, Result};
 /// code) — never `main` itself, so that stdout stays reserved for the
 /// RESULT produced by this library, as everywhere else in this module.
 pub fn run() -> Result<i32> {
+    // FIRST, before any log or print: `CompleteEnv::complete`'s own
+    // warning is "stdout should not be written to before this has had a
+    // chance to run" — `COMPLETE=bash npu ...` IS the completion request,
+    // and it writes the completion script to stdout itself, exiting the
+    // process, when the environment variable is set; a silent no-op
+    // otherwise. No built-in, no reserved name: `CLAUDE.md` forbids adding
+    // a top-level built-in, and this needs neither.
+    complete_env().complete();
+
     let (logger, error_format, config_dir_override) = read_raw_args();
 
     let roots = scope::roots(config_dir_override.clone());
@@ -315,6 +324,28 @@ fn run_backend_lifecycle(
     }
 
     Ok(None)
+}
+
+/// Builds the `CompleteEnv` `run` checks first, from the SAME `clap` tree
+/// shape `run` itself builds a few lines later: the built-ins
+/// (`cli::builtins::add_builtins`) plus the discovered business commands
+/// when loading succeeds, the built-ins alone (degraded mode) otherwise —
+/// this factory is `Fn() -> clap::Command`, so it repeats that same
+/// loading independently rather than sharing `run`'s own `loaded`, which
+/// does not exist yet at this point (cf. this function's doc: it must run
+/// before anything else). `--config-dir`/`NPU_CONFIG_DIR` are read again
+/// here for the same reason: the project scope must be known before the
+/// commands it declares can be listed for completion.
+fn complete_env() -> clap_complete::CompleteEnv<'static, impl Fn() -> clap::Command> {
+    clap_complete::CompleteEnv::with_factory(|| {
+        let config_dir_override =
+            scope::config_dir_from_args(std::env::args()).or_else(scope::config_dir_env_var);
+        let roots = scope::roots(config_dir_override);
+        let specs = config::load_scopes(&roots)
+            .and_then(|_| command::discover_scopes(&roots))
+            .unwrap_or_default();
+        cli::sectioned_help(cli::builtins::add_builtins(cli::build_cli(&specs)), false)
+    })
 }
 
 /// Reads everything `run` needs from the RAW command line, before `clap`
