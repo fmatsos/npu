@@ -32,7 +32,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # No toolchain action: `rust-toolchain.toml` pins 1.98.1 with clippy and
       # rustfmt, and rustup installs it on the first cargo invocation. Naming
