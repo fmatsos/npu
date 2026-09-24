@@ -36,6 +36,7 @@ pub fn exit_code_of(exe: &std::path::Path, args: &[&str]) -> Option<i32> {
 /// silent. The single place outside `src/runtime/` a vendor helper may call
 /// to run an external tool, so `std::process::Command` still appears
 /// nowhere else in the crate.
+#[cfg(feature = "hardware-tooling")]
 #[must_use]
 pub fn capture(program: &str, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new(program)

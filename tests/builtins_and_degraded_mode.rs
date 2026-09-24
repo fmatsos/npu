@@ -751,6 +751,7 @@ fn no_colour_reaches_a_pipe() {
 
 /// Writes an NPU export of `qwen-fast-underlying` under `models_dir`: the
 /// three files `backend tune` reads.
+#[cfg(feature = "hardware-tooling")]
 fn write_npu_export(models_dir: &Path) {
     write(
         models_dir,
@@ -766,6 +767,7 @@ fn write_npu_export(models_dir: &Path) {
     write(models_dir, "qwen-fast-underlying/openvino_model.bin", "w");
 }
 
+#[cfg(feature = "hardware-tooling")]
 #[test]
 fn tune_without_an_npu_export_exits_two_naming_the_directory_with_empty_stdout() {
     let xdg = fixture_dir("tune-none-xdg");
@@ -786,6 +788,7 @@ fn tune_without_an_npu_export_exits_two_naming_the_directory_with_empty_stdout()
     assert!(stderr_of(&output).contains("no-models-here"));
 }
 
+#[cfg(feature = "hardware-tooling")]
 #[test]
 fn tune_writes_the_graph_and_max_tokens_unless_dry_run() {
     let xdg = fixture_dir("tune-xdg");

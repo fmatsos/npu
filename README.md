@@ -141,6 +141,11 @@ cargo install --path .
 > directory and a `SIGTERM`, neither of which Windows has. Everything else — command discovery,
 > arguments, templating, structured output, the other built-ins — is platform-independent.
 
+`cargo install --path .` builds with the `hardware-tooling` Cargo feature on by default, which
+declares `npu model discover` and `npu backend tune` (see [How it works](#how-it-works) and
+[`docs/cli.md`](docs/cli.md#cargo-feature-hardware-tooling)). Build with `--no-default-features`
+for a smaller, engine-only CLI without them.
+
 ### Verify the installation
 
 ```sh

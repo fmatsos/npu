@@ -9,6 +9,7 @@ pub mod builtin;
 mod cli;
 pub mod command;
 pub mod config;
+#[cfg(feature = "hardware-tooling")]
 pub mod discover;
 mod dispatch;
 pub mod error;
@@ -21,8 +22,10 @@ pub mod prompt;
 pub mod runtime;
 pub mod scope;
 pub mod style;
+#[cfg(feature = "hardware-tooling")]
 pub mod tune;
 pub mod updater;
+#[cfg(feature = "hardware-tooling")]
 pub mod vendor;
 
 pub use error::{Error, Result};
@@ -128,6 +131,7 @@ pub fn run() -> Result<i32> {
         dispatch::Route::Doctor => return Ok(cli::builtins::doctor(&loaded)),
         dispatch::Route::Help => return cli::builtins::help(help_cli, leaf_matches),
         dispatch::Route::Update => return cli::builtins::update(logger),
+        #[cfg(feature = "hardware-tooling")]
         dispatch::Route::ModelDiscover => {
             let config = loaded.as_ref().map(|(config, _)| config);
             anstream::println!(
@@ -144,6 +148,12 @@ pub fn run() -> Result<i32> {
                 return Ok(0);
             }
         }
+        // `ModelDiscover` can only be routed to here with the feature off,
+        // since `add_builtins` then never declares `model discover` in the
+        // `clap` tree: this arm never actually runs, it only keeps the
+        // match exhaustive over every `Route` variant.
+        #[cfg(not(feature = "hardware-tooling"))]
+        dispatch::Route::ModelDiscover => {}
         dispatch::Route::ConfigModels
         | dispatch::Route::BackendServe
         | dispatch::Route::BackendStop
@@ -287,6 +297,7 @@ fn run_backend_lifecycle(
         return Ok(Some(0));
     }
 
+    #[cfg(feature = "hardware-tooling")]
     if route == ["backend", "tune"] {
         println!(
             "{}",
