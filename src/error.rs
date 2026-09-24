@@ -339,6 +339,11 @@ where
 
     for arg in args {
         let arg = arg.as_ref();
+        // `--` ends option parsing: a literal positional spelled
+        // `--error-format` after it must never be read as this flag.
+        if arg == "--" {
+            break;
+        }
         if expecting_value {
             format = arg.parse().ok();
             expecting_value = false;
@@ -486,6 +491,21 @@ mod tests {
         assert_eq!(
             error_format_from_args(["npu", "--error-format=json", "x"]),
             ErrorFormat::Json
+        );
+    }
+
+    /// `--` ends option parsing: a literal positional spelled
+    /// `--error-format` after it must never be read as the flag.
+    #[test]
+    fn error_format_from_args_stops_at_a_double_dash() {
+        assert_eq!(
+            error_format_from_args(["npu", "--", "--error-format", "json"]),
+            ErrorFormat::Text
+        );
+        assert_eq!(
+            error_format_from_args(["npu", "--error-format", "json", "--", "x"]),
+            ErrorFormat::Json,
+            "a value read BEFORE the -- is still honoured"
         );
     }
 

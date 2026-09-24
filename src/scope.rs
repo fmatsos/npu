@@ -132,6 +132,14 @@ where
 
     for arg in args {
         let arg = arg.as_ref();
+        // `--` ends option parsing for `clap` too: anything after it is a
+        // positional value, never a flag, even when it is spelled
+        // `--config-dir`. Without this, `npu classify -- --config-dir` would
+        // read the literal positional `--config-dir` as this flag and
+        // consume the NEXT positional as its value.
+        if arg == "--" {
+            break;
+        }
         if expecting_value {
             value = Some(PathBuf::from(arg));
             expecting_value = false;
@@ -732,5 +740,20 @@ mod tests {
             Some(PathBuf::from("/x"))
         );
         assert_eq!(config_dir_from_args(["npu", "y"]), None);
+    }
+
+    /// `--` ends option parsing: a literal positional spelled
+    /// `--config-dir` after it must never be read as the flag.
+    #[test]
+    fn config_dir_from_args_stops_at_a_double_dash() {
+        assert_eq!(
+            config_dir_from_args(["npu", "--", "--config-dir", "/x"]),
+            None
+        );
+        assert_eq!(
+            config_dir_from_args(["npu", "--config-dir", "/x", "--", "y"]),
+            Some(PathBuf::from("/x")),
+            "a value read BEFORE the -- is still honoured"
+        );
     }
 }

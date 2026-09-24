@@ -423,16 +423,29 @@ fn skips_config() -> bool {
     )
 }
 
-/// First argument that is neither `--verbose`/`-v` nor its value,
-/// read from the RAW command line (cf. [`log::level_from_args`]).
+/// First argument that is neither a global flag (`--verbose`/`-v`,
+/// `--error-format`, `--config-dir`) nor its value, read from the RAW
+/// command line (cf. [`log::level_from_args`]). A global flag declared
+/// after the actual first word (e.g. `npu classify --verbose info`) is
+/// none of this function's concern: it only has to look PAST the flags
+/// that can precede the first word, same idiom as `level_from_args`,
+/// `error::error_format_from_args` and `scope::config_dir_from_args`.
 fn first_word<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
     let mut expecting_value = false;
     for arg in args {
         if expecting_value {
             expecting_value = false;
-        } else if arg == "--verbose" || arg == "-v" {
+        } else if arg == "--verbose"
+            || arg == "-v"
+            || arg == "--error-format"
+            || arg == "--config-dir"
+        {
             expecting_value = true;
-        } else if !arg.starts_with("--verbose=") && !arg.starts_with("-v") {
+        } else if !arg.starts_with("--verbose=")
+            && !arg.starts_with("-v")
+            && !arg.starts_with("--error-format=")
+            && !arg.starts_with("--config-dir=")
+        {
             return Some(arg);
         }
     }
@@ -466,5 +479,32 @@ mod first_word_tests {
             Some("--version")
         );
         assert_eq!(first(&["--verbose", "warn"]), None);
+    }
+
+    /// `npu --error-format json --version` with a broken configuration must
+    /// print no degraded-mode warning: `skips_config` reads `--version` as
+    /// the first word, not `--error-format` or its value `json`.
+    #[test]
+    fn skips_error_format_and_its_value() {
+        assert_eq!(
+            first(&["--error-format", "json", "--version"]).as_deref(),
+            Some("--version")
+        );
+        assert_eq!(
+            first(&["--error-format=json", "update"]).as_deref(),
+            Some("update")
+        );
+    }
+
+    #[test]
+    fn skips_config_dir_and_its_value() {
+        assert_eq!(
+            first(&["--config-dir", "/x", "update"]).as_deref(),
+            Some("update")
+        );
+        assert_eq!(
+            first(&["--config-dir=/x", "--version"]).as_deref(),
+            Some("--version")
+        );
     }
 }
