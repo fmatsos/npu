@@ -9,7 +9,7 @@ type TokenSink<'a> = &'a dyn Fn(&str, &str);
 /// fallback.
 #[derive(Clone, Copy)]
 pub(crate) struct Ask<'a> {
-    pub(crate) prompt: &'a str,
+    pub(crate) messages: &'a [crate::backend::Message],
     pub(crate) schema: Option<&'a serde_json::Value>,
     pub(crate) stream: Option<TokenSink<'a>>,
 }
@@ -18,7 +18,7 @@ pub(crate) struct Ask<'a> {
 impl std::fmt::Debug for Ask<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Ask")
-            .field("prompt", &self.prompt)
+            .field("message_count", &self.messages.len())
             .field("streamed", &self.stream.is_some())
             .finish_non_exhaustive()
     }
@@ -48,7 +48,7 @@ pub(crate) fn chat_with_fallback(
     logger: crate::log::Logger,
 ) -> crate::Result<(crate::backend::ChatAnswer, String)> {
     let Ask {
-        prompt,
+        messages,
         schema,
         stream,
     } = *ask;
@@ -77,7 +77,7 @@ pub(crate) fn chat_with_fallback(
         crate::runtime::resolve_base_url(backend, &crate::runtime::docker::runner).and_then(
             |base_url| {
                 let request = crate::backend::Request {
-                    prompt,
+                    messages,
                     schema,
                     on_token,
                     headers: &headers,
@@ -129,6 +129,47 @@ pub(crate) fn chat_with_fallback(
         })
 }
 
+/// Builds the full `messages` array for `spec`: `[system?] +
+/// examples×[user, assistant] + [user: prompt]`, in file order. Split out
+/// of `execute_business_command` only to keep it under the crate's
+/// line-count lint — no behavior is different from what used to be
+/// inlined there (same convention as
+/// `backend::handle_non_streamed_response`).
+///
+/// With neither `system` nor `examples` declared, the result is exactly
+/// today's single-element array (pinned by
+/// `backend::tests::build_chat_request_without_system_or_examples_is_byte_identical_to_the_pre_b2_body`).
+fn build_messages(
+    spec: &crate::command::CommandSpec,
+    prompt: &str,
+    args: &std::collections::BTreeMap<String, String>,
+    env: &dyn Fn(&str) -> Option<String>,
+    schemas: &std::collections::BTreeMap<String, String>,
+) -> crate::Result<Vec<crate::backend::Message>> {
+    let mut messages = Vec::with_capacity(1 + spec.examples.len() * 2 + 1);
+    if let Some(system) = &spec.system {
+        let rendered = crate::prompt::render(system, "", args, env, schemas)?;
+        messages.push(crate::backend::Message {
+            role: "system".to_string(),
+            content: rendered,
+        });
+    }
+    for example in &spec.examples {
+        let user = crate::prompt::render(&example.user, "", args, env, schemas)?;
+        let assistant = crate::prompt::render(&example.assistant, "", args, env, schemas)?;
+        messages.push(crate::backend::Message {
+            role: "user".to_string(),
+            content: user,
+        });
+        messages.push(crate::backend::Message {
+            role: "assistant".to_string(),
+            content: assistant,
+        });
+    }
+    messages.push(crate::backend::Message::user(prompt.to_string()));
+    Ok(messages)
+}
+
 /// Executes the pipeline of an already-resolved BUSINESS command (`spec`),
 /// with the loaded configuration (`config`, necessarily `Ok` at this point:
 /// `run` has propagated any load error before reaching this function) and
@@ -146,7 +187,8 @@ pub(crate) fn chat_with_fallback(
 /// argument or an undefined environment variable — a silent loss, and on a
 /// non-replayable stream an irreversible one, of the work already produced
 /// upstream.
-#[allow(clippy::too_many_arguments)] // env, read_input and stdout_is_terminal are the
+#[allow(clippy::too_many_arguments)]
+// env, read_input and stdout_is_terminal are the
 // injected outside world; splitting them into a struct would only move the
 // count, not reduce it.
 pub(crate) fn execute_business_command(
@@ -203,6 +245,17 @@ pub(crate) fn execute_business_command(
         .collect::<crate::Result<std::collections::BTreeMap<_, _>>>()?;
 
     crate::prompt::preflight(&spec.prompt, &args, env, &schemas)?;
+    // `system` and every `[[examples]]` turn are templated exactly like the
+    // body (minus `{{ input }}`, rejected at load time): their own
+    // environment variables must be resolvable before the input is read,
+    // same invariant as the body's own preflight above.
+    if let Some(system) = &spec.system {
+        crate::prompt::preflight(system, &args, env, &schemas)?;
+    }
+    for example in &spec.examples {
+        crate::prompt::preflight(&example.user, &args, env, &schemas)?;
+        crate::prompt::preflight(&example.assistant, &args, env, &schemas)?;
+    }
 
     // Headers are resolved at preflight too, for the primary backend AND
     // (when declared) the fallback's: the fallback fires after the input
@@ -244,6 +297,13 @@ pub(crate) fn execute_business_command(
         prompt.chars().count()
     ));
 
+    // Builds the full message list: [system?] + examples×[user, assistant]
+    // + [user: the rendered body]. With neither `system` nor `examples`
+    // declared, this is exactly today's single-element array — pinned by
+    // `backend::tests::build_chat_request_without_generation_options` and
+    // the e2e test asserting the exact request bytes.
+    let messages = build_messages(spec, &prompt, &args, env, &schemas)?;
+
     // The backend's raw response is never
     // written as-is to stdout. `output::finalize` applies the declared
     // output contract (`spec.output` — format, schema, max_lines) and
@@ -277,7 +337,7 @@ pub(crate) fn execute_business_command(
         let _ = std::io::Write::flush(&mut anstream::stdout());
     };
     let ask = Ask {
-        prompt: &prompt,
+        messages: &messages,
         schema: output_schema.as_ref(),
         stream: streaming.then_some(&print_token as TokenSink<'_>),
     };
@@ -407,6 +467,53 @@ mod tests {
         (format!("http://{addr}"), handle)
     }
 
+    /// Same idiom as [`stub_backend`], but hands the raw request body it
+    /// received back to the caller through the returned channel, so a test
+    /// can assert on the exact `messages` array `npu` sent (B2).
+    fn stub_backend_capturing_body(
+        body: &'static str,
+    ) -> (
+        String,
+        std::thread::JoinHandle<()>,
+        std::sync::mpsc::Receiver<Vec<u8>>,
+    ) {
+        use std::io::{BufRead, BufReader, Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind of the stub");
+        let addr = listener.local_addr().expect("local address of the stub");
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accepting the connection");
+            let mut reader = BufReader::new(stream.try_clone().expect("cloning the TCP stream"));
+            let mut content_length = 0usize;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("reading a header line");
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    content_length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut captured = vec![0u8; content_length];
+            reader.read_exact(&mut captured).expect("reading the body");
+            tx.send(captured).expect("sending the captured body back");
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \
+                 {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("writing the stub response");
+        });
+
+        (format!("http://{addr}"), handle, rx)
+    }
+
     fn backend_at(id: &str, base_url: String) -> config::Backend {
         config::Backend {
             id: id.to_string(),
@@ -477,7 +584,7 @@ mod tests {
             model,
             backend,
             &Ask {
-                prompt: "hello",
+                messages: &[crate::backend::Message::user("hello")],
                 schema: None,
                 stream: None,
             },
@@ -519,7 +626,7 @@ mod tests {
             model,
             backend,
             &Ask {
-                prompt: "hello",
+                messages: &[crate::backend::Message::user("hello")],
                 schema: None,
                 stream: None,
             },
@@ -555,7 +662,7 @@ mod tests {
             model,
             backend,
             &Ask {
-                prompt: "hello",
+                messages: &[crate::backend::Message::user("hello")],
                 schema: None,
                 stream: None,
             },
@@ -593,6 +700,8 @@ mod tests {
             args: std::collections::BTreeMap::new(),
             output: crate::output::OutputSpec::default(),
             schemas: std::collections::BTreeMap::new(),
+            system: None,
+            examples: Vec::new(),
             file: std::path::PathBuf::new(),
         }];
         let cli = crate::cli::build_cli(&specs);
@@ -648,6 +757,8 @@ mod tests {
             args: std::collections::BTreeMap::new(),
             output: crate::output::OutputSpec::default(),
             schemas: std::collections::BTreeMap::new(),
+            system: None,
+            examples: Vec::new(),
             file: std::path::PathBuf::new(),
         }];
         let cli = crate::cli::build_cli(&specs);
@@ -718,7 +829,7 @@ mod tests {
             model,
             backend,
             &Ask {
-                prompt: "hello",
+                messages: &[crate::backend::Message::user("hello")],
                 schema: None,
                 stream: Some(&sink),
             },
@@ -769,6 +880,8 @@ mod tests {
             args: std::collections::BTreeMap::new(),
             output: crate::output::OutputSpec::default(),
             schemas: std::collections::BTreeMap::new(),
+            system: None,
+            examples: Vec::new(),
             file: std::path::PathBuf::new(),
         }];
         let cli = crate::cli::build_cli(&specs);
@@ -799,5 +912,130 @@ mod tests {
             "the message must name the model, got: {err}"
         );
         server.join().expect("stub server thread");
+    }
+
+    /// B2: a command declaring `system` and `[[examples]]` must send them,
+    /// in order, ahead of the rendered body as the final `user` message.
+    #[test]
+    fn system_and_examples_are_sent_in_order_ahead_of_the_body() {
+        let (url, server, rx) = stub_backend_capturing_body(
+            r#"{"choices":[{"message":{"role":"assistant","content":"ok"}}]}"#,
+        );
+
+        let mut config = config::Config::default();
+        config
+            .backends
+            .insert("b".to_string(), backend_at("b", url));
+        config
+            .models
+            .insert("qwen-fast".to_string(), model_on("qwen-fast", "b", None));
+
+        let specs = vec![crate::command::CommandSpec {
+            path: vec!["x".to_string()],
+            description: "desc x".to_string(),
+            model: "qwen-fast".to_string(),
+            input: crate::command::InputMode::Stdin,
+            prompt: "{{ input }}".to_string(),
+            args: std::collections::BTreeMap::new(),
+            output: crate::output::OutputSpec::default(),
+            schemas: std::collections::BTreeMap::new(),
+            system: Some("be terse".to_string()),
+            examples: vec![crate::command::Example {
+                user: "ticket: printer on fire".to_string(),
+                assistant: r#"{"category":"hardware"}"#.to_string(),
+            }],
+            file: std::path::PathBuf::new(),
+        }];
+        let cli = crate::cli::build_cli(&specs);
+        let matches = cli
+            .try_get_matches_from(["npu", "x"])
+            .expect("the command line must be accepted");
+        let (_, leaf_matches) = crate::cli::selected_path(&matches);
+
+        let env = |_: &str| None;
+        let read_input = |_: &crate::command::InputMode, _: Option<&std::path::Path>| {
+            Ok("body text".to_string())
+        };
+
+        execute_business_command(
+            &specs[0],
+            &config,
+            leaf_matches,
+            log::Logger::new(log::Level::Error),
+            &env,
+            &read_input,
+            false,
+        )
+        .expect("must succeed");
+
+        let captured = rx.recv().expect("the stub must report the captured body");
+        let body: serde_json::Value =
+            serde_json::from_slice(&captured).expect("the body must be JSON");
+        let messages = body["messages"].as_array().expect("messages array");
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], "be terse");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[1]["content"], "ticket: printer on fire");
+        assert_eq!(messages[2]["role"], "assistant");
+        assert_eq!(messages[2]["content"], r#"{"category":"hardware"}"#);
+        assert_eq!(messages[3]["role"], "user");
+        assert_eq!(messages[3]["content"], "body text");
+
+        server.join().expect("stub server thread");
+    }
+
+    /// B2 preflight: an undefined environment variable referenced only by
+    /// `system` must be rejected BEFORE `read_input` is ever called, same
+    /// invariant as the prompt's own placeholders.
+    #[test]
+    #[allow(clippy::panic)] // the panic is the assertion: read_input must not run.
+    fn a_missing_system_env_var_is_rejected_before_read_input_is_called() {
+        let mut config = config::Config::default();
+        config.backends.insert(
+            "b".to_string(),
+            backend_at("b", "http://127.0.0.1:9".to_string()),
+        );
+        config
+            .models
+            .insert("qwen-fast".to_string(), model_on("qwen-fast", "b", None));
+
+        let specs = vec![crate::command::CommandSpec {
+            path: vec!["x".to_string()],
+            description: "desc x".to_string(),
+            model: "qwen-fast".to_string(),
+            input: crate::command::InputMode::Stdin,
+            prompt: "{{ input }}".to_string(),
+            args: std::collections::BTreeMap::new(),
+            output: crate::output::OutputSpec::default(),
+            schemas: std::collections::BTreeMap::new(),
+            system: Some("{{ env.NPU_TEST_UNSET_SYSTEM_VAR }}".to_string()),
+            examples: Vec::new(),
+            file: std::path::PathBuf::new(),
+        }];
+        let cli = crate::cli::build_cli(&specs);
+        let matches = cli
+            .try_get_matches_from(["npu", "x"])
+            .expect("the command line must be accepted");
+        let (_, leaf_matches) = crate::cli::selected_path(&matches);
+
+        let env = |_: &str| None;
+        let read_input = |_: &crate::command::InputMode, _: Option<&std::path::Path>| {
+            panic!("read_input must not be called when system preflight already fails")
+        };
+
+        let err = execute_business_command(
+            &specs[0],
+            &config,
+            leaf_matches,
+            log::Logger::new(log::Level::Error),
+            &env,
+            &read_input,
+            false,
+        )
+        .expect_err("a system referencing an undefined environment variable must be rejected");
+
+        assert!(matches!(err, Error::Config(_)));
+        assert!(err.to_string().contains("NPU_TEST_UNSET_SYSTEM_VAR"));
     }
 }

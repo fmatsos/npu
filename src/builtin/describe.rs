@@ -123,6 +123,12 @@ struct Describe<'a> {
     input: &'a str,
     args: std::collections::BTreeMap<&'a str, DescribeArg>,
     output: DescribeOutput<'a>,
+    /// The raw `system` template, or `null` when the command declares none
+    /// — never resolved: `describe` documents the file, it does not run it.
+    system: Option<&'a str>,
+    /// Only the COUNT of `[[examples]]`: their content can carry business
+    /// data an agent listing commands should not have to receive.
+    examples: usize,
 }
 
 /// Describes a dynamically configured command: produces JSON on stdout,
@@ -187,6 +193,8 @@ pub fn describe(
             max_lines: spec.output.max_lines,
             allow_truncated: spec.output.allow_truncated,
         },
+        system: spec.system.as_deref(),
+        examples: spec.examples.len(),
     };
 
     serde_json::to_string(&dto)

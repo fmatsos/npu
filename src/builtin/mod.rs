@@ -239,6 +239,8 @@ mod tests {
             args: std::collections::BTreeMap::new(),
             output: crate::output::OutputSpec::default(),
             schemas: std::collections::BTreeMap::new(),
+            system: None,
+            examples: Vec::new(),
             file: std::path::PathBuf::new(),
         }
     }
@@ -691,6 +693,8 @@ mod tests {
                 allow_truncated: false,
             },
             schemas: std::collections::BTreeMap::new(),
+            system: None,
+            examples: Vec::new(),
             file: std::path::PathBuf::from(".npu/commands/translate.md"),
         }
     }

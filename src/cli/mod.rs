@@ -286,6 +286,8 @@ mod tests {
             // no limit) is neutral for them.
             output: crate::output::OutputSpec::default(),
             schemas: std::collections::BTreeMap::new(),
+            system: None,
+            examples: Vec::new(),
             // Neutral for the same reasons as `output` above: these tests
             // never bear on the output contract nor on naming the command
             // file in a schema error.

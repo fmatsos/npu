@@ -67,11 +67,30 @@ cat README.md | npu translate --language french
 | `[input] mode` | string | `"stdin"` | `stdin`, `file`, `stdin_or_file` |
 | `[args.<name>]` | table | none | becomes a real CLI flag |
 | `[output]` | table | text, no limit | see below |
+| `system` | string | none | system-role message, sent before examples and the body |
+| `[[examples]]` | array of tables | none | fixed `{ user, assistant }` turns, sent in file order |
 
 **Unknown keys are rejected** — at the top level, under `[input]`, under
 `[args.*]` and under `[output]`. A typo like `moed = "file"` would otherwise
 fall back to the default in silence, and `npu summarize README.md` would read
 stdin instead of your file without a word.
+
+`system` and `[[examples]]` (both optional) build the request as `[system?] +
+examples×[user, assistant] + [user: rendered body]`; a command declaring
+neither sends exactly the single-message body it always has. Both are
+templated like the body, EXCEPT `{{ input }}`, rejected there at load time
+(the input is the final user turn, rendered separately). An argument
+referenced only from `system`/an example must still be `required = true`,
+same rule as the body. `system` cannot be blank; an example needs non-empty
+`user` and `assistant`.
+
+```toml
+system = "You are a deterministic classifier. Answer with JSON only."
+
+[[examples]]
+user = "ticket: printer on fire"
+assistant = '{"category":"hardware","confidence":0.98}'
+```
 
 ## Input modes
 
