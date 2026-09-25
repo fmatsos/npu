@@ -13,7 +13,12 @@ fn main() {
         Ok(code) => std::process::exit(code),
         Err(err) => {
             // `anstream` strips the colour when stderr is not a terminal.
-            anstream::eprintln!("{}", npu::style::paint(npu::style::ERROR, &err.to_string()));
+            if npu::error::error_format_from_args(std::env::args()) == npu::error::ErrorFormat::Json
+            {
+                anstream::eprintln!("{}", err.envelope());
+            } else {
+                anstream::eprintln!("{}", npu::style::paint(npu::style::ERROR, &err.to_string()));
+            }
             std::process::exit(err.exit_code());
         }
     }

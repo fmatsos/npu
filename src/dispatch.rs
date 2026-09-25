@@ -12,6 +12,8 @@ pub(crate) enum Route {
     Help,
     /// `update`.
     Update,
+    /// `mcp serve`.
+    McpServe,
     /// `model discover`.
     ModelDiscover,
     /// `describe <path…>`: a built-in first, a business command otherwise.
@@ -43,6 +45,7 @@ pub(crate) fn route_for(path: &[&str]) -> Route {
         ["doctor"] | ["config", "check"] => Route::Doctor,
         ["help"] => Route::Help,
         ["update"] => Route::Update,
+        ["mcp", "serve"] => Route::McpServe,
         ["model", "discover"] => Route::ModelDiscover,
         ["describe"] => Route::Describe,
         ["config", "models"] => Route::ConfigModels,

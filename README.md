@@ -34,6 +34,7 @@ Adding, changing or removing a command never requires recompiling. A repository 
 - [Quick start](#quick-start)
 - [Built-in commands](#built-in-commands)
 - [Exit codes](#exit-codes)
+- [Use from an agent](#use-from-an-agent)
 - [Documentation](#documentation)
 
 ---
@@ -57,6 +58,11 @@ The Rust core understands execution mechanics, not AI business semantics. `model
 `backend tune` are the one deliberate exception: they know Intel/OpenVINO and Hugging Face well
 enough to help prepare a configuration, but they never run a command themselves, and everything
 they know lives under `src/vendor/`, never in the engine that does.
+
+A shared `.npu/` directory cannot launch a program as a side effect of running a business
+command. Runtime startup is an explicit operator action (`npu backend serve`), not part of the
+business pipeline. Treat command prompts and backend endpoints from a shared repository as
+untrusted configuration nonetheless.
 
 ---
 
@@ -288,10 +294,8 @@ $ npu backend logs qwen-fast --follow
 [2026-09-21 17:26:44.688][1][serving][info][server.cpp:115] OpenVINO Model Server 2026.4.0.869b2186a
 ```
 
-```console
-$ npu describe translate
-{"name":"translate","description":"Translate input text","model":"qwen-fast","input":"stdin_or_file","args":{"language":{"short":"l","required":true,"description":"Target language"}},"output":{"format":"text","schema":null,"max_lines":null}}
-```
+`npu describe translate` returns a JSON command description, including each argument's type
+and bounds or enum values when declared.
 
 `npu backend serve`, `npu backend stop`, `npu backend status` and `npu backend logs` are the runtime lifecycle: start a model's
 backend, end it, see what is up, read what it printed. `npu backend tune` sizes the context
@@ -312,6 +316,18 @@ then replaces the running executable at the same path. Both commands remain usab
 configuration is invalid because neither depends on it.
 
 ---
+
+## Use from an agent
+
+Run `npu mcp serve` as a stdio MCP server. It exposes each configured business command as a
+tool; built-ins are not tools. The tool name joins command path segments with `_`, and its
+`inputSchema` describes typed `[args]`. Pass command input under the literal JSON property
+`"mcp.input"` (distinct from a configured argument named `input`). JSON commands also return
+`structuredContent`; failures return an error envelope there and set `isError`.
+
+The server uses MCP protocol `2026-07-28` (`server/discover` and request `_meta`). It reads
+configuration once: restart to see changes. If loading fails, it remains available with an
+empty tool list and discovery instructions directing you to `npu doctor`. See [MCP server](docs/mcp.md).
 
 ## Exit codes
 
@@ -338,6 +354,7 @@ structured response is an execution failure, never something `npu` quietly repai
 | [Configuration](docs/configuration.md) | scopes and precedence, backends, models, merge semantics |
 | [Writing commands](docs/commands.md) | command files, frontmatter, arguments, templating, input modes |
 | [Output contracts](docs/output.md) | text and JSON output, JSON Schema validation, fenced responses |
+| [MCP server](docs/mcp.md) | agent integration over stdio, tool naming, argument and output schemas |
 | [Built-in commands](docs/cli.md) | `doctor`, `config`, `backend`, `model`, `describe`, `update`, degraded mode |
 | [Deploying on an Intel NPU](docs/intel-npu.md) | exporting a model with `optimum-cli`, quantization pitfalls, serving it with OVMS |
 | [Running on Apple Silicon](docs/apple-silicon.md) | serving a GGUF model with `llama-server` on Metal, started and stopped by `npu backend serve` |

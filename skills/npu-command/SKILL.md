@@ -117,7 +117,13 @@ description = "Target language"
 ```
 
 The table key is the long flag (`--language`) and the value lands in
-`{{ args.language }}`. Rejected at load time: a `short` longer than one
+`{{ args.language }}`. Set `type = "enum"` with a non-empty distinct `values` array,
+`type = "integer"` with optional inclusive `min`/`max`, or `type = "file"`
+to substitute the named UTF-8 file's content. The default type is `string`.
+Only enum accepts `values`; only integer accepts bounds. CLI validation fails
+before execution. MCP receives file content directly.
+
+Rejected at load time: a `short` longer than one
 character (never silently truncated), `short = "-"`, two arguments sharing a
 short letter, a name that is empty, contains a space, starts with `-` or uses
 characters no placeholder could reference, the reserved names `help`,

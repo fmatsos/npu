@@ -181,6 +181,44 @@ impl Error {
         }
     }
 
+    /// Machine-readable diagnostic shared by CLI and MCP tool failures.
+    #[must_use]
+    pub fn envelope(&self) -> serde_json::Value {
+        let (kind, fields) = match self {
+            Self::Update(_) => ("update", serde_json::json!({})),
+            Self::Io(_) => ("io", serde_json::json!({})),
+            Self::Config(err) => (
+                "config",
+                serde_json::json!({
+                    "file": err.file.as_ref().map(|path| path.display().to_string()),
+                    "id": err.id,
+                }),
+            ),
+            Self::Backend(err) => (
+                "backend",
+                serde_json::json!({
+                    "backend": err.backend, "url": err.url, "status": err.status,
+                }),
+            ),
+            Self::Output(err) => (
+                "output",
+                serde_json::json!({
+                    "command_file": err.command_file.as_ref().map(|path| path.display().to_string()),
+                    "schema": err.schema.as_ref().map(|path| path.display().to_string()),
+                }),
+            ),
+        };
+        let mut result = serde_json::json!({
+            "kind": kind,
+            "message": self.to_string(),
+            "exit_code": self.exit_code(),
+        });
+        if let (Some(to), Some(from)) = (result.as_object_mut(), fields.as_object()) {
+            to.extend(from.clone());
+        }
+        result
+    }
+
     /// Shorthand for `Error::Config(ConfigError::bare(None::<String>, message))`,
     /// for the many call sites with no file or identifier to attach.
     pub(crate) fn config(message: impl Into<String>) -> Self {
@@ -392,6 +430,21 @@ pub fn render_clap_usage_error(err: &clap::Error, format: ErrorFormat) -> String
 #[allow(clippy::expect_used)] // tolerated in tests (cf. Cargo.toml [lints.clippy]).
 mod tests {
     use super::*;
+
+    #[test]
+    fn pipeline_errors_have_a_machine_readable_envelope() {
+        let error = Error::Backend(BackendError::at_status(
+            "local",
+            "http://localhost",
+            503,
+            "unavailable",
+        ));
+        let envelope = error.envelope();
+        assert_eq!(envelope["kind"], "backend");
+        assert_eq!(envelope["exit_code"], 3);
+        assert_eq!(envelope["backend"], "local");
+        assert_eq!(envelope["status"], 503);
+    }
 
     #[test]
     fn exit_codes_match_contract() {

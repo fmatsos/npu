@@ -13,6 +13,29 @@ pub enum InputMode {
     StdinOrFile,
 }
 
+/// Type of a configured argument, shared by CLI validation and MCP schemas.
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArgType {
+    #[default]
+    String,
+    Enum,
+    Integer,
+    File,
+}
+
+impl ArgType {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::String => "string",
+            Self::Enum => "enum",
+            Self::Integer => "integer",
+            Self::File => "file",
+        }
+    }
+}
+
 /// A CLI argument declared by a command.
 ///
 /// Shared API contract: see the module doc for how this type is
@@ -29,6 +52,14 @@ pub struct ArgSpec {
     pub required: bool,
     #[serde(default)]
     pub description: String,
+    #[serde(default, rename = "type")]
+    pub kind: ArgType,
+    #[serde(default)]
+    pub values: Option<Vec<String>>,
+    #[serde(default)]
+    pub min: Option<i64>,
+    #[serde(default)]
+    pub max: Option<i64>,
 }
 
 /// A discovered command: its path (derived from the directory tree), the
@@ -121,6 +152,14 @@ struct RawArgSpec {
     required: bool,
     #[serde(default)]
     description: String,
+    #[serde(default, rename = "type")]
+    kind: ArgType,
+    #[serde(default)]
+    values: Option<Vec<String>>,
+    #[serde(default)]
+    min: Option<i64>,
+    #[serde(default)]
+    max: Option<i64>,
 }
 
 /// Raw TOML frontmatter, before default values are resolved.
@@ -560,6 +599,43 @@ fn convert_args(raw: BTreeMap<String, RawArgSpec>) -> crate::Result<BTreeMap<Str
 
     for (name, raw_spec) in raw {
         validate_arg_name(&name)?;
+        match &raw_spec.kind {
+            ArgType::Enum => {
+                let values = raw_spec.values.as_ref().ok_or_else(|| {
+                    crate::Error::config(format!(
+                        "argument \"{name}\": enum requires non-empty values"
+                    ))
+                })?;
+                if values.is_empty()
+                    || values.iter().collect::<BTreeSet<_>>().len() != values.len()
+                    || raw_spec.min.is_some()
+                    || raw_spec.max.is_some()
+                {
+                    return Err(crate::Error::config(format!(
+                        "argument \"{name}\": invalid enum values or integer bounds"
+                    )));
+                }
+            }
+            ArgType::Integer => {
+                if raw_spec.values.is_some()
+                    || raw_spec
+                        .min
+                        .zip(raw_spec.max)
+                        .is_some_and(|(min, max)| min > max)
+                {
+                    return Err(crate::Error::config(format!(
+                        "argument \"{name}\": invalid integer bounds or enum values"
+                    )));
+                }
+            }
+            ArgType::String | ArgType::File => {
+                if raw_spec.values.is_some() || raw_spec.min.is_some() || raw_spec.max.is_some() {
+                    return Err(crate::Error::config(format!(
+                        "argument \"{name}\": values and bounds do not apply to this type"
+                    )));
+                }
+            }
+        }
         let short = convert_short(&name, raw_spec.short)?;
 
         if let Some(c) = short
@@ -576,6 +652,10 @@ fn convert_args(raw: BTreeMap<String, RawArgSpec>) -> crate::Result<BTreeMap<Str
                 short,
                 required: raw_spec.required,
                 description: raw_spec.description,
+                kind: raw_spec.kind,
+                values: raw_spec.values,
+                min: raw_spec.min,
+                max: raw_spec.max,
             },
         );
     }
@@ -1081,6 +1161,31 @@ mod tests {
         assert!(matches!(spec.input, InputMode::StdinOrFile));
         assert_eq!(spec.prompt, "Hello {{ input }}");
         assert_eq!(spec.path, vec!["classify".to_string()]);
+    }
+
+    #[test]
+    fn typed_arguments_accept_valid_enum_integer_and_file() {
+        let source = "---\nmodel = \"test\"\n[args.language]\ntype = \"enum\"\nvalues = [\"fr\", \"en\"]\n[args.count]\ntype = \"integer\"\nmin = 1\nmax = 20\n[args.context]\ntype = \"file\"\n---\nHello\n";
+        let spec = parse(source, vec!["typed".into()], &test_scope_root()).expect("valid types");
+        assert!(matches!(spec.args["language"].kind, ArgType::Enum));
+        assert!(matches!(spec.args["count"].kind, ArgType::Integer));
+        assert!(matches!(spec.args["context"].kind, ArgType::File));
+    }
+
+    #[test]
+    fn typed_argument_rejects_invalid_combinations_naming_argument() {
+        for invalid in [
+            "type = \"enum\"\nvalues = []",
+            "type = \"enum\"\nvalues = [\"fr\", \"fr\"]",
+            "type = \"integer\"\nmin = 20\nmax = 1",
+            "type = \"file\"\nmin = 1",
+        ] {
+            let source = format!("---\nmodel = \"test\"\n[args.choice]\n{invalid}\n---\nHello\n");
+            let err = parse(&source, vec!["typed".into()], &test_scope_root())
+                .expect_err("invalid type declaration");
+            assert!(matches!(err, crate::Error::Config(_)));
+            assert!(err.to_string().contains("choice"));
+        }
     }
 
     #[test]

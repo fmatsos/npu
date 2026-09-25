@@ -63,6 +63,29 @@ fn build_declared_arg(name: &str, arg_spec: &crate::command::ArgSpec) -> clap::A
         arg = arg.help(arg_spec.description.clone());
     }
 
+    match &arg_spec.kind {
+        crate::command::ArgType::Enum => {
+            arg = arg.value_parser(clap::builder::PossibleValuesParser::new(
+                arg_spec.values.clone().unwrap_or_default(),
+            ));
+        }
+        crate::command::ArgType::Integer => {
+            let (min, max) = (arg_spec.min, arg_spec.max);
+            arg = arg.value_parser(move |value: &str| -> std::result::Result<String, String> {
+                let number = value
+                    .parse::<i64>()
+                    .map_err(|_| "expected an integer".to_string())?;
+                if min.is_some_and(|bound| number < bound)
+                    || max.is_some_and(|bound| number > bound)
+                {
+                    return Err("integer outside configured bounds".to_string());
+                }
+                Ok(value.to_string())
+            });
+        }
+        crate::command::ArgType::String | crate::command::ArgType::File => {}
+    }
+
     arg
 }
 
@@ -158,7 +181,7 @@ fn error_format_arg() -> clap::Arg {
         .value_name("FORMAT")
         .value_parser(["text", "json"])
         .default_value("text")
-        .help("Format of a clap usage error on stderr: plain text, or a one-line JSON envelope")
+        .help("Format errors on stderr as plain text or a one-line JSON envelope")
 }
 
 /// The `--config-dir <DIR>` argument, declared once on the root and marked
@@ -358,7 +381,40 @@ mod tests {
             short,
             required,
             description: description.to_string(),
+            kind: crate::command::ArgType::String,
+            values: None,
+            min: None,
+            max: None,
         }
+    }
+
+    #[test]
+    fn typed_arguments_are_rejected_by_clap_before_execution() {
+        let mut args = std::collections::BTreeMap::new();
+        let mut language = arg_spec(None, true, "language");
+        language.kind = crate::command::ArgType::Enum;
+        language.values = Some(vec!["fr".into(), "en".into()]);
+        args.insert("language".into(), language);
+        let mut count = arg_spec(None, false, "count");
+        count.kind = crate::command::ArgType::Integer;
+        count.min = Some(1);
+        count.max = Some(3);
+        args.insert("count".into(), count);
+        let cli = build_cli(&[spec_with_args(&["typed"], InputMode::Stdin, args)]);
+        assert!(
+            cli.clone()
+                .try_get_matches_from(["npu", "typed", "--language", "fr", "--count", "2"])
+                .is_ok()
+        );
+        assert!(
+            cli.clone()
+                .try_get_matches_from(["npu", "typed", "--language", "de"])
+                .is_err()
+        );
+        assert!(
+            cli.try_get_matches_from(["npu", "typed", "--language", "fr", "--count", "4"])
+                .is_err()
+        );
     }
 
     #[test]

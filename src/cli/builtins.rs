@@ -374,7 +374,8 @@ pub(crate) fn add_builtins(cli: clap::Command) -> clap::Command {
     let cli = cli
         .version(crate::updater::VERSION)
         .subcommand(backend)
-        .subcommand(config);
+        .subcommand(config)
+        .subcommand(mcp_command());
     #[cfg(feature = "hardware-tooling")]
     let cli = cli.subcommand(model);
 
@@ -407,6 +408,14 @@ pub(crate) fn add_builtins(cli: clap::Command) -> clap::Command {
                     .help("Command whose help is printed (e.g. \"backend serve\")"),
             ),
     )
+}
+
+fn mcp_command() -> clap::Command {
+    clap::Command::new("mcp")
+        .about("Expose configured commands to MCP clients")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .subcommand(clap::Command::new("serve").about("Serve MCP over stdio"))
 }
 
 /// `npu backend tune`: reads its flags and the host's RAM, then delegates to

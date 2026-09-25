@@ -79,6 +79,7 @@ loading succeeded.
 | --- | --- |
 | `npu --help` | exit `0`, built-ins listed, warning on stderr |
 | `npu doctor` | exit `2`, report on stdout naming the offending file and line |
+| `npu mcp serve` | starts with no tools; discovery reports the error and directs the agent to `npu doctor` |
 | `npu backend serve` / `stop` / `status` / `logs`, `npu config models` | exit `2`, stdout empty — they need the configuration that could not load |
 | anything else | exit `2`, stdout empty, error on stderr |
 

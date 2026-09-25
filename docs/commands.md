@@ -140,6 +140,9 @@ description = "Target language"
 | `short` | string | none | must be exactly **one** character, not `-`, `h` or `v` |
 | `required` | bool | `false` | |
 | `description` | string | `""` | shown in the command's `--help` |
+| `type` | `string`, `enum`, `integer`, `file` | `string` | validates values before execution |
+| `values` | string array | none | required and non-empty only for `enum`; duplicates rejected |
+| `min`, `max` | integer | none | only for `integer`; inclusive bounds |
 
 The table key is the long flag: `--language`. Rejected at load time, each naming the file:
 
@@ -150,6 +153,10 @@ The table key is the long flag: `--language`. Rejected at load time, each naming
   never reference;
 - the reserved names `help`, `version`, `FILE` and `verbose`;
 - the short letters `-h` (clap's help) and `-v` (the global `--verbose`).
+
+`enum` values are checked by clap, as are `integer` syntax and bounds (usage error, exit 2).
+For `file`, the CLI flag names a UTF-8 file whose content replaces `{{ args.<name> }}`;
+the file is read after preflight and before stdin. MCP callers pass the content directly.
 
 Values become available to the prompt as `{{ args.<name> }}`.
 

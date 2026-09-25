@@ -5,6 +5,10 @@ schemas are **configuration**, never code. The core understands execution
 mechanics, not AI business semantics — adding a command must never require a
 rebuild.
 
+A shared `.npu/` directory must never launch a program as a side effect of
+running a business command. Runtime startup is an explicit built-in action,
+not part of the command execution pipeline or MCP tool calls.
+
 ## The one gate
 
 ```sh
@@ -69,12 +73,13 @@ may ever add or remove a byte on stdout.
 
 ## Built-ins and the container lifecycle
 
-The built-ins live under six names, all listed in `builtin::RESERVED` with
+The built-ins live under eight names, all listed in `builtin::RESERVED` with
 `help` (a command file whose first path segment matches one is rejected at
 load time): the `backend` group — the lifecycle, `serve`, `stop`, `status`,
 `logs`, `tune` —, the `config` group — `check`, `models` —, the `model`
 group — `discover`, which needs no configuration —, `doctor` (the same
-command as `config check`, kept at the top level), `describe` and `update`;
+command as `config check`, kept at the top level), `describe`, `update`, `help`,
+and `mcp serve` (stdio server for configured commands only);
 the version is the root `--version` flag. Every other name belongs to the
 user's commands: do not add a top-level built-in, grow a group instead.
 
@@ -166,7 +171,7 @@ unwrap_used = "warn"
 
 ## Dependencies
 
-Thirteen, deliberately: `clap` (builder API, not derive — the command tree is
+Dependencies are measured: `clap` (builder API, not derive — the command tree is
 built at runtime from a directory scan), `serde`, `serde_json`, `toml`,
 `ureq` (blocking, rustls — chosen over `reqwest`, which drags in tokio),
 `jsonschema` with `default-features = false` (its defaults pull `reqwest`
@@ -198,6 +203,11 @@ in `clap_lex` (already in the graph via `clap_builder`), `shlex` and
 Adding one is a measured decision: check the binary size and the crate count
 before and after, and record the numbers. A version bump of an existing
 dependency (Dependabot's weekly PRs) needs no measurement.
+
+At 0.6.1 with `rmcp` 3.4.1 and Tokio added for the MCP stdio boundary:
+150 normal-edge crates and 11 689 856 release bytes on x86_64 Linux, up
+from 121 and 9 448 848 immediately before R2. Keep blocking command work
+off the Tokio runtime and serialize tool calls.
 
 At 0.5.2 (after `clap_complete`): 121 crates in `cargo tree --edges normal`
 (the metric of the deltas above), 9 438 400 bytes release binary on x86_64

@@ -358,6 +358,7 @@ fn prepare_command<'a>(
     env: &dyn Fn(&str) -> Option<String>,
     read_input: impl FnOnce() -> crate::Result<String>,
     logger: crate::log::Logger,
+    file_args_are_content: bool,
 ) -> crate::Result<PreparedCommand<'a>> {
     let (model, backend) = config.resolve(model_id)?;
     let output_schema = match (&spec.output.format, &spec.output.schema) {
@@ -383,10 +384,23 @@ fn prepare_command<'a>(
         crate::prompt::preflight(&example.assistant, args, env, &schemas)?;
     }
     preflight_headers(config, model, backend, env)?;
+    let mut resolved_args = args.clone();
+    for (name, declaration) in &spec.args {
+        if !file_args_are_content
+            && matches!(declaration.kind, crate::command::ArgType::File)
+            && let Some(path) = args.get(name)
+        {
+            let content = crate::input::resolve(
+                &crate::command::InputMode::File,
+                Some(std::path::Path::new(path)),
+            )?;
+            resolved_args.insert(name.clone(), content);
+        }
+    }
     let input = read_input()?;
     logger.info(&format!("input: {} characters read", input.chars().count()));
-    let prompt = crate::prompt::render(&spec.prompt, &input, args, env, &schemas)?;
-    let messages = build_messages(spec, &prompt, args, env, &schemas)?;
+    let prompt = crate::prompt::render(&spec.prompt, &input, &resolved_args, env, &schemas)?;
+    let messages = build_messages(spec, &prompt, &resolved_args, env, &schemas)?;
     Ok(PreparedCommand {
         model,
         backend,
@@ -435,6 +449,7 @@ pub(crate) fn test_messages(
         env,
         || Ok(input.to_string()),
         logger,
+        false,
     )?
     .messages)
 }
@@ -457,8 +472,31 @@ pub(crate) fn execute_test_case(
         env,
         || Ok(input.to_string()),
         logger,
+        false,
     )?;
     run_prepared(spec, config, &prepared, env, logger, None).map(|(_, output, _)| output)
+}
+
+/// Runs a configured command for a non-CLI caller, without writing to stdout.
+pub(crate) fn execute_mcp_command(
+    spec: &crate::command::CommandSpec,
+    config: &crate::config::Config,
+    args: &std::collections::BTreeMap<String, String>,
+    input: &str,
+    logger: crate::log::Logger,
+) -> crate::Result<String> {
+    let env = |name: &str| std::env::var(name).ok();
+    let prepared = prepare_command(
+        spec,
+        config,
+        &spec.model,
+        args,
+        &env,
+        || Ok(input.to_string()),
+        logger,
+        true,
+    )?;
+    run_prepared(spec, config, &prepared, &env, logger, None).map(|(_, output, _)| output)
 }
 
 /// Executes the pipeline of an already-resolved BUSINESS command (`spec`),
@@ -536,6 +574,7 @@ pub(crate) fn execute_business_command(
         env,
         || read_input(&spec.input, file_arg),
         logger,
+        false,
     )?;
 
     if dry_run {

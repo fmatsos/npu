@@ -360,6 +360,7 @@ Commands:
 Built-ins:
   backend   Manage the runtime of a model's backend: serve, stop, status, logs
   config    Inspect the configuration: check, models, test
+  mcp       Expose configured commands to MCP clients
   doctor    Check the runtime environment: configuration, backend reachability, declared output schemas
   describe  Describe a command, built-in or configured, as JSON; with none given, list every command
   update    Download and install the latest npu release from GitHub
@@ -367,7 +368,7 @@ Built-ins:
 
 Options:
   -v, --verbose <LEVEL>        Diagnostic verbosity on stderr; stdout always carries the result only [default: warn] [possible values: error, warn, info]
-      --error-format <FORMAT>  Format of a clap usage error on stderr: plain text, or a one-line JSON envelope [default: text] [possible values: text, json]
+      --error-format <FORMAT>  Format errors on stderr as plain text or a one-line JSON envelope [default: text] [possible values: text, json]
       --config-dir <DIR>       Use this directory as the project scope instead of walking up from the current one [env: NPU_CONFIG_DIR]
   -h, --help                   Print help
   -V, --version                Print version
@@ -665,8 +666,10 @@ to tell a configuration failure (exit `2`) apart from a reachability one (exit `
 
 ## `--error-format`
 
-`--error-format <text|json>` (default `text`) changes how a `clap` USAGE error is rendered on
-stderr — an unrecognized subcommand, a missing required argument, an invalid value. It is read
+`--error-format <text|json>` (default `text`) changes how errors are rendered on
+stderr — both `clap` usage errors and pipeline failures. The latter include `kind`,
+`message`, `exit_code`, and the available family-specific fields (for example `backend`,
+`status`, or `file`). It is read
 from the raw command line, before `clap` parses anything, the same way `--verbose` is (a usage
 error is raised by `clap` itself while parsing, before any declared argument's value could be read
 back). `--help` and `--version` are never affected: they stay `clap`'s own rendering on stdout,
@@ -853,6 +856,7 @@ Commands:
 Built-ins:
   backend   Manage the runtime of a model's backend: serve, stop, status, logs, tune
   config    Inspect the configuration: check, models, test
+  mcp       Expose configured commands to MCP clients
   model     Find models for this host: discover
   doctor    Check the runtime environment: configuration, backend reachability, declared output schemas
   describe  Describe a command, built-in or configured, as JSON; with none given, list every command
@@ -861,7 +865,7 @@ Built-ins:
 
 Options:
   -v, --verbose <LEVEL>        Diagnostic verbosity on stderr; stdout always carries the result only [default: warn] [possible values: error, warn, info]
-      --error-format <FORMAT>  Format of a clap usage error on stderr: plain text, or a one-line JSON envelope [default: text] [possible values: text, json]
+      --error-format <FORMAT>  Format errors on stderr as plain text or a one-line JSON envelope [default: text] [possible values: text, json]
       --config-dir <DIR>       Use this directory as the project scope instead of walking up from the current one [env: NPU_CONFIG_DIR]
   -h, --help                   Print help
   -V, --version                Print version

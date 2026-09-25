@@ -16,6 +16,7 @@ pub mod error;
 mod exec;
 pub mod input;
 pub mod log;
+mod mcp;
 pub mod output;
 pub mod progress;
 pub mod prompt;
@@ -142,6 +143,9 @@ pub fn run() -> Result<i32> {
         }
         dispatch::Route::Help => return cli::builtins::help(help_cli, leaf_matches, error_format),
         dispatch::Route::Update => return cli::builtins::update(logger, cfg_dir),
+        dispatch::Route::McpServe => {
+            return mcp::serve(mcp::Server::new(loaded, logger)?).map(|()| 0);
+        }
         #[cfg(feature = "hardware-tooling")]
         dispatch::Route::ModelDiscover => {
             let config = loaded.as_ref().map(|(config, _)| config);
@@ -220,6 +224,7 @@ pub fn run() -> Result<i32> {
             Ok(0)
         }
         dispatch::Route::Doctor
+        | dispatch::Route::McpServe
         | dispatch::Route::Help
         | dispatch::Route::Update
         | dispatch::Route::ModelDiscover => {

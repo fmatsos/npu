@@ -14,6 +14,14 @@ struct DescribeArg {
     short: Option<char>,
     required: bool,
     description: String,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    kind: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    values: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    min: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max: Option<i64>,
 }
 
 /// The output contract as serialized by [`describe`]: same data as
@@ -85,6 +93,10 @@ pub fn describe_builtin(
                     short: arg.get_short(),
                     required: arg.is_required_set(),
                     description: arg.get_help().map(ToString::to_string).unwrap_or_default(),
+                    kind: None,
+                    values: None,
+                    min: None,
+                    max: None,
                 },
             )
         })
@@ -200,6 +212,10 @@ pub fn describe(
                     short: arg_spec.short,
                     required: arg_spec.required,
                     description: arg_spec.description.clone(),
+                    kind: Some(arg_spec.kind.as_str()),
+                    values: arg_spec.values.clone(),
+                    min: arg_spec.min,
+                    max: arg_spec.max,
                 },
             )
         })

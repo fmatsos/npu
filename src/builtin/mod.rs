@@ -105,7 +105,7 @@ pub struct Check {
 /// rejection, `commands/doctor.md` would be silently shadowed by (or
 /// would shadow) the `doctor` built-in built in `cli::builtins`.
 pub const RESERVED: &[&str] = &[
-    "backend", "config", "doctor", "describe", "update", "help", "model",
+    "backend", "config", "doctor", "describe", "update", "help", "model", "mcp",
 ];
 
 #[cfg(test)]
@@ -702,6 +702,10 @@ mod tests {
                 short: Some('l'),
                 required: true,
                 description: "Target language".to_string(),
+                kind: crate::command::ArgType::String,
+                values: None,
+                min: None,
+                max: None,
             },
         );
         crate::command::CommandSpec {
