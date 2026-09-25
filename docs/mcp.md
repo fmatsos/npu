@@ -17,8 +17,10 @@ Unknown, missing, or incorrectly typed properties are rejected before a backend 
 A command with `[input] mode = "binary"` is not exposed: tool arguments are JSON, not bytes.
 
 Successful calls return the finalized command output as text. JSON output is additionally
-returned in `structuredContent`, always the whole document: `[output].extract` applies to the
-CLI only. Pipeline failures have `isError: true` and a structured
+returned in `structuredContent` when it is an object, always the whole document:
+`[output].extract` applies to the CLI only. A JSON answer that is not an object (an embeddings
+vector, for one) is returned as text only, and a command whose output schema's root is not
+`type = "object"` advertises no `outputSchema`. Pipeline failures have `isError: true` and a structured
 error envelope in `structuredContent`. If configuration loading fails, discovery explains
 the error and recommends `npu doctor`; `tools/list` is empty. Restart the server after
 editing configuration.

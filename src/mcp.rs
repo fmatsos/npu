@@ -237,7 +237,11 @@ fn tool_for(spec: &crate::command::CommandSpec, name: String) -> crate::Result<T
                 })
             })
         })
-        .transpose()?;
+        .transpose()?
+        // MCP describes structured results as objects: a schema whose root
+        // is not one (an embeddings vector, for one) is not advertised,
+        // and the result stays text.
+        .filter(|schema| schema.get("type").and_then(Value::as_str) == Some("object"));
     let mut tool = Tool::default();
     tool.name = Cow::Owned(name);
     tool.description = Some(Cow::Owned(spec.description.clone()));
@@ -329,7 +333,8 @@ impl ServerHandler for Server {
                 let mut response =
                     CallToolResult::success(vec![ContentBlock::text(output.clone())]);
                 if json_output {
-                    response.structured_content = serde_json::from_str(&output).ok();
+                    response.structured_content =
+                        serde_json::from_str(&output).ok().filter(Value::is_object);
                 }
                 response
             }
@@ -455,6 +460,30 @@ mod tests {
                 .instructions
                 .is_some_and(|text| text.contains("npu doctor"))
         );
+    }
+
+    #[test]
+    fn only_an_object_output_schema_is_advertised() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "target/test-fixtures/mcp-schema-root-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("fixture directory");
+        let mut advertised = Vec::new();
+        for root in ["object", "array"] {
+            let path = dir.join(format!("{root}.json"));
+            std::fs::write(&path, format!("{{\"type\": \"{root}\"}}")).expect("schema file");
+            let mut command = spec(&["x"], "x.md");
+            command.output.format = crate::output::Format::Json;
+            command.output.schema = Some(path);
+            advertised.push(
+                tool_for(&command, "x".to_string())
+                    .expect("a readable schema")
+                    .output_schema
+                    .is_some(),
+            );
+        }
+        assert_eq!(advertised, vec![true, false]);
     }
 
     #[test]
