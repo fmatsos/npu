@@ -33,8 +33,6 @@ fn pipeline_error_format_json_preserves_empty_stdout_and_exit_code() {
             root.to_str().expect("UTF-8 path"),
             "git",
             "review",
-            "--input",
-            "value",
             "--error-format",
             "json",
         ])
