@@ -762,7 +762,7 @@ Prints the program name and the release number embedded from `Cargo.toml`:
 
 ```console
 $ npu --version
-npu 0.7.1
+npu 0.8.0
 ```
 
 It does not load or require a valid AI configuration.
@@ -782,7 +782,7 @@ When no newer release exists, it reports that fact and leaves the executable unt
 
 ```console
 $ npu update
-npu 0.7.1 is already up to date
+npu 0.8.0 is already up to date
 ```
 
 The release publishes a `npu-update.json` manifest. It maps every supported platform to a raw

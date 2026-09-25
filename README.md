@@ -264,7 +264,7 @@ with the binary. They are not AI commands, and their names are reserved — a co
 
 ```console
 $ npu --version
-npu 0.7.1
+npu 0.8.0
 ```
 
 ```console

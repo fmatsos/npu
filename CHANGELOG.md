@@ -4,6 +4,56 @@ Every notable change to `npu`, newest first. Versions follow
 [semantic versioning](https://semver.org); pre-1.0, a breaking change bumps
 the minor.
 
+## [0.8.0] - 2026-09-25
+
+### Added
+
+- `npu config schema backend|model|command|test` prints the JSON Schema of each configuration
+  format, derived from the parser itself; point an editor at it (Taplo's `#:schema`) for
+  completion and unknown-key warnings ([`3b4b900`](https://github.com/fmatsos/npu/commit/3b4b900ee7cfe35f281e4abd37c89e03ee5dd359))
+- `[partials]` and `{{ partials.<id> }}`: a shared text fragment (style guide, glossary) lives
+  in `<scope root>/partials/` and is inserted verbatim in the body, `system` or an example; a
+  missing partial exits `2` naming both files, before the input is read
+  ([`9a7fcf7`](https://github.com/fmatsos/npu/commit/9a7fcf7d52d4fa226c6eeb8bf56c6a9115445d91))
+- `[output].extract = "/pointer"` on a JSON command writes one value instead of the document — a
+  string bare, anything else as compact JSON — after the whole document passed its schema; a
+  pointer the answer lacks exits `4`. CLI stdout only: MCP and `config test` keep the document
+  ([`1bd5cf9`](https://github.com/fmatsos/npu/commit/1bd5cf905e46e1542b97fa89abedee83ae165be3))
+- `NPU_STATS_FILE`: every run of a configured command (CLI, `config test` case, MCP tool call)
+  appends one JSON line with the requested and answering model, fallback, backend, duration,
+  token usage, finish reason and exit code — never the prompt, the answer or a header value. A
+  failed write is a warning and changes nothing else
+  ([`a225360`](https://github.com/fmatsos/npu/commit/a225360faefda38ea2cb9a5684074d10dc1c3c75), [`9ca7dda`](https://github.com/fmatsos/npu/commit/9ca7dda016cae0b955442d4bb72e6e74dccfb6df))
+- `max_concurrent = 1` on a backend serializes its requests across every `npu` process on the
+  machine (an advisory lock in the state directory): a second invocation waits instead of
+  failing with a `5xx` on a single NPU. `--no-wait` makes a busy backend a backend failure
+  instead, which the model's `fallback` absorbs or which exits `3`
+  ([`6831f83`](https://github.com/fmatsos/npu/commit/6831f837ed9e11e3e8da9a55c1fde5cd5647528d), [`b412aa0`](https://github.com/fmatsos/npu/commit/b412aa0b98e146b87c02b4b6e6a0e588ff9159e2))
+- `protocol = "embeddings"` on an `[operations.<name>]` table: the rendered prompt is sent as
+  `input` and the answer is the vector, as the command's JSON output. `chat` stays the default,
+  so existing backends are unchanged ([`aedef68`](https://github.com/fmatsos/npu/commit/aedef6874a4b19a304edfafd46ee9e1eddcd60b5))
+- `[input] mode = "binary"` and `protocol = "transcriptions"`: a command uploads a file (or stdin)
+  as bytes in a multipart request, the prompt as an optional hint, and prints the transcript
+  (`npu transcribe memo.wav`). Binary commands are not offered as MCP tools
+  ([`96b3caf`](https://github.com/fmatsos/npu/commit/96b3caf17122ba53bca507e9bd77229597be35f9), [`b412aa0`](https://github.com/fmatsos/npu/commit/b412aa0b98e146b87c02b4b6e6a0e588ff9159e2))
+
+### Changed
+
+- **Breaking**: `no-wait` is now a reserved argument name, taken by the new `--no-wait` flag;
+  rename any `[args."no-wait"]` a command declares
+  ([`6831f83`](https://github.com/fmatsos/npu/commit/6831f837ed9e11e3e8da9a55c1fde5cd5647528d))
+- A command running an embeddings or transcriptions model is checked against that protocol when
+  it runs and by `npu doctor` (chat-only keys such as `system` are rejected, exit `2`); an
+  embeddings model rejects `fallback` and `[generation]`, and a fallback must speak its model's
+  protocol, at load time ([`aedef68`](https://github.com/fmatsos/npu/commit/aedef6874a4b19a304edfafd46ee9e1eddcd60b5), [`96b3caf`](https://github.com/fmatsos/npu/commit/96b3caf17122ba53bca507e9bd77229597be35f9))
+
+### Fixed
+
+- `npu mcp serve` no longer sends a non-object JSON answer as `structuredContent`, nor advertises
+  an output schema whose root is not an object ([`f466b41`](https://github.com/fmatsos/npu/commit/f466b4191201d2e4ebbf5d7218e00d7ed15f7b8d))
+
+**Full changelog**: [`v0.7.1...v0.8.0`](https://github.com/fmatsos/npu/compare/v0.7.1...v0.8.0)
+
 ## [0.7.1] - 2026-09-25
 
 ### Fixed
