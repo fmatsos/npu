@@ -173,7 +173,8 @@ pub fn state_path(env: &StateEnv, backend_id: &str, source: &Path) -> crate::Res
 ///
 /// `on_busy` is called once, before blocking, when another process holds
 /// the lock. With `wait` false, a held lock is an `Error::Backend` naming
-/// the backend instead.
+/// the backend instead, which the caller's fallback absorbs like any other
+/// backend failure.
 ///
 /// ponytail: keyed like the process records, by backend id and file, so
 /// two scopes describing the same device do not serialize each other; a

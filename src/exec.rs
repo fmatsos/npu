@@ -1028,6 +1028,29 @@ mod tests {
         std::thread::JoinHandle<()>,
         std::sync::mpsc::Receiver<Vec<u8>>,
     ) {
+        let (url, server, requests) = stub_backend_capturing_request(body);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            if let Ok((_, captured)) = requests.recv() {
+                let _ = tx.send(captured);
+            }
+            server.join().expect("stub thread");
+        });
+        (url, handle, rx)
+    }
+
+    /// [`stub_backend_capturing_body`], handing back the request's header
+    /// lines (lowercased) with its body.
+    /// A captured request: its header lines, then its body.
+    type CapturedRequest = (Vec<String>, Vec<u8>);
+
+    fn stub_backend_capturing_request(
+        body: &'static str,
+    ) -> (
+        String,
+        std::thread::JoinHandle<()>,
+        std::sync::mpsc::Receiver<CapturedRequest>,
+    ) {
         use std::io::{BufRead, BufReader, Read, Write};
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind of the stub");
@@ -1038,19 +1061,22 @@ mod tests {
             let (mut stream, _) = listener.accept().expect("accepting the connection");
             let mut reader = BufReader::new(stream.try_clone().expect("cloning the TCP stream"));
             let mut content_length = 0usize;
+            let mut headers = Vec::new();
             loop {
                 let mut line = String::new();
                 reader.read_line(&mut line).expect("reading a header line");
                 if line == "\r\n" || line.is_empty() {
                     break;
                 }
+                headers.push(line.trim_end().to_ascii_lowercase());
                 if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
                     content_length = value.trim().parse().unwrap_or(0);
                 }
             }
             let mut captured = vec![0u8; content_length];
             reader.read_exact(&mut captured).expect("reading the body");
-            tx.send(captured).expect("sending the captured body back");
+            tx.send((headers, captured))
+                .expect("sending the captured request back");
 
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \
@@ -1430,7 +1456,7 @@ mod tests {
     /// with the prompt as a hint, and answers with the `text` field.
     #[test]
     fn a_transcription_uploads_the_bytes_and_answers_with_the_text() {
-        let (url, server, body) = stub_backend_capturing_body(r#"{"text":" Hello Ada. "}"#);
+        let (url, server, request) = stub_backend_capturing_request(r#"{"text":" Hello Ada. "}"#);
         let config = transcriptions_config(url);
         let spec = transcriptions_spec();
         let mut record = crate::stats::Record::new(&spec, "vec");
@@ -1452,13 +1478,33 @@ mod tests {
         .expect("the transcript must come back");
 
         assert_eq!(output, "Hello Ada.");
-        let sent = body.recv().expect("the body");
+        let (headers, sent) = request.recv().expect("the request");
+        let content_types: Vec<&String> = headers
+            .iter()
+            .filter(|line| line.starts_with("content-type:"))
+            .collect();
+        assert_eq!(
+            content_types.len(),
+            1,
+            "exactly one content type: {headers:?}"
+        );
+        let boundary = content_types[0]
+            .strip_prefix("content-type: multipart/form-data; boundary=")
+            .expect("a multipart content type");
+        let text = String::from_utf8_lossy(&sent);
+        assert!(text.starts_with(&format!("--{boundary}\r\n")), "{text}");
+        assert!(text.ends_with(&format!("\r\n--{boundary}--\r\n")), "{text}");
+        assert!(
+            headers
+                .iter()
+                .any(|line| line.starts_with("content-length:")),
+            "{headers:?}"
+        );
         assert!(
             sent.windows(audio.len())
                 .any(|window| window == audio.as_slice()),
             "the bytes must be sent untouched"
         );
-        let text = String::from_utf8_lossy(&sent);
         assert!(
             text.contains("name=\"model\"\r\n\r\nvec-underlying\r\n"),
             "{text}"
@@ -1497,6 +1543,49 @@ mod tests {
             assert_eq!(err.exit_code(), 2);
             assert!(err.to_string().contains("embed.md"), "got: {err}");
         }
+    }
+
+    /// A busy primary under `--no-wait` is a backend failure like any
+    /// other: the fallback, on another backend, answers.
+    #[test]
+    fn no_wait_on_a_busy_primary_falls_back_to_its_fallback() {
+        let env = lock_env("exec-lock-busy-fallback");
+        let (fallback_url, fallback_server) = stub_backend(
+            "200 OK",
+            r#"{"choices":[{"message":{"role":"assistant","content":"from the gpu"}}]}"#,
+        );
+        let mut npu = backend_at("npu", "http://127.0.0.1:9".to_string());
+        npu.max_concurrent = Some(1);
+        let state = crate::runtime::state::StateEnv::from_vars(&env);
+        let held = crate::runtime::state::acquire_request_slot(&state, &npu, true, &|| {})
+            .expect("the first holder gets the lock");
+        let mut config = config::Config::default();
+        config.backends.insert("npu".to_string(), npu);
+        config
+            .backends
+            .insert("gpu".to_string(), backend_at("gpu", fallback_url));
+        config
+            .models
+            .insert("small".to_string(), model_on("small", "npu", Some("big")));
+        config
+            .models
+            .insert("big".to_string(), model_on("big", "gpu", None));
+        let (model, backend) = config.resolve("small").expect("the fixture must resolve");
+
+        let (answer, answered_by) = chat_with_fallback(
+            &config,
+            model,
+            backend,
+            &ask_once(true),
+            &env,
+            log::Logger::new(log::Level::Error),
+        )
+        .expect("the fallback must answer");
+
+        assert_eq!(answer.content, "from the gpu");
+        assert_eq!(answered_by, "big");
+        drop(held);
+        fallback_server.join().expect("fallback stub thread");
     }
 
     #[test]

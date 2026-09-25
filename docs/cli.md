@@ -866,8 +866,9 @@ declaring `[args.model]` is rejected at load time, naming the file.
 
 A business command leaf also accepts `--no-wait`. When the command's backend declares
 [`max_concurrent = 1`](configuration.md#max_concurrent-optional) and another `npu` process is
-using it, the command fails at once with a backend error (exit `3`, empty stdout) naming the
-backend, instead of waiting for its turn. On a backend without a limit it changes nothing.
+using it, the command does not wait for its turn: the busy backend is a backend failure, so the
+model's `fallback` answers if it declares one, and otherwise the command fails at once (exit `3`,
+empty stdout) naming the backend. On a backend without a limit it changes nothing.
 `no-wait` is consequently a reserved argument name, for the same reason as `dry-run`.
 
 ### Progress indicators
@@ -903,7 +904,7 @@ request and writes nothing.
 | `model_answered` | the model that answered: the fallback, when it took over |
 | `fallback_used` | whether the fallback answered |
 | `backend` | the backend that answered, or the requested model's backend when none did |
-| `duration_ms` | time spent reaching the backend and waiting for the answer, fallback included |
+| `duration_ms` | time spent reaching the backend and waiting for the answer, fallback included, and the wait for a busy [`max_concurrent`](configuration.md#max_concurrent-optional) backend |
 | `prompt_tokens`, `completion_tokens` | the backend's `usage`, when it reports one |
 | `finish_reason` | the backend's `finish_reason`, when it reports one |
 | `exit_code` | the invocation's exit code |
