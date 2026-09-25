@@ -34,6 +34,9 @@ pub enum Protocol {
     Chat,
     /// `embeddings`: one text in, `data[0].embedding` out.
     Embeddings,
+    /// `audio/transcriptions`: a multipart upload of the bytes of a
+    /// `binary` command's input in, `text` out.
+    Transcriptions,
 }
 
 impl Protocol {
@@ -42,6 +45,7 @@ impl Protocol {
         match self {
             Protocol::Chat => "chat",
             Protocol::Embeddings => "embeddings",
+            Protocol::Transcriptions => "transcriptions",
         }
     }
 }

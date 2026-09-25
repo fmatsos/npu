@@ -202,6 +202,7 @@ pub fn describe(
         crate::command::InputMode::Stdin => "stdin",
         crate::command::InputMode::File => "file",
         crate::command::InputMode::StdinOrFile => "stdin_or_file",
+        crate::command::InputMode::Binary => "binary",
     };
     let format = spec.output.format.as_str();
 

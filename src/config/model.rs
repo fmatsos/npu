@@ -295,6 +295,15 @@ pub(crate) fn validate_protocol(
                 ));
             }
         }
+        Some(super::Protocol::Transcriptions) => {
+            if !model.generation.is_empty() {
+                return reject(format!(
+                    "model \"{}\" calls a transcriptions operation, to which no [generation] \
+                     key applies: remove its [generation] table",
+                    model.id
+                ));
+            }
+        }
         Some(super::Protocol::Chat) | None => {}
     }
     if let (Some(protocol), Some(fallback_protocol)) = (protocol, fallback_protocol)

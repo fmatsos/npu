@@ -118,8 +118,18 @@ mode = "stdin_or_file"
 | `stdin` | read standard input to EOF |
 | `file` | read the positional `FILE` argument; omitting it is an error |
 | `stdin_or_file` | use `FILE` when given, otherwise read stdin |
+| `binary` | like `stdin_or_file`, read as bytes and uploaded as-is — only to a `transcriptions` operation |
 
 Modes that accept a file get an optional positional `FILE` argument in their generated CLI.
+
+A `binary` input is never text: its prompt cannot reference `{{ input }}` (rejected at load time),
+it only goes to a model whose operation speaks `transcriptions` (see
+[Operation protocols](configuration.md#operation-protocols)), and such a command is not offered as
+an MCP tool. It shares the 64 MiB input cap.
+
+```sh
+npu transcribe memo.wav
+```
 
 ```sh
 cat ticket.md | npu classify      # stdin

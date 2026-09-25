@@ -148,6 +148,7 @@ protocol = "embeddings"
 | --- | --- | --- |
 | `chat` | `{model, messages, ...}` | `choices[0].message.content` |
 | `embeddings` | `{model, input}`, the rendered prompt as `input` | `data[0].embedding`, as a JSON array |
+| `transcriptions` | `multipart/form-data`: `model`, `prompt` (the rendered prompt, when not blank) and the input as `file` | `text` |
 
 A command running an `embeddings` model must declare `format = "json"`: its output is the vector,
 which `[output].schema` can constrain (its length, for one) and `[output].extract` can index.
@@ -156,6 +157,13 @@ and are rejected, naming the command file and the model, when the command runs a
 `npu doctor`. An `embeddings` model cannot declare a `fallback` (two models' vectors cannot be
 compared) nor a `[generation]` table, and a model's fallback must speak the same protocol as the
 model itself; both are rejected at load time, naming the model file.
+
+A `transcriptions` operation (a whisper.cpp server, OVMS whisper) takes audio: a command running
+it declares `[input] mode = "binary"` and `format = "text"`, and the same chat-only keys are
+rejected. The prompt, if any, is a hint on vocabulary and spelling and cannot reference
+`{{ input }}`. The upload is named after the `FILE` argument, whose extension servers often use to
+detect the format; read from stdin, it is named `input`. A `transcriptions` model takes no
+`[generation]` table; its fallback, if any, must be another `transcriptions` model.
 
 ### `port` (optional)
 

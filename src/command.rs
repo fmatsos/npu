@@ -12,6 +12,10 @@ pub enum InputMode {
     Stdin,
     File,
     StdinOrFile,
+    /// The positional `FILE` when given, otherwise stdin, read as BYTES and
+    /// uploaded as-is: the input of a `transcriptions` operation. The
+    /// prompt cannot reference `{{ input }}`, which is not text.
+    Binary,
 }
 
 /// Type of a configured argument, shared by CLI validation and MCP schemas.
@@ -879,6 +883,21 @@ fn convert_partials(
         .collect()
 }
 
+/// A `binary` command's input is uploaded as bytes, never rendered: a body
+/// referencing `{{ input }}` would silently render it empty.
+fn reject_input_in_binary_prompt(prompt: &str) -> crate::Result<()> {
+    if crate::prompt::placeholders(prompt)?
+        .iter()
+        .any(|placeholder| matches!(placeholder, crate::prompt::Placeholder::Input))
+    {
+        return Err(crate::Error::config(
+            "[input] mode = \"binary\": the prompt references {{ input }}, but a binary input \
+             is uploaded as bytes, never inserted in the prompt; remove {{ input }}",
+        ));
+    }
+    Ok(())
+}
+
 /// Validates a `system`/`[[examples]]` template: the same unknown-argument
 /// and unknown-schema checks as the body ([`crate::prompt::validate`]),
 /// plus a rejection of `{{ input }}` — which has no meaning outside the
@@ -1021,6 +1040,9 @@ pub fn parse(
     let partials = convert_partials(frontmatter.partials, scope_root)?;
     let declared_partials: BTreeSet<String> = partials.keys().cloned().collect();
     crate::prompt::validate(&prompt, &declared, &declared_schemas, &declared_partials)?;
+    if matches!(frontmatter.input.mode, Some(InputMode::Binary)) {
+        reject_input_in_binary_prompt(&prompt)?;
+    }
     let validate_message = |template: &str, label: &str| {
         validate_message_template(
             template,
@@ -2268,6 +2290,18 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("max_lines"), "got: {message}");
         assert!(message.contains("json"), "got: {message}");
+    }
+
+    #[test]
+    fn a_binary_command_referencing_input_is_rejected() {
+        let source = "---\nmodel = \"whisper\"\n\n[input]\nmode = \"binary\"\n---\n{{ input }}\n";
+        let err = parse(source, vec!["x".to_string()], &test_scope_root())
+            .expect_err("a binary input cannot be rendered");
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("binary"), "got: {err}");
+        let source = "---\nmodel = \"whisper\"\n\n[input]\nmode = \"binary\"\n---\nNames: Ada\n";
+        let spec = parse(source, vec!["x".to_string()], &test_scope_root()).expect("valid");
+        assert!(matches!(spec.input, InputMode::Binary));
     }
 
     #[test]

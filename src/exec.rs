@@ -21,6 +21,8 @@ pub(crate) struct Ask<'a> {
     /// Fail at once, instead of waiting, when a `max_concurrent = 1`
     /// backend is busy with another process's request (`--no-wait`).
     pub(crate) no_wait: bool,
+    /// The bytes of a `binary` command's input, uploaded as-is.
+    pub(crate) upload: Option<crate::backend::Upload<'a>>,
 }
 
 // `&dyn Fn` cannot derive `Debug`: the closure has nothing to print.
@@ -62,6 +64,7 @@ pub(crate) fn chat_with_fallback(
         stream,
         command_generation,
         no_wait,
+        upload,
     } = *ask;
     let state = crate::runtime::state::StateEnv::from_vars(env);
     // Resolving the URL is part of reaching the backend, not a step before
@@ -107,6 +110,7 @@ pub(crate) fn chat_with_fallback(
                     on_token,
                     headers: &headers,
                     generation: &generation,
+                    upload,
                 };
                 crate::backend::chat(backend, model, &base_url, &request, logger)
             },
@@ -174,6 +178,9 @@ fn would_stream(spec: &crate::command::CommandSpec, stdout_is_terminal: bool) ->
         && spec.output.format == crate::output::Format::Text
         && spec.output.max_lines.is_none()
         && !spec.output.strip_reasoning
+        // A binary input only goes to a transcription, which answers in
+        // one piece.
+        && !matches!(spec.input, crate::command::InputMode::Binary)
 }
 
 /// `npu <command> --dry-run`'s whole job: build the exact request `chat`
@@ -195,6 +202,7 @@ fn print_dry_run(
     model: &crate::config::Model,
     backend: &crate::config::Backend,
     messages: &[crate::backend::Message],
+    upload: Option<crate::backend::Upload<'_>>,
     schema: Option<&serde_json::Value>,
     spec: &crate::command::CommandSpec,
     env: &dyn Fn(&str) -> Option<String>,
@@ -209,6 +217,7 @@ fn print_dry_run(
         on_token: None,
         headers: &headers,
         generation: &generation,
+        upload,
     };
     let prepared = crate::backend::build_request(backend, model, &backend.base_url, &request)?;
 
@@ -358,6 +367,9 @@ fn reject_truncation(
     Ok(())
 }
 
+const BINARY_ONLY_FOR_TRANSCRIPTIONS: &str =
+    "[input] mode = \"binary\" (only a transcriptions operation takes bytes)";
+
 /// Rejects a command whose keys the protocol of `model`'s operation cannot
 /// honour, naming the command file and the model. Checked when the command
 /// runs, not when it is loaded: `--model` can swap in a model of another
@@ -371,9 +383,28 @@ pub(crate) fn check_protocol(
         // Reported, with the available operations, when the request is built.
         return Ok(());
     };
+    let binary = matches!(spec.input, crate::command::InputMode::Binary);
     let offending = match operation.protocol {
-        crate::config::Protocol::Chat => None,
+        crate::config::Protocol::Chat => binary.then_some(BINARY_ONLY_FOR_TRANSCRIPTIONS),
+        crate::config::Protocol::Transcriptions => [
+            (
+                !binary,
+                "an [input] mode other than \"binary\" (the operation uploads bytes)",
+            ),
+            (
+                spec.output.format != crate::output::Format::Text,
+                "format = \"json\" (the answer is text)",
+            ),
+            (spec.system.is_some(), "system"),
+            (!spec.examples.is_empty(), "[[examples]]"),
+            (spec.generation.is_some(), "[generation]"),
+            (spec.output.strip_reasoning, "[output].strip_reasoning"),
+            (spec.output.allow_truncated, "[output].allow_truncated"),
+        ]
+        .into_iter()
+        .find_map(|(declared, key)| declared.then_some(key)),
         crate::config::Protocol::Embeddings => [
+            (binary, BINARY_ONLY_FOR_TRANSCRIPTIONS),
             (
                 spec.output.format != crate::output::Format::Json,
                 "format = \"text\" (the answer is a vector: declare format = \"json\")",
@@ -412,6 +443,16 @@ struct PreparedCommand<'a> {
     /// `--no-wait`: set by the CLI after preparing, `false` everywhere
     /// else.
     no_wait: bool,
+    /// A `binary` command's input: its bytes and the name they carry.
+    upload: Option<(Vec<u8>, String)>,
+}
+
+impl PreparedCommand<'_> {
+    fn upload(&self) -> Option<crate::backend::Upload<'_>> {
+        self.upload
+            .as_ref()
+            .map(|(data, name)| crate::backend::Upload { data, name })
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -421,7 +462,7 @@ fn prepare_command<'a>(
     model_id: &str,
     args: &std::collections::BTreeMap<String, String>,
     env: &dyn Fn(&str) -> Option<String>,
-    read_input: impl FnOnce() -> crate::Result<String>,
+    read_input: impl FnOnce() -> crate::Result<crate::input::Input>,
     logger: crate::log::Logger,
     file_args_are_content: bool,
 ) -> crate::Result<PreparedCommand<'a>> {
@@ -468,8 +509,16 @@ fn prepare_command<'a>(
             resolved_args.insert(name.clone(), content);
         }
     }
-    let input = read_input()?;
-    logger.info(&format!("input: {} characters read", input.chars().count()));
+    let (input, upload) = match read_input()? {
+        crate::input::Input::Text(text) => {
+            logger.info(&format!("input: {} characters read", text.chars().count()));
+            (text, None)
+        }
+        crate::input::Input::Bytes { data, name } => {
+            logger.info(&format!("input: {} bytes read from {name}", data.len()));
+            (String::new(), Some((data, name)))
+        }
+    };
     let prompt = crate::prompt::render(
         &spec.prompt,
         &input,
@@ -485,6 +534,7 @@ fn prepare_command<'a>(
         messages,
         output_schema,
         no_wait: false,
+        upload,
     })
 }
 
@@ -504,6 +554,7 @@ fn run_prepared(
         stream,
         command_generation: spec.generation.as_ref(),
         no_wait: prepared.no_wait,
+        upload: prepared.upload(),
     };
     record.backend = Some(prepared.backend.id.clone());
     let started = std::time::Instant::now();
@@ -534,7 +585,7 @@ pub(crate) fn test_messages(
     config: &crate::config::Config,
     model_id: &str,
     args: &std::collections::BTreeMap<String, String>,
-    input: &str,
+    input: &crate::input::Input,
     env: &dyn Fn(&str) -> Option<String>,
     logger: crate::log::Logger,
 ) -> crate::Result<Vec<crate::backend::Message>> {
@@ -544,7 +595,7 @@ pub(crate) fn test_messages(
         model_id,
         args,
         env,
-        || Ok(input.to_string()),
+        || Ok(input.clone()),
         logger,
         false,
     )?
@@ -557,7 +608,7 @@ pub(crate) fn execute_test_case(
     config: &crate::config::Config,
     model_id: &str,
     args: &std::collections::BTreeMap<String, String>,
-    input: &str,
+    input: &crate::input::Input,
     env: &dyn Fn(&str) -> Option<String>,
     logger: crate::log::Logger,
     record: &mut crate::stats::Record,
@@ -568,7 +619,7 @@ pub(crate) fn execute_test_case(
         model_id,
         args,
         env,
-        || Ok(input.to_string()),
+        || Ok(input.clone()),
         logger,
         false,
     )?;
@@ -591,7 +642,7 @@ pub(crate) fn execute_mcp_command(
         &spec.model,
         args,
         &env,
-        || Ok(input.to_string()),
+        || Ok(crate::input::Input::Text(input.to_string())),
         logger,
         true,
     )
@@ -705,7 +756,9 @@ fn run_business_command(
     // calling `get_one` on an absent id (panic) and keeps the two spots in
     // sync if a later phase changes one without the other.
     let file_arg = match spec.input {
-        crate::command::InputMode::File | crate::command::InputMode::StdinOrFile => leaf_matches
+        crate::command::InputMode::File
+        | crate::command::InputMode::StdinOrFile
+        | crate::command::InputMode::Binary => leaf_matches
             .get_one::<String>("FILE")
             .map(std::path::Path::new),
         crate::command::InputMode::Stdin => None,
@@ -716,7 +769,10 @@ fn run_business_command(
         model_id,
         &args,
         env,
-        || read_input(&spec.input, file_arg),
+        || match spec.input {
+            crate::command::InputMode::Binary => crate::input::resolve_bytes(file_arg),
+            _ => read_input(&spec.input, file_arg).map(crate::input::Input::Text),
+        },
         logger,
         false,
     )?;
@@ -727,6 +783,7 @@ fn run_business_command(
             prepared.model,
             prepared.backend,
             &prepared.messages,
+            prepared.upload(),
             prepared.output_schema.as_ref(),
             spec,
             env,
@@ -1085,6 +1142,7 @@ mod tests {
                 stream: None,
                 command_generation: None,
                 no_wait: false,
+                upload: None,
             },
             &|_: &str| None,
             log::Logger::new(log::Level::Error),
@@ -1142,7 +1200,7 @@ mod tests {
             &config,
             "small",
             &std::collections::BTreeMap::new(),
-            "hello",
+            &crate::input::Input::Text("hello".to_string()),
             &|_: &str| None,
             log::Logger::new(log::Level::Error),
             &mut record,
@@ -1179,6 +1237,7 @@ mod tests {
             stream: None,
             command_generation: None,
             no_wait,
+            upload: None,
         }
     }
 
@@ -1310,7 +1369,7 @@ mod tests {
             &config,
             "vec",
             &std::collections::BTreeMap::new(),
-            "café",
+            &crate::input::Input::Text("café".to_string()),
             &|_: &str| None,
             log::Logger::new(log::Level::Error),
             &mut record,
@@ -1346,6 +1405,100 @@ mod tests {
         }
     }
 
+    fn transcriptions_config(url: String) -> config::Config {
+        let mut config = embeddings_config(url);
+        for operation in config
+            .backends
+            .values_mut()
+            .flat_map(|b| b.operations.values_mut())
+        {
+            operation.protocol = config::Protocol::Transcriptions;
+            operation.path = "/v1/audio/transcriptions".to_string();
+        }
+        config
+    }
+
+    fn transcriptions_spec() -> crate::command::CommandSpec {
+        let mut spec = embeddings_spec();
+        spec.input = crate::command::InputMode::Binary;
+        spec.prompt = "Names: Ada".to_string();
+        spec.output = crate::output::OutputSpec::default();
+        spec
+    }
+
+    /// A transcription uploads the bytes untouched in a multipart body,
+    /// with the prompt as a hint, and answers with the `text` field.
+    #[test]
+    fn a_transcription_uploads_the_bytes_and_answers_with_the_text() {
+        let (url, server, body) = stub_backend_capturing_body(r#"{"text":" Hello Ada. "}"#);
+        let config = transcriptions_config(url);
+        let spec = transcriptions_spec();
+        let mut record = crate::stats::Record::new(&spec, "vec");
+        let audio = vec![0u8, 0xff, 0xfe, b'\r', b'\n', 0x80];
+
+        let output = execute_test_case(
+            &spec,
+            &config,
+            "vec",
+            &std::collections::BTreeMap::new(),
+            &crate::input::Input::Bytes {
+                data: audio.clone(),
+                name: "memo.wav".to_string(),
+            },
+            &|_: &str| None,
+            log::Logger::new(log::Level::Error),
+            &mut record,
+        )
+        .expect("the transcript must come back");
+
+        assert_eq!(output, "Hello Ada.");
+        let sent = body.recv().expect("the body");
+        assert!(
+            sent.windows(audio.len())
+                .any(|window| window == audio.as_slice()),
+            "the bytes must be sent untouched"
+        );
+        let text = String::from_utf8_lossy(&sent);
+        assert!(
+            text.contains("name=\"model\"\r\n\r\nvec-underlying\r\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("name=\"prompt\"\r\n\r\nNames: Ada\r\n"),
+            "{text}"
+        );
+        assert!(text.contains("filename=\"memo.wav\""), "{text}");
+        server.join().expect("stub thread");
+    }
+
+    /// A binary input goes to a transcriptions operation and nothing else,
+    /// and a transcriptions operation takes nothing but a binary input.
+    #[test]
+    fn a_binary_input_and_a_transcriptions_operation_only_go_together() {
+        let mut on_chat = transcriptions_spec();
+        on_chat.prompt = "{{ input }}".to_string();
+        let chat = {
+            let mut config = transcriptions_config("http://127.0.0.1:9".to_string());
+            for operation in config
+                .backends
+                .values_mut()
+                .flat_map(|b| b.operations.values_mut())
+            {
+                operation.protocol = config::Protocol::Chat;
+            }
+            config
+        };
+        let mut from_stdin = transcriptions_spec();
+        from_stdin.input = crate::command::InputMode::Stdin;
+        let transcriptions = transcriptions_config("http://127.0.0.1:9".to_string());
+        for (spec, config) in [(on_chat, &chat), (from_stdin, &transcriptions)] {
+            let (model, backend) = config.resolve("vec").expect("the fixture must resolve");
+            let err = check_protocol(&spec, model, backend).expect_err("must be rejected");
+            assert_eq!(err.exit_code(), 2);
+            assert!(err.to_string().contains("embed.md"), "got: {err}");
+        }
+    }
+
     #[test]
     fn chat_with_fallback_failing_on_both_names_both_models() {
         let (primary_url, primary_server) =
@@ -1378,6 +1531,7 @@ mod tests {
                 stream: None,
                 command_generation: None,
                 no_wait: false,
+                upload: None,
             },
             &|_: &str| None,
             log::Logger::new(log::Level::Error),
@@ -1468,6 +1622,7 @@ mod tests {
                 stream: None,
                 command_generation: None,
                 no_wait: false,
+                upload: None,
             },
             &|_: &str| None,
             log::Logger::new(log::Level::Error),
@@ -1646,6 +1801,7 @@ mod tests {
                 stream: Some(&sink),
                 command_generation: None,
                 no_wait: false,
+                upload: None,
             },
             &|_: &str| None,
             log::Logger::new(log::Level::Error),

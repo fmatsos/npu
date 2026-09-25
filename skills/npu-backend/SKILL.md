@@ -41,7 +41,7 @@ next reader.
 | `type` | yes | **`"openai-compatible"` is the only accepted value** |
 | `base_url` | yes | joined with an operation's `path`; a trailing `/` is handled either way |
 | `port` | no | declared once, read as `{{ backend.port }}` in `base_url` and `[runtime]` |
-| `[operations.<name>]` | at least one | each needs `method` and `path`; optional `protocol`: `"chat"` (default) or `"embeddings"` |
+| `[operations.<name>]` | at least one | each needs `method` and `path`; optional `protocol`: `"chat"` (default), `"embeddings"` or `"transcriptions"` |
 | `[runtime]` | no | how `npu backend serve` starts this backend; `type` picks the family — `"docker"` or `"process"` |
 | `[timeouts]` | no | `request_secs` — overrides the default request timeout (120s) |
 | `max_concurrent` | no | only `1`: one request at a time across `npu` processes (others wait, or fail with `--no-wait`) |

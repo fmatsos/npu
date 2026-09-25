@@ -96,6 +96,7 @@ pub fn build_request(
         on_token: _,
         headers,
         generation,
+        upload,
     } = *request;
     let operation = backend.operation_for(model)?;
 
@@ -112,6 +113,22 @@ pub fn build_request(
             "model": model.model,
             "input": messages.last().map_or("", |message| message.content.as_str()),
         }),
+        // The multipart fields, the file shown by size and name: this is
+        // what `--dry-run` prints, and what `chat` encodes.
+        crate::config::Protocol::Transcriptions => {
+            let mut fields = serde_json::Map::new();
+            fields.insert("model".to_string(), Value::from(model.model.as_str()));
+            if let Some(prompt) = transcription_prompt(messages) {
+                fields.insert("prompt".to_string(), Value::from(prompt));
+            }
+            fields.insert(
+                "file".to_string(),
+                Value::from(upload.map_or_else(String::new, |upload| {
+                    format!("<{} bytes: {}>", upload.data.len(), upload.name)
+                })),
+            );
+            Value::Object(fields)
+        }
     };
 
     Ok(PreparedRequest {
@@ -140,12 +157,16 @@ pub fn chat(
     logger: crate::log::Logger,
 ) -> crate::Result<ChatAnswer> {
     let Request {
-        messages: _,
+        messages,
         schema,
         on_token,
         headers,
         generation,
+        upload,
     } = *request;
+    // Only a chat answer is streamed: the other protocols answer in one
+    // JSON document.
+    let on_token = on_token.filter(|_| operation_streams(backend, model));
     let operation = backend.operation_for(model)?;
 
     let PreparedRequest { url, body, .. } = build_request(backend, model, base_url, request)?;
@@ -199,7 +220,16 @@ pub fn chat(
     for (name, value) in headers {
         post = post.header(name.as_str(), value.as_str());
     }
-    let mut response = post.send_json(&body).map_err(|err| {
+    let sent = match (backend.operation_for(model)?.protocol, upload) {
+        (crate::config::Protocol::Transcriptions, Some(upload)) => {
+            let (content_type, multipart) =
+                multipart_body(&model.model, transcription_prompt(messages), upload);
+            post.header("Content-Type", content_type)
+                .send(&multipart[..])
+        }
+        _ => post.send_json(&body),
+    };
+    let mut response = sent.map_err(|err| {
         backend_err(format!(
             "request to backend \"{}\" ({url}) failed: {err}",
             backend.id
@@ -304,6 +334,13 @@ fn handle_non_streamed_response(
                 .map(Value::to_string),
             "data[0].embedding",
         ),
+        crate::config::Protocol::Transcriptions => (
+            response_json
+                .get("text")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            "text",
+        ),
     };
     let content = content.ok_or_else(|| {
         backend_err(format!(
@@ -327,6 +364,76 @@ fn handle_non_streamed_response(
         finish_reason,
         usage,
     })
+}
+
+/// Whether `model`'s operation on `backend` answers token by token.
+fn operation_streams(backend: &crate::config::Backend, model: &crate::config::Model) -> bool {
+    backend
+        .operations
+        .get(&model.operation)
+        .is_some_and(|operation| match operation.protocol {
+            crate::config::Protocol::Chat => true,
+            crate::config::Protocol::Embeddings | crate::config::Protocol::Transcriptions => false,
+        })
+}
+
+/// The rendered prompt of a transcription, sent as its `prompt` field (a
+/// hint on vocabulary and style), or nothing when the body is blank.
+fn transcription_prompt(messages: &[Message]) -> Option<&str> {
+    messages
+        .last()
+        .map(|message| message.content.trim())
+        .filter(|prompt| !prompt.is_empty())
+}
+
+/// Encodes a transcription request as `multipart/form-data`: its content
+/// type, boundary included, and its body.
+///
+/// The boundary is derived from the upload's digest: a part containing
+/// the boundary would end early, and bytes carrying their own SHA-256 are
+/// not a case to design for.
+fn multipart_body(model: &str, prompt: Option<&str>, upload: Upload<'_>) -> (String, Vec<u8>) {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(upload.data);
+    let boundary: String = std::iter::once("npu-".to_string())
+        .chain(digest.iter().take(16).map(|byte| format!("{byte:02x}")))
+        .collect();
+    // A `"` or a line break would end the header early: the name is only a
+    // hint for the server, so they are replaced rather than escaped.
+    let name: String = upload
+        .name
+        .chars()
+        .map(|c| {
+            if matches!(c, '"' | '\r' | '\n') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let mut body = Vec::with_capacity(upload.data.len() + 512);
+    let mut field = |name: &str, value: &str| {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            )
+            .as_bytes(),
+        );
+    };
+    field("model", model);
+    if let Some(prompt) = prompt {
+        field("prompt", prompt);
+    }
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\n\
+             Content-Type: application/octet-stream\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(upload.data);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={boundary}"), body)
 }
 
 /// Token usage reported by the backend for one `chat` call, when present.
@@ -499,6 +606,16 @@ pub struct Request<'a> {
     /// directly, so a command override reaches the request whichever
     /// model (primary or fallback) actually answers.
     pub generation: &'a crate::config::Generation,
+    /// The bytes a `binary` command uploads to a `transcriptions`
+    /// operation; `None` for every other request.
+    pub upload: Option<Upload<'a>>,
+}
+
+/// A file sent as the `file` part of a multipart request.
+#[derive(Debug, Clone, Copy)]
+pub struct Upload<'a> {
+    pub data: &'a [u8],
+    pub name: &'a str,
 }
 
 // `&dyn Fn` cannot derive `Debug`: the closure has nothing to print. Header
@@ -1091,6 +1208,7 @@ mod tests {
                 on_token: None,
                 headers: &sent_headers,
                 generation: &Generation::default(),
+                upload: None,
             },
             crate::log::Logger::new(crate::log::Level::Error),
         )

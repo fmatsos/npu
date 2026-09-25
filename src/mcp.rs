@@ -38,6 +38,18 @@ impl Server {
             Ok((config, specs)) => (Some(config), specs, None),
             Err(err) => (None, Vec::new(), Some(err.to_string())),
         };
+        // A binary input is bytes, which a tool's JSON arguments do not
+        // carry: such a command is not offered as a tool.
+        specs.retain(|spec| {
+            let binary = matches!(spec.input, crate::command::InputMode::Binary);
+            if binary {
+                logger.info(&format!(
+                    "command \"{}\" takes a binary input: not exposed as an MCP tool",
+                    spec.path.join("/")
+                ));
+            }
+            !binary
+        });
         let mut names = BTreeMap::new();
         for (index, spec) in specs.iter().enumerate() {
             let name = spec.path.join("_");
@@ -363,6 +375,27 @@ mod tests {
         .expect("valid fixture");
         spec.file = file.into();
         spec
+    }
+
+    #[test]
+    fn a_binary_command_is_not_offered_as_a_tool() {
+        let mut binary = spec(&["transcribe"], "transcribe.md");
+        binary.input = crate::command::InputMode::Binary;
+        let server = Server::new(
+            Ok((
+                crate::config::Config::default(),
+                vec![binary, spec(&["classify"], "classify.md")],
+            )),
+            crate::log::Logger::new(crate::log::Level::Error),
+        )
+        .expect("the server starts");
+        let names: Vec<&str> = server
+            .state
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect();
+        assert_eq!(names, vec!["classify"]);
     }
 
     #[test]

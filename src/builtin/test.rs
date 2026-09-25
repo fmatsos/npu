@@ -53,7 +53,7 @@ struct Case<'a> {
     name: String,
     file: PathBuf,
     args: BTreeMap<String, String>,
-    input: String,
+    input: crate::input::Input,
     expect: Expectation,
 }
 
@@ -248,8 +248,16 @@ fn load_cases<'a>(
                 ));
             }
         }
+        let binary = matches!(spec.input, crate::command::InputMode::Binary);
         let input = match raw.input {
-            CaseInput::Inline(text) => text,
+            CaseInput::Inline(_) if binary => {
+                return Err(invalid(
+                    &file,
+                    "the command's input is binary: give it as input = { file = \"...\" }"
+                        .to_string(),
+                ));
+            }
+            CaseInput::Inline(text) => crate::input::Input::Text(text),
             CaseInput::File(item) => {
                 let path = Path::new(&item.file);
                 if path.components().count() != 1
@@ -264,8 +272,13 @@ fn load_cases<'a>(
                     ));
                 }
                 let path = file.parent().unwrap_or_else(|| Path::new("")).join(path);
-                crate::input::resolve(&crate::command::InputMode::File, Some(&path))
-                    .map_err(|e| invalid(&file, format!("input {}: {e}", path.display())))?
+                if binary {
+                    crate::input::resolve_bytes(Some(&path))
+                } else {
+                    crate::input::resolve(&crate::command::InputMode::File, Some(&path))
+                        .map(crate::input::Input::Text)
+                }
+                .map_err(|e| invalid(&file, format!("input {}: {e}", path.display())))?
             }
         };
         let expect = parse_expect(

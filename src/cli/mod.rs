@@ -108,7 +108,9 @@ fn build_clap_node(name: &str, node: &CommandNode<'_>) -> clap::Command {
             cmd = cmd.about(spec.description.clone());
             if matches!(
                 spec.input,
-                crate::command::InputMode::File | crate::command::InputMode::StdinOrFile
+                crate::command::InputMode::File
+                    | crate::command::InputMode::StdinOrFile
+                    | crate::command::InputMode::Binary
             ) {
                 cmd = cmd.arg(clap::Arg::new("FILE").required(false));
             }

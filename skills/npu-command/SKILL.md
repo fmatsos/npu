@@ -68,7 +68,7 @@ cat README.md | npu translate --language french
 | --- | --- | --- | --- |
 | `description` | string | `""` | shown in `npu --help` |
 | `model` | string | **required** | must match a model `id` |
-| `[input] mode` | string | `"stdin"` | `stdin`, `file`, `stdin_or_file` |
+| `[input] mode` | string | `"stdin"` | `stdin`, `file`, `stdin_or_file`, `binary` |
 | `[args.<name>]` | table | none | becomes a real CLI flag |
 | `[output]` | table | text, no limit | see below |
 | `system` | string | none | system-role message, sent before examples and the body |
@@ -103,6 +103,7 @@ assistant = '{"category":"hardware","confidence":0.98}'
 | `stdin` | read standard input to EOF |
 | `file` | read the positional `FILE` argument; omitting it is an error |
 | `stdin_or_file` | use `FILE` when given, otherwise read stdin |
+| `binary` | like `stdin_or_file`, as bytes: only for a `transcriptions` model; no `{{ input }}` in the prompt, no MCP tool |
 
 Modes accepting a file get an optional positional `FILE` in their generated
 CLI.

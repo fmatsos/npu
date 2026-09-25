@@ -46,3 +46,6 @@ output. The runner finishes the suite when expectations fail (exit `4`). Malform
 the rendered messages for each case and never contacts the backend.
 With `NPU_STATS_FILE` set, every run of a case also appends a
 [statistics record](cli.md#execution-statistics) carrying the case name.
+
+A command with `[input] mode = "binary"` takes its case input as a file next to the case
+(`input = { file = "memo.wav" }`), read as bytes; an inline string is rejected.

@@ -15,7 +15,8 @@ pub fn resolve(
     file: Option<&std::path::Path>,
 ) -> crate::Result<String> {
     match (mode, file) {
-        (crate::command::InputMode::Stdin, _) | (crate::command::InputMode::StdinOrFile, None) => {
+        (crate::command::InputMode::Stdin, _)
+        | (crate::command::InputMode::StdinOrFile | crate::command::InputMode::Binary, None) => {
             read_capped(std::io::stdin().lock(), "stdin")
         }
         (crate::command::InputMode::File, None) => {
@@ -29,10 +30,53 @@ pub fn resolve(
     }
 }
 
+/// A command's input, once read: text for the prompt, or the bytes a
+/// `binary` command uploads, with the name the upload carries.
+#[derive(Debug, Clone)]
+pub enum Input {
+    Text(String),
+    Bytes { data: Vec<u8>, name: String },
+}
+
+/// Reads a `binary` command's input as bytes: `file` when given, otherwise
+/// stdin, under the same [`MAX_INPUT_BYTES`] cap as text. The upload is
+/// named after the file (servers often infer the audio format from the
+/// extension), `input` for stdin.
+pub fn resolve_bytes(file: Option<&std::path::Path>) -> crate::Result<Input> {
+    match file {
+        None => Ok(Input::Bytes {
+            data: read_capped_bytes(std::io::stdin().lock(), "stdin")?,
+            name: "input".to_string(),
+        }),
+        Some(path) => {
+            let source = path.display().to_string();
+            let reader = std::fs::File::open(path).map_err(|e| named(&source, &e))?;
+            Ok(Input::Bytes {
+                data: read_capped_bytes(reader, &source)?,
+                name: path.file_name().map_or_else(
+                    || "input".to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                ),
+            })
+        }
+    }
+}
+
 /// Reads `reader` as UTF-8, refusing more than [`MAX_INPUT_BYTES`]. The
 /// size is checked on bytes before decoding, so a cap that splits a
 /// multibyte character still reports the size, not invalid UTF-8.
 fn read_capped(reader: impl Read, source: &str) -> crate::Result<String> {
+    let bytes = read_capped_bytes(reader, source)?;
+    String::from_utf8(bytes).map_err(|e| {
+        named(
+            source,
+            &std::io::Error::new(std::io::ErrorKind::InvalidData, e.utf8_error()),
+        )
+    })
+}
+
+/// Reads `reader` whole, refusing more than [`MAX_INPUT_BYTES`].
+fn read_capped_bytes(reader: impl Read, source: &str) -> crate::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     reader
         .take(MAX_INPUT_BYTES + 1)
@@ -44,12 +88,7 @@ fn read_capped(reader: impl Read, source: &str) -> crate::Result<String> {
             format!("{source}: input exceeds {MAX_INPUT_BYTES} bytes"),
         )));
     }
-    String::from_utf8(bytes).map_err(|e| {
-        named(
-            source,
-            &std::io::Error::new(std::io::ErrorKind::InvalidData, e.utf8_error()),
-        )
-    })
+    Ok(bytes)
 }
 
 fn named(source: &str, e: &std::io::Error) -> crate::Error {

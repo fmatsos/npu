@@ -53,12 +53,20 @@
       "type": "object"
     },
     "InputMode": {
-      "enum": [
-        "stdin",
-        "file",
-        "stdin_or_file"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "stdin",
+            "file",
+            "stdin_or_file"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "binary",
+          "type": "string"
+        }
+      ]
     },
     "InputSection": {
       "additionalProperties": false,

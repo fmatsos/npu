@@ -14,6 +14,7 @@ fatal at startup and report both command files. Tool arguments come from typed `
 enums, bounded integers, strings, and file content. Send the command's main text as the
 literal `"mcp.input"` property. It remains distinct from a configured `input` argument.
 Unknown, missing, or incorrectly typed properties are rejected before a backend request.
+A command with `[input] mode = "binary"` is not exposed: tool arguments are JSON, not bytes.
 
 Successful calls return the finalized command output as text. JSON output is additionally
 returned in `structuredContent`, always the whole document: `[output].extract` applies to the

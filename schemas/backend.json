@@ -77,6 +77,10 @@
         {
           "const": "embeddings",
           "type": "string"
+        },
+        {
+          "const": "transcriptions",
+          "type": "string"
         }
       ]
     },
