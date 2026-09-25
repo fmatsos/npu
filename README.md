@@ -246,6 +246,7 @@ cat README.md | npu translate --language french
 ```
 
 See [Writing commands](docs/commands.md) for arguments, templating and input modes.
+See [Testing configured prompts](docs/testing.md) for `npu config test` cases and reports.
 
 ---
 

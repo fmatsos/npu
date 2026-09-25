@@ -35,6 +35,7 @@ mod doctor;
 mod lifecycle;
 mod models;
 mod net;
+mod test;
 
 pub use describe::{describe, describe_builtin};
 pub use doctor::{Probes, doctor, doctor_exit_code, format_doctor};
@@ -45,6 +46,8 @@ pub use models::{format_models, format_models_json};
 pub use net::tcp_probe;
 
 pub(crate) use net::parse_host_port;
+pub(crate) use test::Options as TestOptions;
+pub(crate) use test::run as run_tests;
 
 #[cfg(test)]
 pub(crate) use lifecycle::NOT_STARTED;

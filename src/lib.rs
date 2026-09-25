@@ -166,6 +166,7 @@ pub fn run() -> Result<i32> {
         #[cfg(not(feature = "hardware-tooling"))]
         dispatch::Route::ModelDiscover => {}
         dispatch::Route::ConfigModels
+        | dispatch::Route::ConfigTest
         | dispatch::Route::BackendServe
         | dispatch::Route::BackendStop
         | dispatch::Route::BackendStatus
@@ -178,12 +179,16 @@ pub fn run() -> Result<i32> {
     let env = |name: &str| std::env::var(name).ok();
 
     match route {
+        dispatch::Route::ConfigTest => {
+            run_config_test(&roots, &specs, &config, leaf_matches, &env, logger)
+        }
         dispatch::Route::ConfigModels => {
-            if leaf_matches.get_flag("json") {
-                println!("{}", builtin::format_models_json(&config));
+            let report = if leaf_matches.get_flag("json") {
+                builtin::format_models_json(&config)
             } else {
-                println!("{}", builtin::format_models(&config));
-            }
+                builtin::format_models(&config)
+            };
+            println!("{report}");
             Ok(0)
         }
         dispatch::Route::BackendServe
@@ -211,17 +216,7 @@ pub fn run() -> Result<i32> {
         }
         dispatch::Route::Describe => describe_command(leaf_matches, &specs, &config),
         dispatch::Route::Business => {
-            let key = path.join("/");
-            let spec = cli::find_command(&specs, &key)?;
-            exec::execute_business_command(
-                spec,
-                &config,
-                leaf_matches,
-                logger,
-                &env,
-                &input::resolve,
-                std::io::IsTerminal::is_terminal(&std::io::stdout()),
-            )?;
+            run_business_command(&path, &specs, &config, leaf_matches, &env, logger)?;
             Ok(0)
         }
         dispatch::Route::Doctor
@@ -231,6 +226,53 @@ pub fn run() -> Result<i32> {
             unreachable!("these routes already returned above, whatever state loading ended in")
         }
     }
+}
+
+fn run_business_command(
+    path: &[String],
+    specs: &[command::CommandSpec],
+    config: &config::Config,
+    matches: &clap::ArgMatches,
+    env: &dyn Fn(&str) -> Option<String>,
+    logger: log::Logger,
+) -> Result<()> {
+    let spec = cli::find_command(specs, &path.join("/"))?;
+    exec::execute_business_command(
+        spec,
+        config,
+        matches,
+        logger,
+        env,
+        &input::resolve,
+        std::io::IsTerminal::is_terminal(&std::io::stdout()),
+    )
+}
+
+fn run_config_test(
+    roots: &[std::path::PathBuf],
+    specs: &[command::CommandSpec],
+    config: &config::Config,
+    matches: &clap::ArgMatches,
+    env: &dyn Fn(&str) -> Option<String>,
+    logger: log::Logger,
+) -> Result<i32> {
+    let words: Vec<&str> = matches
+        .get_many::<String>("COMMAND")
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .collect();
+    let selected = (!words.is_empty()).then(|| words.join("/"));
+    let options = builtin::TestOptions {
+        selected: selected.as_deref(),
+        model_override: matches.get_one::<String>("model").map(String::as_str),
+        repeat: matches.get_one::<u16>("repeat").copied().unwrap_or(1),
+        dry_run: matches.get_flag("dry-run"),
+        json: matches.get_flag("json"),
+    };
+    let (report, code) = builtin::run_tests(roots, specs, config, options, env, logger)?;
+    println!("{report}");
+    Ok(code)
 }
 
 /// Handles the `backend serve|stop|status|logs|tune` group: `Some(code)` if

@@ -26,6 +26,7 @@ or one bounded by `max_lines`, can only be validated whole, so it is never strea
 anything written to a pipe or a file.
 
 - [`npu doctor`](#npu-doctor) (also `npu config check`)
+- [`npu config test`](testing.md)
 - [`npu config models`](#npu-config-models)
 - [`npu backend serve`](#npu-backend-serve)
 - [`npu backend stop`](#npu-backend-stop)
@@ -358,16 +359,18 @@ Commands:
 
 Built-ins:
   backend   Manage the runtime of a model's backend: serve, stop, status, logs
-  config    Inspect the configuration: check, models
+  config    Inspect the configuration: check, models, test
   doctor    Check the runtime environment: configuration, backend reachability, declared output schemas
-  describe  Describe a command, built-in or configured, as JSON
+  describe  Describe a command, built-in or configured, as JSON; with none given, list every command
   update    Download and install the latest npu release from GitHub
   help      Print this message or the help of the given command
 
 Options:
-  -v, --verbose <LEVEL>  Diagnostic verbosity on stderr; stdout always carries the result only [default: warn] [possible values: error, warn, info]
-  -h, --help             Print help
-  -V, --version          Print version
+  -v, --verbose <LEVEL>        Diagnostic verbosity on stderr; stdout always carries the result only [default: warn] [possible values: error, warn, info]
+      --error-format <FORMAT>  Format of a clap usage error on stderr: plain text, or a one-line JSON envelope [default: text] [possible values: text, json]
+      --config-dir <DIR>       Use this directory as the project scope instead of walking up from the current one [env: NPU_CONFIG_DIR]
+  -h, --help                   Print help
+  -V, --version                Print version
 ```
 
 `model` stays in `builtin::RESERVED` either way — a reserved name is part of the contract, not a
@@ -849,17 +852,19 @@ Commands:
 
 Built-ins:
   backend   Manage the runtime of a model's backend: serve, stop, status, logs, tune
-  config    Inspect the configuration: check, models
+  config    Inspect the configuration: check, models, test
   model     Find models for this host: discover
   doctor    Check the runtime environment: configuration, backend reachability, declared output schemas
-  describe  Describe a command, built-in or configured, as JSON
+  describe  Describe a command, built-in or configured, as JSON; with none given, list every command
   update    Download and install the latest npu release from GitHub
   help      Print this message or the help of the given command
 
 Options:
-  -v, --verbose <LEVEL>  Diagnostic verbosity on stderr; stdout always carries the result only [default: warn] [possible values: error, warn, info]
-  -h, --help             Print help
-  -V, --version          Print version
+  -v, --verbose <LEVEL>        Diagnostic verbosity on stderr; stdout always carries the result only [default: warn] [possible values: error, warn, info]
+      --error-format <FORMAT>  Format of a clap usage error on stderr: plain text, or a one-line JSON envelope [default: text] [possible values: text, json]
+      --config-dir <DIR>       Use this directory as the project scope instead of walking up from the current one [env: NPU_CONFIG_DIR]
+  -h, --help                   Print help
+  -V, --version                Print version
 ```
 
 Exit code `0`, and on **stderr**:

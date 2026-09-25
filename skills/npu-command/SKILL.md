@@ -18,6 +18,10 @@ A command is a Markdown file: TOML frontmatter between `---` fences (not
 prompt as the body. There is no registration step — **the path under
 `commands/` is the command name**.
 
+After changing a prompt, add a regression case under
+`.npu/tests/<command path>/<case>.toml` and run `npu config test`. See
+`docs/testing.md` for the case format and report contract.
+
 | File | Command |
 | --- | --- |
 | `commands/classify.md` | `npu classify` |

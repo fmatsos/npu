@@ -18,6 +18,8 @@ pub(crate) enum Route {
     Describe,
     /// `config models`.
     ConfigModels,
+    /// `config test`.
+    ConfigTest,
     /// `backend serve <MODEL>`.
     BackendServe,
     /// `backend stop <MODEL>`.
@@ -44,6 +46,7 @@ pub(crate) fn route_for(path: &[&str]) -> Route {
         ["model", "discover"] => Route::ModelDiscover,
         ["describe"] => Route::Describe,
         ["config", "models"] => Route::ConfigModels,
+        ["config", "test"] => Route::ConfigTest,
         ["backend", "serve"] => Route::BackendServe,
         ["backend", "stop"] => Route::BackendStop,
         ["backend", "status"] => Route::BackendStatus,

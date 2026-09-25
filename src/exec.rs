@@ -342,6 +342,125 @@ fn reject_truncation(
     Ok(())
 }
 
+struct PreparedCommand<'a> {
+    model: &'a crate::config::Model,
+    backend: &'a crate::config::Backend,
+    messages: Vec<crate::backend::Message>,
+    output_schema: Option<serde_json::Value>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_command<'a>(
+    spec: &crate::command::CommandSpec,
+    config: &'a crate::config::Config,
+    model_id: &str,
+    args: &std::collections::BTreeMap<String, String>,
+    env: &dyn Fn(&str) -> Option<String>,
+    read_input: impl FnOnce() -> crate::Result<String>,
+    logger: crate::log::Logger,
+) -> crate::Result<PreparedCommand<'a>> {
+    let (model, backend) = config.resolve(model_id)?;
+    let output_schema = match (&spec.output.format, &spec.output.schema) {
+        (crate::output::Format::Json, Some(path)) => {
+            Some(crate::output::read_schema(path, &spec.file)?)
+        }
+        _ => None,
+    };
+    let schemas = spec
+        .schemas
+        .iter()
+        .map(|(id, path)| {
+            let document = crate::output::read_schema(path, &spec.file)?;
+            Ok((id.clone(), document.to_string()))
+        })
+        .collect::<crate::Result<std::collections::BTreeMap<_, _>>>()?;
+    crate::prompt::preflight(&spec.prompt, args, env, &schemas)?;
+    if let Some(system) = &spec.system {
+        crate::prompt::preflight(system, args, env, &schemas)?;
+    }
+    for example in &spec.examples {
+        crate::prompt::preflight(&example.user, args, env, &schemas)?;
+        crate::prompt::preflight(&example.assistant, args, env, &schemas)?;
+    }
+    preflight_headers(config, model, backend, env)?;
+    let input = read_input()?;
+    logger.info(&format!("input: {} characters read", input.chars().count()));
+    let prompt = crate::prompt::render(&spec.prompt, &input, args, env, &schemas)?;
+    let messages = build_messages(spec, &prompt, args, env, &schemas)?;
+    Ok(PreparedCommand {
+        model,
+        backend,
+        messages,
+        output_schema,
+    })
+}
+
+fn run_prepared(
+    spec: &crate::command::CommandSpec,
+    config: &crate::config::Config,
+    prepared: &PreparedCommand<'_>,
+    env: &dyn Fn(&str) -> Option<String>,
+    logger: crate::log::Logger,
+    stream: Option<TokenSink<'_>>,
+) -> crate::Result<(String, String, String)> {
+    let ask = Ask {
+        messages: &prepared.messages,
+        schema: prepared.output_schema.as_ref(),
+        stream,
+        command_generation: spec.generation.as_ref(),
+    };
+    let (answer, answered_by) =
+        chat_with_fallback(config, prepared.model, prepared.backend, &ask, env, logger)?;
+    reject_truncation(&answer, &answered_by, spec, config, prepared.model)?;
+    let raw = strip_reasoning_and_log(&answer.content, spec.output.strip_reasoning, logger);
+    let output = crate::output::finalize(&spec.output, &raw, &spec.file)?;
+    Ok((raw, output, answered_by))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn test_messages(
+    spec: &crate::command::CommandSpec,
+    config: &crate::config::Config,
+    model_id: &str,
+    args: &std::collections::BTreeMap<String, String>,
+    input: &str,
+    env: &dyn Fn(&str) -> Option<String>,
+    logger: crate::log::Logger,
+) -> crate::Result<Vec<crate::backend::Message>> {
+    Ok(prepare_command(
+        spec,
+        config,
+        model_id,
+        args,
+        env,
+        || Ok(input.to_string()),
+        logger,
+    )?
+    .messages)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_test_case(
+    spec: &crate::command::CommandSpec,
+    config: &crate::config::Config,
+    model_id: &str,
+    args: &std::collections::BTreeMap<String, String>,
+    input: &str,
+    env: &dyn Fn(&str) -> Option<String>,
+    logger: crate::log::Logger,
+) -> crate::Result<String> {
+    let prepared = prepare_command(
+        spec,
+        config,
+        model_id,
+        args,
+        env,
+        || Ok(input.to_string()),
+        logger,
+    )?;
+    run_prepared(spec, config, &prepared, env, logger, None).map(|(_, output, _)| output)
+}
+
 /// Executes the pipeline of an already-resolved BUSINESS command (`spec`),
 /// with the loaded configuration (`config`, necessarily `Ok` at this point:
 /// `run` has propagated any load error before reaching this function) and
@@ -382,13 +501,10 @@ pub(crate) fn execute_business_command(
     let model_id: &str = leaf_matches
         .get_one::<String>("model")
         .map_or(spec.model.as_str(), String::as_str);
-    let (model, backend) = config.resolve(model_id)?;
     logger.info(&format!(
-        "command \"{}\" -> model \"{}\" (backend \"{}\", operation \"{}\") from {}{}",
+        "command \"{}\" -> model \"{}\" from {}{}",
         spec.path.join("/"),
-        model.id,
-        backend.id,
-        model.operation,
+        model_id,
         spec.file.display(),
         if model_id == spec.model {
             String::new()
@@ -402,39 +518,6 @@ pub(crate) fn execute_business_command(
     // production), with the same "missing or empty" semantics
     // `prompt::render`/`prompt::preflight` expect (contract rule 5).
 
-    // Schemas are configuration, knowable without the input: read here,
-    // before `input::resolve`, for the same reason as `preflight` (see
-    // this function's doc). Only the invoked command's schemas are read.
-    let output_schema = match (&spec.output.format, &spec.output.schema) {
-        (crate::output::Format::Json, Some(path)) => {
-            Some(crate::output::read_schema(path, &spec.file)?)
-        }
-        _ => None,
-    };
-    let schemas = spec
-        .schemas
-        .iter()
-        .map(|(id, path)| {
-            let document = crate::output::read_schema(path, &spec.file)?;
-            Ok((id.clone(), document.to_string()))
-        })
-        .collect::<crate::Result<std::collections::BTreeMap<_, _>>>()?;
-
-    crate::prompt::preflight(&spec.prompt, &args, env, &schemas)?;
-    // `system` and every `[[examples]]` turn are templated exactly like the
-    // body (minus `{{ input }}`, rejected at load time): their own
-    // environment variables must be resolvable before the input is read,
-    // same invariant as the body's own preflight above.
-    if let Some(system) = &spec.system {
-        crate::prompt::preflight(system, &args, env, &schemas)?;
-    }
-    for example in &spec.examples {
-        crate::prompt::preflight(&example.user, &args, env, &schemas)?;
-        crate::prompt::preflight(&example.assistant, &args, env, &schemas)?;
-    }
-
-    preflight_headers(config, model, backend, env)?;
-
     // The `FILE` argument is only declared (cf. `build_clap_node`) for the
     // modes that accept a file: reproducing the same condition here avoids
     // calling `get_one` on an absent id (panic) and keeps the two spots in
@@ -445,36 +528,22 @@ pub(crate) fn execute_business_command(
             .map(std::path::Path::new),
         crate::command::InputMode::Stdin => None,
     };
-    let input_text = read_input(&spec.input, file_arg)?;
-    logger.info(&format!(
-        "input: {} characters read from {}",
-        input_text.chars().count(),
-        match file_arg {
-            Some(path) => path.display().to_string(),
-            None => "stdin".to_string(),
-        }
-    ));
-
-    let prompt = crate::prompt::render(&spec.prompt, &input_text, &args, env, &schemas)?;
-    logger.info(&format!(
-        "prompt rendered: {} characters",
-        prompt.chars().count()
-    ));
-
-    // Builds the full message list: [system?] + examples×[user, assistant]
-    // + [user: the rendered body]. With neither `system` nor `examples`
-    // declared, this is exactly today's single-element array — pinned by
-    // `backend::tests::build_chat_request_without_generation_options` and
-    // the e2e test asserting the exact request bytes.
-    let messages = build_messages(spec, &prompt, &args, env, &schemas)?;
+    let prepared = prepare_command(
+        spec,
+        config,
+        model_id,
+        &args,
+        env,
+        || read_input(&spec.input, file_arg),
+        logger,
+    )?;
 
     if dry_run {
-        let schema = output_schema.as_ref();
         return print_dry_run(
-            model,
-            backend,
-            &messages,
-            schema,
+            prepared.model,
+            prepared.backend,
+            &prepared.messages,
+            prepared.output_schema.as_ref(),
             spec,
             env,
             stdout_is_terminal,
@@ -515,26 +584,14 @@ pub(crate) fn execute_business_command(
         anstream::print!("{token}");
         let _ = std::io::Write::flush(&mut anstream::stdout());
     };
-    let ask = Ask {
-        messages: &messages,
-        schema: output_schema.as_ref(),
-        stream: streaming.then_some(&print_token as TokenSink<'_>),
-        command_generation: spec.generation.as_ref(),
-    };
-    let (answer, answered_by) = chat_with_fallback(config, model, backend, &ask, env, logger)?;
-
-    // Truncation is a defect of the ANSWER, not of the prompt: it must never
-    // trigger the fallback (that retry exists for a prompt too long, cf.
-    // `chat_with_fallback`'s doc), and it must be checked before anything is
-    // written to stdout on a pipe. On a terminal in streaming mode, tokens
-    // already reached the screen through `print_token` — that is accepted
-    // (cf. this crate's CLAUDE.md); the exit code is still 4 and
-    // stdout (the byte stream a calling agent reads) never receives the
-    // framed/closing output below.
-    reject_truncation(&answer, &answered_by, spec, config, model)?;
-
-    let raw_output = strip_reasoning_and_log(&answer.content, spec.output.strip_reasoning, logger);
-    let output = crate::output::finalize(&spec.output, &raw_output, &spec.file)?;
+    let (raw_output, output, answered_by) = run_prepared(
+        spec,
+        config,
+        &prepared,
+        env,
+        logger,
+        streaming.then_some(&print_token as TokenSink<'_>),
+    )?;
     logger.info(&format!(
         "output contract honoured ({}): {} characters written to stdout",
         spec.output.format.as_str(),

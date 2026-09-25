@@ -328,7 +328,7 @@ pub(crate) fn add_builtins(cli: clap::Command) -> clap::Command {
     #[cfg(feature = "hardware-tooling")]
     let backend = backend.subcommand(tune_command());
     let config = clap::Command::new("config")
-        .about("Inspect the configuration: check, models")
+        .about("Inspect the configuration: check, models, test")
         .subcommand_required(true)
         .arg_required_else_help(true)
         .subcommand(
@@ -339,6 +339,28 @@ pub(crate) fn add_builtins(cli: clap::Command) -> clap::Command {
         .subcommand(
             clap::Command::new("models")
                 .about("List configured models")
+                .arg(json_arg()),
+        )
+        .subcommand(
+            clap::Command::new("test")
+                .about("Run regression cases for configured commands")
+                .arg(
+                    clap::Arg::new("COMMAND")
+                        .num_args(0..)
+                        .help("Command path to test"),
+                )
+                .arg(clap::Arg::new("model").long("model").value_name("ID"))
+                .arg(
+                    clap::Arg::new("repeat")
+                        .long("repeat")
+                        .value_parser(clap::value_parser!(u16).range(1..))
+                        .default_value("1"),
+                )
+                .arg(
+                    clap::Arg::new("dry-run")
+                        .long("dry-run")
+                        .action(clap::ArgAction::SetTrue),
+                )
                 .arg(json_arg()),
         );
 
