@@ -800,6 +800,8 @@ fn extract_writes_the_pointed_value_and_a_missing_one_fails_with_exit_code_four(
 fn stats_file_gets_one_line_per_invocation_and_an_unwritable_one_changes_nothing() {
     let scope = fixture_scope("stats");
     let stats = scope.join("stats.jsonl");
+    // The fixture directory outlives the run that created it.
+    let _ = std::fs::remove_file(&stats);
     for (content, code) in [("{\"category\": \"bug\"}", 0), ("not JSON", 4)] {
         let (addr, server) = spawn_stub_server(content.to_string());
         write_scope(&scope, addr, "format = \"json\"");
