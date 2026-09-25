@@ -4,6 +4,26 @@ Every notable change to `npu`, newest first. Versions follow
 [semantic versioning](https://semver.org); pre-1.0, a breaking change bumps
 the minor.
 
+## [0.7.0] - 2026-09-25
+
+### Added
+
+- `npu mcp serve` exposes configured business commands as MCP tools over stdio using `rmcp`, with
+  MCP `2026-07-28` discovery, typed argument schemas, output schemas, and serialized blocking
+  execution ([`dee94ce`](https://github.com/fmatsos/npu/commit/dee94ce8e5342336947e6ff4c3b1d9799b0ff8b5))
+- Typed command arguments support enums, bounded integers, and UTF-8 file content substitution;
+  MCP calls use the literal `"mcp.input"` property for command input
+  ([`dee94ce`](https://github.com/fmatsos/npu/commit/dee94ce8e5342336947e6ff4c3b1d9799b0ff8b5))
+- Pipeline failures can be rendered as structured JSON envelopes with their error family and
+  stable exit code ([`dee94ce`](https://github.com/fmatsos/npu/commit/dee94ce8e5342336947e6ff4c3b1d9799b0ff8b5))
+
+### Changed
+
+- **Breaking**: `mcp` is now a reserved top-level command group; rename any configured command
+  whose first path segment is `mcp` ([`dee94ce`](https://github.com/fmatsos/npu/commit/dee94ce8e5342336947e6ff4c3b1d9799b0ff8b5))
+
+**Full changelog**: [`v0.6.1...v0.7.0`](https://github.com/fmatsos/npu/compare/v0.6.1...v0.7.0)
+
 ## [0.6.1] - 2026-09-24
 
 ### Changed

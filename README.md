@@ -264,12 +264,12 @@ with the binary. They are not AI commands, and their names are reserved — a co
 
 ```console
 $ npu --version
-npu 0.6.1
+npu 0.7.0
 ```
 
 ```console
 $ npu update
-updated npu from 0.6.0 to 0.6.1
+updated npu from 0.6.1 to 0.7.0
 ```
 
 ```console
