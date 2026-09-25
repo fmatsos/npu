@@ -125,6 +125,15 @@ fn build_clap_node(name: &str, node: &CommandNode<'_>) -> clap::Command {
                     ),
             );
             cmd = cmd.arg(
+                clap::Arg::new("no-wait")
+                    .long("no-wait")
+                    .action(clap::ArgAction::SetTrue)
+                    .help(
+                        "Fail at once instead of waiting when a max_concurrent = 1 backend is \
+                         busy",
+                    ),
+            );
+            cmd = cmd.arg(
                 clap::Arg::new("model")
                     .long("model")
                     .value_name("ID")
@@ -465,9 +474,10 @@ mod tests {
             .find_subcommand("commit-message")
             .expect("commit-message must exist");
         assert!(
-            stdin_only
-                .get_arguments()
-                .all(|arg| matches!(arg.get_id().as_str(), "dry-run" | "model" | "help")),
+            stdin_only.get_arguments().all(|arg| matches!(
+                arg.get_id().as_str(),
+                "dry-run" | "no-wait" | "model" | "help"
+            )),
             "a business leaf carries only its own args, plus dry-run and the automatic help flag"
         );
 
@@ -615,7 +625,7 @@ mod tests {
         let names: Vec<&str> = x
             .get_arguments()
             .map(|arg| arg.get_id().as_str())
-            .filter(|id| !matches!(*id, "help" | "dry-run" | "model"))
+            .filter(|id| !matches!(*id, "help" | "dry-run" | "no-wait" | "model"))
             .collect();
 
         assert_eq!(names, vec!["alpha", "zebra"]);

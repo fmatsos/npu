@@ -18,6 +18,9 @@ pub(crate) struct Ask<'a> {
     /// model uses its own base `[generation]` merged with this SAME
     /// override, never the primary's merged result.
     pub(crate) command_generation: Option<&'a crate::config::Generation>,
+    /// Fail at once, instead of waiting, when a `max_concurrent = 1`
+    /// backend is busy with another process's request (`--no-wait`).
+    pub(crate) no_wait: bool,
 }
 
 // `&dyn Fn` cannot derive `Debug`: the closure has nothing to print.
@@ -58,7 +61,9 @@ pub(crate) fn chat_with_fallback(
         schema,
         stream,
         command_generation,
+        no_wait,
     } = *ask;
+    let state = crate::runtime::state::StateEnv::from_vars(env);
     // Resolving the URL is part of reaching the backend, not a step before
     // it: a `port = "auto"` backend whose container is down fails here, and
     // that is exactly a case the fallback exists to absorb. Resolving
@@ -85,6 +90,15 @@ pub(crate) fn chat_with_fallback(
         // override — recomputed per candidate, never precomputed once for
         // the primary and reused for the fallback (see `Ask`'s doc).
         let generation = crate::config::Generation::merged(&model.generation, command_generation);
+        // Held until this attempt returns, stream included, and released
+        // BEFORE the fallback's attempt: a fallback on the same backend
+        // must not wait for its own primary's lock.
+        let slot = crate::runtime::state::acquire_request_slot(&state, backend, !no_wait, &|| {
+            spinner.set_message(&format!("waiting for backend \"{}\" (busy)", backend.id));
+        })?;
+        if slot.is_some() {
+            spinner.set_message(&format!("waiting for model \"{}\"", model.id));
+        }
         crate::runtime::resolve_base_url(backend, &crate::runtime::docker::runner).and_then(
             |base_url| {
                 let request = crate::backend::Request {
@@ -349,6 +363,9 @@ struct PreparedCommand<'a> {
     backend: &'a crate::config::Backend,
     messages: Vec<crate::backend::Message>,
     output_schema: Option<serde_json::Value>,
+    /// `--no-wait`: set by the CLI after preparing, `false` everywhere
+    /// else.
+    no_wait: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -420,6 +437,7 @@ fn prepare_command<'a>(
         backend,
         messages,
         output_schema,
+        no_wait: false,
     })
 }
 
@@ -438,6 +456,7 @@ fn run_prepared(
         schema: prepared.output_schema.as_ref(),
         stream,
         command_generation: spec.generation.as_ref(),
+        no_wait: prepared.no_wait,
     };
     record.backend = Some(prepared.backend.id.clone());
     let started = std::time::Instant::now();
@@ -644,7 +663,7 @@ fn run_business_command(
             .map(std::path::Path::new),
         crate::command::InputMode::Stdin => None,
     };
-    let prepared = prepare_command(
+    let mut prepared = prepare_command(
         spec,
         config,
         model_id,
@@ -654,6 +673,7 @@ fn run_business_command(
         logger,
         false,
     )?;
+    prepared.no_wait = leaf_matches.get_flag("no-wait");
 
     if dry_run {
         return print_dry_run(
@@ -848,37 +868,47 @@ mod tests {
         status_line: &str,
         body: &'static str,
     ) -> (String, std::thread::JoinHandle<()>) {
+        stub_backend_answering(vec![(status_line.to_string(), body)])
+    }
+
+    /// [`stub_backend`] answering one connection per `(status, body)`, in
+    /// order.
+    fn stub_backend_answering(
+        answers: Vec<(String, &'static str)>,
+    ) -> (String, std::thread::JoinHandle<()>) {
         use std::io::{BufRead, BufReader, Read, Write};
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind of the stub");
         let addr = listener.local_addr().expect("local address of the stub");
-        let status_line = status_line.to_string();
 
         let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accepting the connection");
-            let mut reader = BufReader::new(stream.try_clone().expect("cloning the TCP stream"));
-            let mut content_length = 0usize;
-            loop {
-                let mut line = String::new();
-                reader.read_line(&mut line).expect("reading a header line");
-                if line == "\r\n" || line.is_empty() {
-                    break;
+            for (status_line, body) in answers {
+                let (mut stream, _) = listener.accept().expect("accepting the connection");
+                let mut reader =
+                    BufReader::new(stream.try_clone().expect("cloning the TCP stream"));
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).expect("reading a header line");
+                    if line == "\r\n" || line.is_empty() {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
                 }
-                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                    content_length = value.trim().parse().unwrap_or(0);
-                }
-            }
-            let mut drained = vec![0u8; content_length];
-            reader.read_exact(&mut drained).expect("reading the body");
+                let mut drained = vec![0u8; content_length];
+                reader.read_exact(&mut drained).expect("reading the body");
 
-            let response = format!(
-                "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: \
+                let response = format!(
+                    "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: \
                  {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            stream
-                .write_all(response.as_bytes())
-                .expect("writing the stub response");
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("writing the stub response");
+            }
         });
 
         (format!("http://{addr}"), handle)
@@ -952,6 +982,7 @@ mod tests {
             structured_output: false,
             headers: std::collections::BTreeMap::new(),
             source: std::path::PathBuf::new(),
+            max_concurrent: None,
         }
     }
 
@@ -1005,6 +1036,7 @@ mod tests {
                 schema: None,
                 stream: None,
                 command_generation: None,
+                no_wait: false,
             },
             &|_: &str| None,
             log::Logger::new(log::Level::Error),
@@ -1080,6 +1112,100 @@ mod tests {
         fallback_server.join().expect("fallback stub thread");
     }
 
+    /// A state directory of its own per test, handed over through `env`.
+    fn lock_env(name: &str) -> impl Fn(&str) -> Option<String> {
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "target/test-fixtures/{name}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        let dir = dir.to_string_lossy().into_owned();
+        move |var: &str| matches!(var, "XDG_STATE_HOME" | "HOME").then(|| dir.clone())
+    }
+
+    fn ask_once(no_wait: bool) -> Ask<'static> {
+        Ask {
+            messages: &[],
+            schema: None,
+            stream: None,
+            command_generation: None,
+            no_wait,
+        }
+    }
+
+    /// The lock is released before the fallback's attempt: a fallback on
+    /// the SAME `max_concurrent = 1` backend must not wait for its own
+    /// primary.
+    #[test]
+    fn a_fallback_on_the_same_serialized_backend_does_not_wait_for_its_primary() {
+        let (url, server) = stub_backend_answering(vec![
+            ("500 Internal Server Error".to_string(), "{}"),
+            (
+                "200 OK".to_string(),
+                r#"{"choices":[{"message":{"role":"assistant","content":"second"}}]}"#,
+            ),
+        ]);
+        let mut backend = backend_at("npu", url);
+        backend.max_concurrent = Some(1);
+        let mut config = config::Config::default();
+        config.backends.insert("npu".to_string(), backend);
+        config
+            .models
+            .insert("small".to_string(), model_on("small", "npu", Some("big")));
+        config
+            .models
+            .insert("big".to_string(), model_on("big", "npu", None));
+        let (model, backend) = config.resolve("small").expect("the fixture must resolve");
+
+        let (answer, answered_by) = chat_with_fallback(
+            &config,
+            model,
+            backend,
+            &ask_once(false),
+            &lock_env("exec-lock-fallback"),
+            log::Logger::new(log::Level::Error),
+        )
+        .expect("the fallback must answer");
+
+        assert_eq!(answer.content, "second");
+        assert_eq!(answered_by, "big");
+        server.join().expect("stub thread");
+    }
+
+    /// `--no-wait` on a backend another process holds: exit 3 naming the
+    /// backend, and no request sent.
+    #[test]
+    fn no_wait_on_a_busy_serialized_backend_fails_with_a_backend_error() {
+        let env = lock_env("exec-lock-busy");
+        let mut backend = backend_at("npu", "http://127.0.0.1:9".to_string());
+        backend.max_concurrent = Some(1);
+        let state = crate::runtime::state::StateEnv::from_vars(&env);
+        let held = crate::runtime::state::acquire_request_slot(&state, &backend, true, &|| {})
+            .expect("the first holder gets the lock")
+            .expect("a serialized backend returns a lock");
+        let mut config = config::Config::default();
+        config.backends.insert("npu".to_string(), backend);
+        config
+            .models
+            .insert("small".to_string(), model_on("small", "npu", None));
+        let (model, backend) = config.resolve("small").expect("the fixture must resolve");
+
+        let err = chat_with_fallback(
+            &config,
+            model,
+            backend,
+            &ask_once(true),
+            &env,
+            log::Logger::new(log::Level::Error),
+        )
+        .expect_err("a busy backend with --no-wait must fail");
+
+        assert_eq!(err.exit_code(), 3);
+        assert!(err.to_string().contains("\"npu\""), "got: {err}");
+        drop(held);
+    }
+
     #[test]
     fn chat_with_fallback_failing_on_both_names_both_models() {
         let (primary_url, primary_server) =
@@ -1111,6 +1237,7 @@ mod tests {
                 schema: None,
                 stream: None,
                 command_generation: None,
+                no_wait: false,
             },
             &|_: &str| None,
             log::Logger::new(log::Level::Error),
@@ -1200,6 +1327,7 @@ mod tests {
                 schema: None,
                 stream: None,
                 command_generation: None,
+                no_wait: false,
             },
             &|_: &str| None,
             log::Logger::new(log::Level::Error),
@@ -1377,6 +1505,7 @@ mod tests {
                 schema: None,
                 stream: Some(&sink),
                 command_generation: None,
+                no_wait: false,
             },
             &|_: &str| None,
             log::Logger::new(log::Level::Error),

@@ -171,6 +171,11 @@
     "id": {
       "type": "string"
     },
+    "max_concurrent": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
     "operations": {
       "additionalProperties": {
         "$ref": "#/definitions/Operation"

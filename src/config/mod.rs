@@ -1595,6 +1595,30 @@ mod tests {
     }
 
     #[test]
+    fn load_accepts_max_concurrent_one_and_rejects_any_other_value() {
+        for (limit, accepted) in [(1, true), (2, false), (0, false)] {
+            let root = fixture_dir("max-concurrent");
+            write(
+                &root,
+                "backends/ovms.toml",
+                &format!(
+                    "id = \"ovms\"\nbase_url = \"http://127.0.0.1:8000\"\n\
+                     type = \"openai-compatible\"\nmax_concurrent = {limit}\n\
+                     [operations.chat]\nmethod = \"POST\"\npath = \"/v3/chat/completions\"\n"
+                ),
+            );
+            let loaded = load(&root);
+            if accepted {
+                assert!(loaded.is_ok(), "max_concurrent = {limit}");
+            } else {
+                let err = loaded.expect_err("only 1 is accepted");
+                assert!(matches!(err, crate::Error::Config(_)));
+                assert!(err.to_string().contains("ovms.toml"), "got: {err}");
+            }
+        }
+    }
+
+    #[test]
     fn load_accepts_valid_timeouts() {
         let root = fixture_dir("accept-valid-timeouts");
         write(

@@ -79,6 +79,13 @@ pub struct Backend {
     /// Optional: overrides `backend::REQUEST_TIMEOUT` for this backend.
     #[serde(default)]
     pub timeouts: Option<Timeouts>,
+    /// Optional: `1` serializes the requests every `npu` process on this
+    /// machine sends to this backend (an advisory lock in the state
+    /// directory, see `runtime::state::acquire_request_slot`). Absent, no
+    /// limit. Any other value is rejected: honouring it would need one
+    /// lock slot per concurrent request.
+    #[serde(default)]
+    pub max_concurrent: Option<u32>,
     /// Optional, `false` by default: the backend accepts an `OpenAI`
     /// `response_format` of type `json_schema`, so a command's
     /// `[output].schema` is SENT with the request and constrains the
@@ -576,6 +583,20 @@ pub(crate) fn validate_backend(backend: &Backend, source: &Path) -> crate::Resul
             Some(&backend.id),
             format!(
                 "backend \"{}\": [timeouts].request_secs must be greater than 0",
+                backend.id
+            ),
+        )));
+    }
+
+    if let Some(limit) = backend.max_concurrent
+        && limit != 1
+    {
+        return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            Some(&backend.id),
+            format!(
+                "backend \"{}\": max_concurrent = {limit} is not supported; only 1 \
+                 (one request at a time) is, or leave it out for no limit",
                 backend.id
             ),
         )));

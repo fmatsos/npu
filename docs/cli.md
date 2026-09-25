@@ -862,6 +862,14 @@ $ echo "texte" | npu classify --model qwen-fast --dry-run
 `model` is consequently a reserved argument name, for the same reason as `dry-run`: a command
 declaring `[args.model]` is rejected at load time, naming the file.
 
+### `--no-wait`
+
+A business command leaf also accepts `--no-wait`. When the command's backend declares
+[`max_concurrent = 1`](configuration.md#max_concurrent-optional) and another `npu` process is
+using it, the command fails at once with a backend error (exit `3`, empty stdout) naming the
+backend, instead of waiting for its turn. On a backend without a limit it changes nothing.
+`no-wait` is consequently a reserved argument name, for the same reason as `dry-run`.
+
 ### Progress indicators
 
 On a terminal, `npu` draws a spinner on stderr while it waits for a model (relabelled when the

@@ -219,6 +219,26 @@ request_secs = 120
 falls back to the CLI's own default (120s — enough for a full `max_tokens` generation on a slow
 accelerator such as an NPU). `request_secs = 0` is rejected at load time, naming the file.
 
+### `max_concurrent` (optional)
+
+```toml
+max_concurrent = 1
+```
+
+One request at a time to this backend, across every `npu` process on the machine: a git hook and
+an editor action launched together no longer make one of them fail with a `5xx` or a timeout on a
+single NPU. The second invocation waits, its spinner reading `waiting for backend "ovms" (busy)`,
+and sends its request once the first one's answer is complete. With `--no-wait` it fails at once
+instead, with a backend error (exit `3`) naming the backend. `npu config test` and
+`npu mcp serve` always wait.
+
+The lock is an advisory file lock under the [state directory](#what-npu-remembers), taken before
+the backend's URL is resolved and released as soon as the answer ends: a fallback model on the
+same backend takes it again rather than waiting for its own primary. It is keyed by backend id and
+backend file, like the process records, so two scopes describing the same device do not wait for
+each other. Omitted, there is no limit. Only `1` is accepted; any other value is rejected at load
+time, naming the file.
+
 ### `structured_output` (optional)
 
 ```toml

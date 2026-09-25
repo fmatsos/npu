@@ -473,20 +473,21 @@ fn collect_markdown_files(
 /// flags `clap` handles itself; an argument named `FILE` would collide
 /// with the positional `FILE` argument that `cli::mod` (`build_clap_node`)
 /// already adds for commands whose input mode accepts a file
-/// (`InputMode::File`/`StdinOrFile`); `dry-run` and `model` would collide
-/// with the `--dry-run` and `--model` flags `cli::mod` (`build_clap_node`)
+/// (`InputMode::File`/`StdinOrFile`); `dry-run`, `no-wait` and `model` would
+/// collide with the `--dry-run`, `--no-wait` and `--model` flags `cli::mod` (`build_clap_node`)
 /// adds to every business command leaf; `error-format` and `config-dir`
 /// would collide with the GLOBAL `--error-format`/`--config-dir` arguments
 /// `cli::mod` declares on the root command, same reason as `verbose`.
 /// Reject here, at load time, rather than letting the error surface (much
 /// less clearly, or even panicking `clap::Command::arg` on a duplicate id)
 /// from the clap tree's construction downstream, in `cli::mod`.
-const RESERVED_ARG_NAMES: [&str; 8] = [
+const RESERVED_ARG_NAMES: [&str; 9] = [
     "help",
     "version",
     "FILE",
     "verbose",
     "dry-run",
+    "no-wait",
     "model",
     "error-format",
     "config-dir",

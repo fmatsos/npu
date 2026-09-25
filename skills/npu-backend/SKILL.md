@@ -44,6 +44,7 @@ next reader.
 | `[operations.<name>]` | at least one | each needs `method` and `path` |
 | `[runtime]` | no | how `npu backend serve` starts this backend; `type` picks the family — `"docker"` or `"process"` |
 | `[timeouts]` | no | `request_secs` — overrides the default request timeout (120s) |
+| `max_concurrent` | no | only `1`: one request at a time across `npu` processes (others wait, or fail with `--no-wait`) |
 | `structured_output` | no | `true` when the server accepts `response_format: json_schema` (OVMS, `llama-server`, vLLM): a command's output schema is then sent with the request. Default `false` |
 | `[headers]` | no | extra HTTP headers sent with every `chat` request; values accept only `{{ env.NAME }}` |
 
@@ -56,6 +57,7 @@ silently ignored:
 - `type` other than `"openai-compatible"`;
 - `method` other than `"POST"`;
 - `[timeouts].request_secs = 0`, or any key inside `[timeouts]` other than `request_secs`;
+- `max_concurrent` other than `1`;
 - `port = 0`, a `port` string other than `"auto"`, a `{{ backend.port }}` with no `port` key, or a
   `port` key no placeholder reads;
 - `port = "auto"` with anything other than a Docker runtime (a process cannot be asked which port

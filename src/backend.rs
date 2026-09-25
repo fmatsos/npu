@@ -675,6 +675,7 @@ mod tests {
             structured_output: false,
             headers: std::collections::BTreeMap::new(),
             source: std::path::PathBuf::new(),
+            max_concurrent: None,
         }
     }
 
@@ -1053,6 +1054,7 @@ mod tests {
             structured_output: false,
             headers: std::collections::BTreeMap::new(),
             source: std::path::PathBuf::new(),
+            max_concurrent: None,
         };
         let model = crate::config::Model {
             id: "test-model".to_string(),

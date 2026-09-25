@@ -457,6 +457,7 @@ mod tests {
             structured_output: false,
             headers: std::collections::BTreeMap::new(),
             source: std::path::PathBuf::new(),
+            max_concurrent: None,
         }
     }
 

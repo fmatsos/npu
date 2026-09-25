@@ -64,6 +64,23 @@ impl StateEnv {
     }
 }
 
+impl StateEnv {
+    /// Builds a `StateEnv` through an injected environment reader, with the
+    /// same "set but empty is absent" rule as [`StateEnv::from_env`].
+    #[must_use]
+    pub fn from_vars(env: &dyn Fn(&str) -> Option<String>) -> Self {
+        let var = |name: &str| {
+            env(name)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        };
+        StateEnv {
+            xdg_state_home: var("XDG_STATE_HOME"),
+            home: var("HOME"),
+        }
+    }
+}
+
 /// The Linux state directory: `$XDG_STATE_HOME/npu`, else
 /// `$HOME/.local/state/npu`.
 ///
@@ -146,6 +163,70 @@ pub fn state_dir(env: &StateEnv) -> crate::Result<PathBuf> {
 /// when its identifier could not be used as a file name.
 pub fn state_path(env: &StateEnv, backend_id: &str, source: &Path) -> crate::Result<PathBuf> {
     Ok(state_dir(env)?.join(file_name(backend_id, source)?))
+}
+
+/// Waits for the right to send a request to `backend`, when it declares
+/// `max_concurrent = 1`: an exclusive advisory lock on
+/// `<state dir>/<backend_id>-<digest>.lock`, released when the returned
+/// file is dropped (or the process exits). `None` for a backend without a
+/// limit, which never touches the state directory.
+///
+/// `on_busy` is called once, before blocking, when another process holds
+/// the lock. With `wait` false, a held lock is an `Error::Backend` naming
+/// the backend instead.
+///
+/// ponytail: keyed like the process records, by backend id and file, so
+/// two scopes describing the same device do not serialize each other; a
+/// device-level key would need a new configuration key naming the device.
+///
+/// # Errors
+///
+/// `Error::Io` when the state directory or the lock file cannot be used,
+/// `Error::Backend` when the lock is held and `wait` is false.
+pub fn acquire_request_slot(
+    env: &StateEnv,
+    backend: &crate::config::Backend,
+    wait: bool,
+    on_busy: &dyn Fn(),
+) -> crate::Result<Option<std::fs::File>> {
+    if backend.max_concurrent.is_none() {
+        return Ok(None);
+    }
+    let path = state_path(env, &backend.id, &backend.source)?.with_extension("lock");
+    let io_error = |err: std::io::Error| {
+        crate::Error::Io(std::io::Error::new(
+            err.kind(),
+            format!("{}: {err}", path.display()),
+        ))
+    };
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(io_error)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(io_error)?;
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) if wait => {
+            on_busy();
+            file.lock().map_err(io_error)?;
+        }
+        Err(std::fs::TryLockError::WouldBlock) => {
+            return Err(crate::Error::Backend(crate::error::BackendError::at(
+                &backend.id,
+                format!(
+                    "backend \"{}\" is busy with another request (max_concurrent = 1) and \
+                     --no-wait was given",
+                    backend.id
+                ),
+            )));
+        }
+        Err(std::fs::TryLockError::Error(err)) => return Err(io_error(err)),
+    }
+    Ok(Some(file))
 }
 
 /// `<backend_id>-<digest>.json`, once the identifier is known to be safe as
