@@ -8,12 +8,14 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 struct FileInput {
     file: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(untagged)]
 enum CaseInput {
     Inline(String),
@@ -21,11 +23,13 @@ enum CaseInput {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
-struct RawCase {
+pub(super) struct RawCase {
     #[serde(default)]
     args: BTreeMap<String, String>,
     input: CaseInput,
+    #[cfg_attr(test, schemars(with = "BTreeMap<String, serde_json::Value>"))]
     expect: BTreeMap<String, toml::Value>,
 }
 

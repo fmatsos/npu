@@ -76,7 +76,7 @@ may ever add or remove a byte on stdout.
 The built-ins live under eight names, all listed in `builtin::RESERVED` with
 `help` (a command file whose first path segment matches one is rejected at
 load time): the `backend` group — the lifecycle, `serve`, `stop`, `status`,
-`logs`, `tune` —, the `config` group — `check`, `models` —, the `model`
+`logs`, `tune` —, the `config` group — `check`, `models`, `test`, `schema` —, the `model`
 group — `discover`, which needs no configuration —, `doctor` (the same
 command as `config check`, kept at the top level), `describe`, `update`, `help`,
 and `mcp serve` (stdio server for configured commands only);
@@ -203,6 +203,16 @@ in `clap_lex` (already in the graph via `clap_builder`), `shlex` and
 Adding one is a measured decision: check the binary size and the crate count
 before and after, and record the numbers. A version bump of an existing
 dependency (Dependabot's weekly PRs) needs no measurement.
+
+`schemars` is a DEV-dependency: the JSON Schemas `npu config schema`
+prints are derived under `cfg_attr(test, derive(schemars::JsonSchema))`,
+committed under `schemas/` and embedded with `include_str!`; a unit test in
+`builtin/config_schema.rs` fails when they drift from the structs
+(`NPU_UPDATE_SCHEMAS=1 cargo test --lib config_schema` rewrites them). It
+cost 0 normal-edge crates (the same version already comes in through
+`rmcp`) and 12 528 release bytes (11 671 912 -> 11 684 440). A new field on a configuration struct therefore changes a
+committed schema, and `tests/docs_quote_the_binary.rs` then requires the
+key to be quoted under `docs/`.
 
 At 0.6.1 with `rmcp` 3.4.1 and Tokio added for the MCP stdio boundary:
 150 normal-edge crates and 11 689 856 release bytes on x86_64 Linux, up

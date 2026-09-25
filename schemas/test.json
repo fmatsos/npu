@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "CaseInput": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/definitions/FileInput"
+        }
+      ]
+    },
+    "FileInput": {
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "file"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Structural schema: `npu config check` is authoritative.",
+  "properties": {
+    "args": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "type": "object"
+    },
+    "expect": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "input": {
+      "$ref": "#/definitions/CaseInput"
+    }
+  },
+  "required": [
+    "input",
+    "expect"
+  ],
+  "title": "npu test case file",
+  "type": "object"
+}

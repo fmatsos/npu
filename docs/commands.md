@@ -8,6 +8,9 @@
 - [Prompt templating](#prompt-templating)
 - [What is validated, and when](#what-is-validated-and-when)
 
+`npu config schema command` prints the JSON Schema of the frontmatter; see
+[`npu config schema`](cli.md#npu-config-schema).
+
 ---
 
 ## File to command name

@@ -140,10 +140,12 @@ see there was not loaded — `npu doctor` will say why and name the file.
 
 This skill is a summary. When a case is not covered here, or when the
 behaviour it describes does not match what the binary does, the repository
-documentation is authoritative:
+documentation is authoritative. The exact set of keys the binary accepts is
+`npu config schema model` (a JSON Schema derived from the parser itself):
 
 - [Models](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#models)
 - [Merge semantics](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#merge-semantics)
+- [`npu config schema`](https://github.com/fmatsos/npu/blob/main/docs/cli.md#npu-config-schema)
 - [`npu config models`](https://github.com/fmatsos/npu/blob/main/docs/cli.md#npu-config-models)
 
 Related skills: **npu-backend**, **npu-command**, **npu-doctor**.

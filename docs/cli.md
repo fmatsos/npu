@@ -28,6 +28,7 @@ anything written to a pipe or a file.
 - [`npu doctor`](#npu-doctor) (also `npu config check`)
 - [`npu config test`](testing.md)
 - [`npu config models`](#npu-config-models)
+- [`npu config schema`](#npu-config-schema)
 - [`npu backend serve`](#npu-backend-serve)
 - [`npu backend stop`](#npu-backend-stop)
 - [`npu backend status`](#npu-backend-status)
@@ -120,6 +121,39 @@ qwen2.5-coder-3b-instruct  ovms      chat       -
 qwen3-8b                   ovms      chat       qwen3-8b-gpu
 qwen3-8b-gpu               ovms-gpu  chat       -
 ```
+
+---
+
+## `npu config schema`
+
+Prints the JSON Schema (draft-07) of one configuration format: `backend`, `model`, `command`
+(the frontmatter of a command file) or `test` (a [test case](testing.md)). The schemas are
+derived from the structures `npu` deserializes, so they list exactly the keys it accepts and
+reject any other one, like `npu` itself.
+
+```console
+$ npu config schema backend > .npu/backend.schema.json
+```
+
+A schema checks structure: the keys, their types, and the few literal values that are fixed
+(`type = "openai-compatible"`, `method = "POST"`, `port = "auto"`). It does not check the rules
+that link keys together, such as `values` being allowed only with `type = "enum"`, or a model
+naming a backend that exists. `npu config check` stays authoritative.
+
+The schemas do not depend on your configuration, so the command also works when that
+configuration fails to load.
+
+To have an editor using [Taplo](https://taplo.tamasfe.dev/) (Even Better TOML in VS Code)
+validate a backend, model or test case file as you type, start the file with a `#:schema`
+directive. A relative path is resolved from the TOML file's own directory:
+
+```toml
+#:schema ../backend.schema.json
+id = "ovms"
+```
+
+A command's frontmatter sits inside a Markdown file, which Taplo does not read. Its schema is
+meant for tools and for checking the documentation.
 
 ---
 
@@ -359,7 +393,7 @@ Commands:
 
 Built-ins:
   backend   Manage the runtime of a model's backend: serve, stop, status, logs
-  config    Inspect the configuration: check, models, test
+  config    Inspect the configuration: check, models, test, schema
   mcp       Expose configured commands to MCP clients
   doctor    Check the runtime environment: configuration, backend reachability, declared output schemas
   describe  Describe a command, built-in or configured, as JSON; with none given, list every command
@@ -855,7 +889,7 @@ Commands:
 
 Built-ins:
   backend   Manage the runtime of a model's backend: serve, stop, status, logs, tune
-  config    Inspect the configuration: check, models, test
+  config    Inspect the configuration: check, models, test, schema
   mcp       Expose configured commands to MCP clients
   model     Find models for this host: discover
   doctor    Check the runtime environment: configuration, backend reachability, declared output schemas
@@ -893,6 +927,7 @@ From there:
 | `npu --help` | exit `0`, built-ins listed, warning on stderr |
 | `npu doctor`, `npu config check` | exit `2`, report on stdout naming the offending file and line |
 | `npu --version`, `update` | run normally; they do not depend on the configuration |
+| `npu config schema` | runs normally (the warning still goes to stderr) |
 | `npu describe <built-in>` | runs normally; `npu describe <command>` exits `2` |
 | `npu backend serve`, `stop`, `status`, `logs`, `npu config models` | exit `2`, stdout empty — they need the configuration that could not load |
 | anything else | exit `2`, stdout empty, error on stderr |

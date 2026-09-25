@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Input resolution mode for a command.
 #[derive(Debug, Default, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum InputMode {
     #[default]
@@ -15,6 +16,7 @@ pub enum InputMode {
 
 /// Type of a configured argument, shared by CLI validation and MCP schemas.
 #[derive(Debug, Default, Clone, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ArgType {
     #[default]
@@ -123,6 +125,7 @@ pub struct Example {
 /// like every other frontmatter section, both fields required (an example
 /// missing either half is not a usable turn).
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 struct RawExample {
     user: String,
@@ -144,6 +147,7 @@ struct RawExample {
 /// key under `[args.*]` (e.g. `requred`) would be read and then silently
 /// ignored — exactly the kind of defect this project rejects.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 struct RawArgSpec {
     #[serde(default)]
@@ -170,8 +174,9 @@ struct RawArgSpec {
 /// defect this project rejects for `[args.*]`
 /// (`RawArgSpec`), now extended to the whole frontmatter.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
-struct Frontmatter {
+pub(crate) struct Frontmatter {
     #[serde(default)]
     description: String,
     model: String,
@@ -218,6 +223,7 @@ struct Frontmatter {
 /// under `[output]` (e.g. `max_line` instead of `max_lines`) must fail at
 /// load time, not silently fall back to "no limit".
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 struct RawOutputSpec {
     #[serde(default)]
@@ -244,6 +250,7 @@ struct RawOutputSpec {
 /// default input mode (`InputMode::Stdin`) — the most dangerous case, a
 /// file-input command silently reading stdin instead.
 #[derive(Debug, Deserialize, Default)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 struct InputSection {
     #[serde(default)]

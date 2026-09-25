@@ -16,6 +16,7 @@ use super::backend::Backend;
 /// `{{ env.NAME }}`) — the CLI embeds no container knowledge beyond the
 /// shape of a `docker run` invocation.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Docker {
     pub image: String,
@@ -55,6 +56,7 @@ const fn default_startup_timeout_secs() -> u64 {
 /// [`super::port::substitute_port`] (`{{ backend.port }}`), exactly like the
 /// `[docker]` lists — one template engine, not two.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Process {
     /// The executable to run: an absolute or relative path used as-is, or a
@@ -95,6 +97,7 @@ pub struct Process {
 /// (`unknown variant "podman"`) instead of a table serde would have to guess
 /// the meaning of.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Runtime {
     Docker(Docker),

@@ -4,7 +4,8 @@
 `.npu/tests/<command path>/<case>.toml`. For example, `tests/git/review/hardware.toml`
 tests `npu git review`. Cases from system, user and project scopes are combined; a more local
 case replaces one with the same command path and case name. A selection with no cases is an
-error (exit `2`).
+error (exit `2`). `npu config schema test` prints the JSON Schema of a case file; see
+[`npu config schema`](cli.md#npu-config-schema).
 
 ```toml
 args = { kind = "ticket" }

@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Generation": {
+      "additionalProperties": false,
+      "properties": {
+        "extra": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "max_tokens": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "seed": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stop": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "temperature": {
+          "format": "float",
+          "type": "number"
+        },
+        "top_p": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "description": "Structural schema: `npu config check` is authoritative.",
+  "properties": {
+    "backend": {
+      "type": "string"
+    },
+    "fallback": {
+      "type": "string"
+    },
+    "generation": {
+      "$ref": "#/definitions/Generation"
+    },
+    "id": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "operation": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "backend",
+    "operation",
+    "model"
+  ],
+  "title": "npu model file",
+  "type": "object"
+}

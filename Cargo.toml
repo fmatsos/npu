@@ -68,6 +68,18 @@ clap_complete = { version = "4.6.11", default-features = false, features = ["uns
 rmcp = { version = "3.4.1", default-features = false, features = ["server", "transport-io"] }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "io-std", "sync"] }
 
+[dev-dependencies]
+# Derives the JSON Schemas `npu config schema` prints, from the raw
+# deserialize structs, under `cfg_attr(test, ...)` only: the generated files
+# are committed under `schemas/` and embedded with `include_str!`, and a unit
+# test fails when they drift from the structs. A dev-dependency never
+# reaches the binary. Measured on x86_64 Linux, normal edges and the release
+# profile below: 150 -> 150 crates, 11 671 912 -> 11 684 440 bytes
+# (+12 528 B, the 10 374 B of embedded JSON plus the subcommand). The same
+# `schemars` 1.2.2 is already in the normal graph through `rmcp`, so
+# `Cargo.lock` only gains the edge.
+schemars = "1.2.2"
+
 # --- Quality: lints applied at build time ----------------------------------
 # `priority = -1` on a group is mandatory as soon as an individual lint of
 # that same group is overridden: without it, Cargo rejects the manifest.

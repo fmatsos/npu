@@ -30,6 +30,7 @@
 //! re-exports every submodule item so `crate::builtin::X` paths are
 //! unaffected by the split.
 
+mod config_schema;
 mod describe;
 mod doctor;
 mod lifecycle;
@@ -37,6 +38,7 @@ mod models;
 mod net;
 mod test;
 
+pub use config_schema::{SCHEMA_KINDS, config_schema};
 pub use describe::{describe, describe_builtin};
 pub use doctor::{Probes, doctor, doctor_exit_code, format_doctor};
 pub use lifecycle::{logs, serve, status, stop};

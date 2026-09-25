@@ -106,6 +106,9 @@ ordering, which is not a decision anyone made.
 ## Backends
 
 A backend declares the runtime protocol, where to reach it, and which operations it exposes.
+`npu config schema backend` prints the JSON Schema of this file, and `npu config schema model`
+that of a model file; see [`npu config schema`](cli.md#npu-config-schema) to have an editor
+validate them as you type.
 
 ```toml
 # .npu/backends/ovms.toml

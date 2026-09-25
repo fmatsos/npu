@@ -236,10 +236,12 @@ npu <command> --help    # the generated flags
 
 This skill is a summary. When a case is not covered here, or when the
 behaviour it describes does not match what the binary does, the repository
-documentation is authoritative:
+documentation is authoritative. The exact set of keys the binary accepts is
+`npu config schema command` (a JSON Schema derived from the parser itself):
 
 - [Writing commands](https://github.com/fmatsos/npu/blob/main/docs/commands.md)
 - [Output contracts](https://github.com/fmatsos/npu/blob/main/docs/output.md)
+- [`npu config schema`](https://github.com/fmatsos/npu/blob/main/docs/cli.md#npu-config-schema)
 - [`npu describe`](https://github.com/fmatsos/npu/blob/main/docs/cli.md#npu-describe)
 
 Related skills: **npu-model**, **npu-config**, **npu-doctor**.

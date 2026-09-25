@@ -10,8 +10,10 @@ use super::runtime::{Docker, Runtime, docker_of, process_of};
 
 /// An HTTP operation exposed by a backend (e.g. `chat`).
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Operation {
+    #[cfg_attr(test, schemars(extend("pattern" = "^[Pp][Oo][Ss][Tt]$")))]
     pub method: String,
     pub path: String,
 }
@@ -20,6 +22,7 @@ pub struct Operation {
 /// `[timeouts]` table of `backends/*.toml`. Absent, `backend.rs` falls back
 /// to its own default.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Timeouts {
     /// Seconds granted to a request before failure. Must be non-zero: a
@@ -30,12 +33,14 @@ pub struct Timeouts {
 
 /// An AI backend configured in `backends/*.toml`.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Backend {
     pub id: String,
     pub base_url: String,
     /// TOML field `type` (a reserved Rust word), e.g. `"openai-compatible"`.
     #[serde(rename = "type")]
+    #[cfg_attr(test, schemars(extend("enum" = ["openai-compatible"])))]
     pub kind: String,
     pub operations: HashMap<String, Operation>,
     /// Optional: the TCP port this backend listens on, substituted for
@@ -69,6 +74,7 @@ pub struct Backend {
     /// time; nothing downstream ever reads it. `pub(crate)` for the same
     /// reason as `runtime`.
     #[serde(default)]
+    #[cfg_attr(test, schemars(extend("deprecated" = true)))]
     pub(crate) docker: Option<Docker>,
     /// Optional: overrides `backend::REQUEST_TIMEOUT` for this backend.
     #[serde(default)]

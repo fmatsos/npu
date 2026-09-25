@@ -281,6 +281,58 @@ fn json_arg() -> clap::Arg {
         .help("Print the report as JSON instead of formatting it for a terminal")
 }
 
+/// The `config` group: `check`, `models`, `test`, `schema`.
+fn config_command() -> clap::Command {
+    clap::Command::new("config")
+        .about("Inspect the configuration: check, models, test, schema")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .subcommand(
+            clap::Command::new("check")
+                .about(DOCTOR_ABOUT)
+                .arg(json_arg()),
+        )
+        .subcommand(
+            clap::Command::new("models")
+                .about("List configured models")
+                .arg(json_arg()),
+        )
+        .subcommand(
+            clap::Command::new("test")
+                .about("Run regression cases for configured commands")
+                .arg(
+                    clap::Arg::new("COMMAND")
+                        .num_args(0..)
+                        .help("Command path to test"),
+                )
+                .arg(clap::Arg::new("model").long("model").value_name("ID"))
+                .arg(
+                    clap::Arg::new("repeat")
+                        .long("repeat")
+                        .value_parser(clap::value_parser!(u16).range(1..))
+                        .default_value("1"),
+                )
+                .arg(
+                    clap::Arg::new("dry-run")
+                        .long("dry-run")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(json_arg()),
+        )
+        .subcommand(
+            clap::Command::new("schema")
+                .about("Print the JSON Schema of a configuration format")
+                .arg(
+                    clap::Arg::new("KIND")
+                        .required(true)
+                        .value_parser(clap::builder::PossibleValuesParser::new(
+                            crate::builtin::SCHEMA_KINDS,
+                        ))
+                        .help("Format to describe"),
+                ),
+        )
+}
+
 pub(crate) fn add_builtins(cli: clap::Command) -> clap::Command {
     // Help text in English: it is displayed next to the configured
     // commands' `description`, and the repository's documentation is in
@@ -327,42 +379,7 @@ pub(crate) fn add_builtins(cli: clap::Command) -> clap::Command {
         );
     #[cfg(feature = "hardware-tooling")]
     let backend = backend.subcommand(tune_command());
-    let config = clap::Command::new("config")
-        .about("Inspect the configuration: check, models, test")
-        .subcommand_required(true)
-        .arg_required_else_help(true)
-        .subcommand(
-            clap::Command::new("check")
-                .about(DOCTOR_ABOUT)
-                .arg(json_arg()),
-        )
-        .subcommand(
-            clap::Command::new("models")
-                .about("List configured models")
-                .arg(json_arg()),
-        )
-        .subcommand(
-            clap::Command::new("test")
-                .about("Run regression cases for configured commands")
-                .arg(
-                    clap::Arg::new("COMMAND")
-                        .num_args(0..)
-                        .help("Command path to test"),
-                )
-                .arg(clap::Arg::new("model").long("model").value_name("ID"))
-                .arg(
-                    clap::Arg::new("repeat")
-                        .long("repeat")
-                        .value_parser(clap::value_parser!(u16).range(1..))
-                        .default_value("1"),
-                )
-                .arg(
-                    clap::Arg::new("dry-run")
-                        .long("dry-run")
-                        .action(clap::ArgAction::SetTrue),
-                )
-                .arg(json_arg()),
-        );
+    let config = config_command();
 
     #[cfg(feature = "hardware-tooling")]
     let model = clap::Command::new("model")

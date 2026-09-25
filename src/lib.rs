@@ -155,6 +155,7 @@ pub fn run() -> Result<i32> {
             );
             return Ok(0);
         }
+        dispatch::Route::ConfigSchema => return Ok(print_config_schema(leaf_matches)),
         dispatch::Route::Describe => {
             if let Some(json) =
                 cli::builtins::describe_builtin(&cli::builtins::describe_words(leaf_matches))?
@@ -224,12 +225,26 @@ pub fn run() -> Result<i32> {
             Ok(0)
         }
         dispatch::Route::Doctor
+        | dispatch::Route::ConfigSchema
         | dispatch::Route::McpServe
         | dispatch::Route::Help
         | dispatch::Route::Update
         | dispatch::Route::ModelDiscover => {
             unreachable!("these routes already returned above, whatever state loading ended in")
         }
+    }
+}
+
+/// `config schema <KIND>`: needs no configuration, so it runs whatever
+/// state loading ended in.
+fn print_config_schema(matches: &clap::ArgMatches) -> i32 {
+    let kind = matches.get_one::<String>("KIND").map_or("", String::as_str);
+    match builtin::config_schema(kind) {
+        Some(schema) => {
+            print!("{schema}");
+            0
+        }
+        None => unreachable!("clap only accepts a kind listed in SCHEMA_KINDS"),
     }
 }
 

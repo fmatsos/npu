@@ -1,0 +1,186 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "ArgType": {
+      "enum": [
+        "string",
+        "enum",
+        "integer",
+        "file"
+      ],
+      "type": "string"
+    },
+    "Format": {
+      "enum": [
+        "text",
+        "json"
+      ],
+      "type": "string"
+    },
+    "Generation": {
+      "additionalProperties": false,
+      "properties": {
+        "extra": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "max_tokens": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "seed": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stop": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "temperature": {
+          "format": "float",
+          "type": "number"
+        },
+        "top_p": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "InputMode": {
+      "enum": [
+        "stdin",
+        "file",
+        "stdin_or_file"
+      ],
+      "type": "string"
+    },
+    "InputSection": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "$ref": "#/definitions/InputMode"
+        }
+      },
+      "type": "object"
+    },
+    "RawArgSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "max": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "min": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "required": {
+          "default": false,
+          "type": "boolean"
+        },
+        "short": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/definitions/ArgType"
+        },
+        "values": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "RawExample": {
+      "additionalProperties": false,
+      "properties": {
+        "assistant": {
+          "type": "string"
+        },
+        "user": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "user",
+        "assistant"
+      ],
+      "type": "object"
+    },
+    "RawOutputSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_truncated": {
+          "default": false,
+          "type": "boolean"
+        },
+        "format": {
+          "$ref": "#/definitions/Format"
+        },
+        "max_lines": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "schema": {
+          "type": "string"
+        },
+        "strip_reasoning": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "description": "Structural schema: `npu config check` is authoritative.",
+  "properties": {
+    "args": {
+      "additionalProperties": {
+        "$ref": "#/definitions/RawArgSpec"
+      },
+      "type": "object"
+    },
+    "examples": {
+      "items": {
+        "$ref": "#/definitions/RawExample"
+      },
+      "type": "array"
+    },
+    "generation": {
+      "$ref": "#/definitions/Generation"
+    },
+    "input": {
+      "$ref": "#/definitions/InputSection"
+    },
+    "model": {
+      "type": "string"
+    },
+    "output": {
+      "$ref": "#/definitions/RawOutputSpec"
+    },
+    "schemas": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "type": "object"
+    },
+    "system": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "model"
+  ],
+  "title": "npu command frontmatter",
+  "type": "object"
+}

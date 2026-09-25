@@ -14,12 +14,14 @@ use super::runtime::{
 /// The value of a backend's optional `port` key: an explicit number, or the
 /// keyword `"auto"`.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum Port {
     Fixed(u16),
     /// Any string; only `"auto"` is accepted, checked by [`resolve_port`]
     /// so that a typo names its file instead of being treated as an unknown
     /// type by serde.
+    #[cfg_attr(test, schemars(extend("enum" = ["auto"])))]
     Keyword(String),
 }
 

@@ -281,12 +281,14 @@ failure as well — an absent executable is something to install, not a file to 
 
 This skill is a summary. When a case is not covered here, or when the
 behaviour it describes does not match what the binary does, the repository
-documentation is authoritative:
+documentation is authoritative. The exact set of keys the binary accepts is
+`npu config schema backend` (a JSON Schema derived from the parser itself):
 
 - [Backends](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#backends)
 - [Scopes and precedence](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#scopes-and-precedence)
 - [Starting a backend with Docker](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#starting-a-backend-with-docker)
 - [Starting a backend as a process](https://github.com/fmatsos/npu/blob/main/docs/configuration.md#starting-a-backend-as-a-process)
+- [`npu config schema`](https://github.com/fmatsos/npu/blob/main/docs/cli.md#npu-config-schema)
 - [`npu doctor`](https://github.com/fmatsos/npu/blob/main/docs/cli.md#npu-doctor)
 - [`npu backend serve`](https://github.com/fmatsos/npu/blob/main/docs/cli.md#npu-backend-serve)
 

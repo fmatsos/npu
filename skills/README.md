@@ -45,7 +45,9 @@ frontmatter if these defaults do not suit you.
 
 Every skill ends with a **Reference** section linking back to the repository
 documentation, which stays authoritative: a skill is a summary, and when the
-two disagree the binary and `docs/` win.
+two disagree the binary and `docs/` win. For the keys themselves, `npu config
+schema backend|model|command|test` prints the JSON Schema derived from the
+parser, so a skill points at it rather than restating the full format.
 
 ## Installing
 

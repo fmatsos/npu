@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 
 /// Output format declared by a command (`[output].format`).
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Format {
     #[default]

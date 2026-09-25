@@ -22,6 +22,8 @@ pub(crate) enum Route {
     ConfigModels,
     /// `config test`.
     ConfigTest,
+    /// `config schema <KIND>`.
+    ConfigSchema,
     /// `backend serve <MODEL>`.
     BackendServe,
     /// `backend stop <MODEL>`.
@@ -50,6 +52,7 @@ pub(crate) fn route_for(path: &[&str]) -> Route {
         ["describe"] => Route::Describe,
         ["config", "models"] => Route::ConfigModels,
         ["config", "test"] => Route::ConfigTest,
+        ["config", "schema"] => Route::ConfigSchema,
         ["backend", "serve"] => Route::BackendServe,
         ["backend", "stop"] => Route::BackendStop,
         ["backend", "status"] => Route::BackendStatus,
@@ -72,6 +75,7 @@ mod tests {
         assert_eq!(route_for(&["model", "discover"]), Route::ModelDiscover);
         assert_eq!(route_for(&["describe"]), Route::Describe);
         assert_eq!(route_for(&["config", "models"]), Route::ConfigModels);
+        assert_eq!(route_for(&["config", "schema"]), Route::ConfigSchema);
         assert_eq!(route_for(&["backend", "serve"]), Route::BackendServe);
         assert_eq!(route_for(&["backend", "stop"]), Route::BackendStop);
         assert_eq!(route_for(&["backend", "status"]), Route::BackendStatus);

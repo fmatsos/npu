@@ -24,6 +24,7 @@ pub(crate) const RESERVED_GENERATION_KEYS: [&str; 9] = [
 /// Optional generation parameters for a model, and (identically shaped) for
 /// a command's override (see [`Generation::merged`]).
 #[derive(Debug, Default, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Generation {
     pub temperature: Option<f32>,
@@ -51,6 +52,10 @@ pub struct Generation {
     /// this is the one place in the crate where "honoured" means "forwarded
     /// verbatim" rather than interpreted.
     #[serde(default)]
+    #[cfg_attr(
+        test,
+        schemars(with = "Option<serde_json::Map<String, serde_json::Value>>")
+    )]
     pub extra: Option<toml::Table>,
 }
 
@@ -220,6 +225,7 @@ pub(crate) fn validate_generation(
 
 /// A model configured in `models/*.toml`, referencing a backend.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Model {
     pub id: String,

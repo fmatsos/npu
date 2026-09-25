@@ -1,0 +1,208 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Docker": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "image": {
+          "type": "string"
+        },
+        "options": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "image"
+      ],
+      "type": "object"
+    },
+    "Operation": {
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "pattern": "^[Pp][Oo][Ss][Tt]$",
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "method",
+        "path"
+      ],
+      "type": "object"
+    },
+    "Port": {
+      "anyOf": [
+        {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "enum": [
+            "auto"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "Runtime": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "args": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "image": {
+              "type": "string"
+            },
+            "options": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "docker",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "image"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "arguments": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "command": {
+              "type": "string"
+            },
+            "env": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {},
+              "type": "object"
+            },
+            "startup_timeout_secs": {
+              "default": 30,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "process",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "command"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Timeouts": {
+      "additionalProperties": false,
+      "properties": {
+        "request_secs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "request_secs"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Structural schema: `npu config check` is authoritative.",
+  "properties": {
+    "base_url": {
+      "type": "string"
+    },
+    "docker": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Docker"
+        }
+      ],
+      "deprecated": true
+    },
+    "headers": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "type": "object"
+    },
+    "id": {
+      "type": "string"
+    },
+    "operations": {
+      "additionalProperties": {
+        "$ref": "#/definitions/Operation"
+      },
+      "type": "object"
+    },
+    "port": {
+      "$ref": "#/definitions/Port"
+    },
+    "runtime": {
+      "$ref": "#/definitions/Runtime"
+    },
+    "structured_output": {
+      "default": false,
+      "type": "boolean"
+    },
+    "timeouts": {
+      "$ref": "#/definitions/Timeouts"
+    },
+    "type": {
+      "enum": [
+        "openai-compatible"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "base_url",
+    "type",
+    "operations"
+  ],
+  "title": "npu backend file",
+  "type": "object"
+}

@@ -216,6 +216,32 @@ fn broken_config_version_still_prints_the_release_version() {
     assert!(stderr_of(&output).is_empty(), "got: {}", stderr_of(&output));
 }
 
+/// A broken configuration is exactly when a schema is needed: `config
+/// schema` never depends on the configuration loading.
+#[test]
+fn broken_config_schema_still_prints_every_schema_as_json() {
+    let xdg = fixture_dir("broken-schema-xdg");
+    let cwd = fixture_dir("broken-schema-cwd");
+    write_broken_scope(&xdg);
+
+    for kind in ["backend", "model", "command", "test"] {
+        let output = run_npu(&cwd, &xdg, &["config", "schema", kind]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{kind}: stderr: {}",
+            stderr_of(&output)
+        );
+        let schema: serde_json::Value =
+            serde_json::from_str(&stdout_of(&output)).expect("stdout must be a JSON document");
+        assert!(schema.get("properties").is_some(), "{kind}: got {schema}");
+    }
+
+    let output = run_npu(&cwd, &xdg, &["config", "schema", "nope"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+}
+
 /// (b) Same broken configuration: `npu doctor` exits with code 2 and its
 /// report, on STDOUT, describes the load error.
 #[test]

@@ -11,6 +11,8 @@
 //! - `skills_readme_table_links_match_skill_directories`: the skill links in
 //!   skills/README.md's table are exactly the set of subdirectories of
 //!   skills/.
+//! - `every_schema_key_is_documented`: every key a committed schema under
+//!   schemas/ accepts is quoted somewhere under docs/.
 #![allow(clippy::expect_used)] // allowed in tests (see Cargo.toml [lints.clippy]).
 
 use std::collections::BTreeSet;
@@ -89,4 +91,55 @@ fn skills_readme_table_links_match_skill_directories() {
         linked, on_disk,
         "skills/README.md's table must link exactly the npu-* subdirectories of skills/"
     );
+}
+
+/// Every property name declared anywhere in a JSON Schema.
+fn schema_keys(value: &serde_json::Value, found: &mut BTreeSet<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::Object(properties)) = map.get("properties") {
+                found.extend(properties.keys().cloned());
+            }
+            map.values().for_each(|child| schema_keys(child, found));
+        }
+        serde_json::Value::Array(items) => items.iter().for_each(|child| schema_keys(child, found)),
+        _ => {}
+    }
+}
+
+/// Every key the committed schemas accept is documented somewhere under
+/// `docs/`, quoted as code: a key the binary reads but no page names is one
+/// a user can only find by reading the source.
+#[test]
+fn every_schema_key_is_documented() {
+    let docs: String = std::fs::read_dir(repo_root().join("docs"))
+        .expect("docs/ must be readable")
+        .filter_map(Result::ok)
+        .map(|entry| std::fs::read_to_string(entry.path()).expect("a readable doc page"))
+        .collect();
+
+    for kind in ["backend", "model", "command", "test"] {
+        let path = repo_root().join("schemas").join(format!("{kind}.json"));
+        let schema: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("a committed schema"))
+                .expect("a JSON schema");
+        let mut found = BTreeSet::new();
+        schema_keys(&schema, &mut found);
+        let undocumented: Vec<&String> = found
+            .iter()
+            .filter(|key| {
+                !docs.contains(&format!("`{key}`"))
+                    && !docs.contains(&format!("`{key} ="))
+                    && !docs.contains(&format!("[{key}]"))
+                    && !docs.contains(&format!("[{key}."))
+                    && !docs.contains(&format!(".{key}]"))
+                    && !docs.contains(&format!("\n{key} ="))
+            })
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "{}: keys missing from docs/: {undocumented:?}",
+            path.display()
+        );
+    }
 }

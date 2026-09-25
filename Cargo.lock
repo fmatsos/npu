@@ -901,6 +901,7 @@ dependencies = [
  "indicatif",
  "jsonschema",
  "rmcp",
+ "schemars",
  "self-replace",
  "semver",
  "serde",
