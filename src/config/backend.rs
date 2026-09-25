@@ -16,6 +16,34 @@ pub struct Operation {
     #[cfg_attr(test, schemars(extend("pattern" = "^[Pp][Oo][Ss][Tt]$")))]
     pub method: String,
     pub path: String,
+    /// What the operation speaks: the request body it takes and where its
+    /// response carries the answer. `chat` when omitted.
+    #[serde(default)]
+    pub protocol: Protocol,
+}
+
+/// The request/response shapes of the protocol the core knows, one per
+/// operation kind. Every site handling one `match`es exhaustively, so a new
+/// protocol is a compile error wherever it must be handled.
+#[derive(Debug, Default, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum Protocol {
+    /// `chat/completions`: messages in, `choices[0].message.content` out.
+    #[default]
+    Chat,
+    /// `embeddings`: one text in, `data[0].embedding` out.
+    Embeddings,
+}
+
+impl Protocol {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Protocol::Chat => "chat",
+            Protocol::Embeddings => "embeddings",
+        }
+    }
 }
 
 /// Per-backend request timeout override, declared by the optional
@@ -119,6 +147,25 @@ pub struct Backend {
 }
 
 impl Backend {
+    /// The operation `model` calls on this backend.
+    ///
+    /// # Errors
+    /// `Error::Config` naming the backend when it does not expose
+    /// `model.operation`.
+    pub fn operation_for(&self, model: &super::Model) -> crate::Result<&Operation> {
+        self.operations.get(&model.operation).ok_or_else(|| {
+            crate::Error::Config(crate::error::ConfigError::bare(
+                Some(&self.id),
+                format!(
+                    "backend \"{}\" does not expose operation \"{}\" (available operations: {})",
+                    self.id,
+                    model.operation,
+                    crate::error::format_available(self.operations.keys())
+                ),
+            ))
+        })
+    }
+
     /// How this backend's runtime is started, in its normalized form.
     ///
     /// `None` means the backend was never told how to start anything — a

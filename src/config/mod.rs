@@ -17,7 +17,7 @@ mod model;
 mod port;
 mod runtime;
 
-pub use backend::{Backend, Operation, Timeouts, resolve_headers};
+pub use backend::{Backend, Operation, Protocol, Timeouts, resolve_headers};
 pub use model::{Generation, Model};
 pub use port::Port;
 pub use runtime::{Docker, Process, Runtime};
@@ -208,9 +208,23 @@ pub fn load_scopes(roots: &[PathBuf]) -> crate::Result<Config> {
     // the primary model fails, i.e. exactly when the recovery is needed.
     // Checked here, after the merge, so that a fallback declared in a general
     // scope and satisfied by a model from a more local scope stays valid.
+    // `None` for a model whose backend or operation does not resolve: that
+    // is reported where the model is used (`resolve`, `doctor`), not here.
+    let protocol_of = |model: &Model| {
+        backends
+            .get(&model.backend)
+            .and_then(|(backend, _)| backend.operations.get(&model.operation))
+            .map(|operation| operation.protocol)
+    };
     for (model, source) in models.values() {
         model::validate_fallback(model, &models, source)?;
         model::validate_generation(&model.generation, &model.id, source)?;
+        let fallback_protocol = model
+            .fallback
+            .as_ref()
+            .and_then(|fallback| models.get(fallback))
+            .and_then(|(fallback, _)| protocol_of(fallback));
+        model::validate_protocol(model, protocol_of(model), fallback_protocol, source)?;
     }
     for (model, source) in models.values_mut() {
         model.source.clone_from(source);
@@ -1614,6 +1628,55 @@ mod tests {
                 let err = loaded.expect_err("only 1 is accepted");
                 assert!(matches!(err, crate::Error::Config(_)));
                 assert!(err.to_string().contains("ovms.toml"), "got: {err}");
+            }
+        }
+    }
+
+    #[test]
+    fn load_rejects_a_fallback_or_generation_on_embeddings_and_a_cross_protocol_fallback() {
+        let backend = "id = \"b\"\nbase_url = \"http://127.0.0.1:8000\"\n\
+             type = \"openai-compatible\"\n\
+             [operations.chat]\nmethod = \"POST\"\npath = \"/v1/chat/completions\"\n\
+             [operations.embed]\nmethod = \"POST\"\npath = \"/v1/embeddings\"\n\
+             protocol = \"embeddings\"\n";
+        let model = |id: &str, operation: &str, extra: &str| {
+            format!(
+                "id = \"{id}\"\nbackend = \"b\"\noperation = \"{operation}\"\n\
+                 model = \"m\"\n{extra}"
+            )
+        };
+        let cases = [
+            (
+                model("vec", "embed", "[generation]\ntemperature = 0.0\n"),
+                None,
+                false,
+            ),
+            (
+                model("vec", "embed", "fallback = \"other\"\n"),
+                Some(model("other", "embed", "")),
+                false,
+            ),
+            (
+                model("vec", "chat", "fallback = \"other\"\n"),
+                Some(model("other", "embed", "")),
+                false,
+            ),
+            (model("vec", "embed", ""), None, true),
+        ];
+        for (primary, other, accepted) in cases {
+            let root = fixture_dir("protocol");
+            write(&root, "backends/b.toml", backend);
+            write(&root, "models/vec.toml", &primary);
+            if let Some(other) = other {
+                write(&root, "models/other.toml", &other);
+            }
+            let loaded = load(&root);
+            if accepted {
+                assert!(loaded.is_ok(), "{primary}");
+            } else {
+                let err = loaded.expect_err("must be rejected");
+                assert!(matches!(err, crate::Error::Config(_)), "{primary}");
+                assert!(err.to_string().contains("vec"), "got: {err}");
             }
         }
     }

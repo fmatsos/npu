@@ -127,11 +127,35 @@ path = "/v3/chat/completions"
 | `type` | yes | `"openai-compatible"` is the only value supported in 0.1.0 |
 | `base_url` | yes | joined with an operation's `path`; a trailing `/` is handled either way |
 | `port` | no | the listening port, declared once and read as `{{ backend.port }}` — see below |
-| `[operations.<name>]` | at least one | `method` and `path` |
+| `[operations.<name>]` | at least one | `method`, `path`, and optionally `protocol` — see below |
 | `[runtime]` | no | how `npu backend serve` starts this backend — see below |
 
 Unknown keys are rejected, with the file and line. A `type` other than `"openai-compatible"` and
 a `method` other than `POST` are both rejected at load time rather than silently ignored.
+
+### Operation protocols
+
+An operation's name is yours; what it speaks is its `protocol`, `"chat"` when omitted:
+
+```toml
+[operations.embed]
+method = "POST"
+path = "/v1/embeddings"
+protocol = "embeddings"
+```
+
+| `protocol` | Request | Answer |
+| --- | --- | --- |
+| `chat` | `{model, messages, ...}` | `choices[0].message.content` |
+| `embeddings` | `{model, input}`, the rendered prompt as `input` | `data[0].embedding`, as a JSON array |
+
+A command running an `embeddings` model must declare `format = "json"`: its output is the vector,
+which `[output].schema` can constrain (its length, for one) and `[output].extract` can index.
+`system`, `[[examples]]`, `[generation]`, `strip_reasoning` and `allow_truncated` do not apply
+and are rejected, naming the command file and the model, when the command runs and by
+`npu doctor`. An `embeddings` model cannot declare a `fallback` (two models' vectors cannot be
+compared) nor a `[generation]` table, and a model's fallback must speak the same protocol as the
+model itself; both are rejected at load time, naming the model file.
 
 ### `port` (optional)
 
@@ -522,7 +546,8 @@ max_tokens = 512
 | `[generation]` | no | see [Generation parameters](#generation-parameters) below |
 
 A model naming an unknown backend, or an operation its backend does not expose, produces a
-configuration error listing what *is* available.
+configuration error listing what *is* available — when a command runs it, and in `npu doctor`.
+It is not a load-time error: a model nobody uses does not break the rest of the configuration.
 
 ### Generation parameters
 

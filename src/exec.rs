@@ -358,6 +358,52 @@ fn reject_truncation(
     Ok(())
 }
 
+/// Rejects a command whose keys the protocol of `model`'s operation cannot
+/// honour, naming the command file and the model. Checked when the command
+/// runs, not when it is loaded: `--model` can swap in a model of another
+/// protocol. `npu doctor` runs the same check on every command.
+pub(crate) fn check_protocol(
+    spec: &crate::command::CommandSpec,
+    model: &crate::config::Model,
+    backend: &crate::config::Backend,
+) -> crate::Result<()> {
+    let Some(operation) = backend.operations.get(&model.operation) else {
+        // Reported, with the available operations, when the request is built.
+        return Ok(());
+    };
+    let offending = match operation.protocol {
+        crate::config::Protocol::Chat => None,
+        crate::config::Protocol::Embeddings => [
+            (
+                spec.output.format != crate::output::Format::Json,
+                "format = \"text\" (the answer is a vector: declare format = \"json\")",
+            ),
+            (spec.system.is_some(), "system"),
+            (!spec.examples.is_empty(), "[[examples]]"),
+            (spec.generation.is_some(), "[generation]"),
+            (spec.output.strip_reasoning, "[output].strip_reasoning"),
+            (spec.output.allow_truncated, "[output].allow_truncated"),
+        ]
+        .into_iter()
+        .find_map(|(declared, key)| declared.then_some(key)),
+    };
+    match offending {
+        None => Ok(()),
+        Some(key) => Err(crate::Error::Config(crate::error::ConfigError::in_file(
+            &spec.file,
+            Some(&model.id),
+            format!(
+                "command \"{}\" runs model \"{}\", whose operation \"{}\" speaks {}: \
+                 {key} does not apply to it",
+                spec.path.join("/"),
+                model.id,
+                model.operation,
+                operation.protocol.as_str()
+            ),
+        ))),
+    }
+}
+
 struct PreparedCommand<'a> {
     model: &'a crate::config::Model,
     backend: &'a crate::config::Backend,
@@ -380,6 +426,7 @@ fn prepare_command<'a>(
     file_args_are_content: bool,
 ) -> crate::Result<PreparedCommand<'a>> {
     let (model, backend) = config.resolve(model_id)?;
+    check_protocol(spec, model, backend)?;
     let output_schema = match (&spec.output.format, &spec.output.schema) {
         (crate::output::Format::Json, Some(path)) => {
             Some(crate::output::read_schema(path, &spec.file)?)
@@ -971,6 +1018,7 @@ mod tests {
                 config::Operation {
                     method: "POST".to_string(),
                     path: "/v1/chat/completions".to_string(),
+                    protocol: crate::config::Protocol::Chat,
                 },
             )]
             .into_iter()
@@ -1204,6 +1252,98 @@ mod tests {
         assert_eq!(err.exit_code(), 3);
         assert!(err.to_string().contains("\"npu\""), "got: {err}");
         drop(held);
+    }
+
+    fn embeddings_config(url: String) -> config::Config {
+        let mut backend = backend_at("emb", url);
+        backend.operations = [(
+            "embed".to_string(),
+            config::Operation {
+                method: "POST".to_string(),
+                path: "/v1/embeddings".to_string(),
+                protocol: config::Protocol::Embeddings,
+            },
+        )]
+        .into_iter()
+        .collect();
+        let mut model = model_on("vec", "emb", None);
+        model.operation = "embed".to_string();
+        let mut config = config::Config::default();
+        config.backends.insert("emb".to_string(), backend);
+        config.models.insert("vec".to_string(), model);
+        config
+    }
+
+    fn embeddings_spec() -> crate::command::CommandSpec {
+        crate::command::CommandSpec {
+            path: vec!["embed".to_string()],
+            description: String::new(),
+            model: "vec".to_string(),
+            input: crate::command::InputMode::Stdin,
+            prompt: "{{ input }}".to_string(),
+            args: std::collections::BTreeMap::new(),
+            output: crate::output::OutputSpec {
+                format: crate::output::Format::Json,
+                ..crate::output::OutputSpec::default()
+            },
+            schemas: std::collections::BTreeMap::new(),
+            partials: std::collections::BTreeMap::new(),
+            system: None,
+            examples: Vec::new(),
+            generation: None,
+            file: std::path::PathBuf::from("embed.md"),
+        }
+    }
+
+    /// An embeddings operation sends `{model, input}` and answers with the
+    /// vector as the JSON document.
+    #[test]
+    fn an_embeddings_command_sends_the_input_and_answers_with_the_vector() {
+        let (url, server, body) =
+            stub_backend_capturing_body(r#"{"data":[{"embedding":[0.5,-1.0]}]}"#);
+        let config = embeddings_config(url);
+        let spec = embeddings_spec();
+        let mut record = crate::stats::Record::new(&spec, "vec");
+
+        let output = execute_test_case(
+            &spec,
+            &config,
+            "vec",
+            &std::collections::BTreeMap::new(),
+            "café",
+            &|_: &str| None,
+            log::Logger::new(log::Level::Error),
+            &mut record,
+        )
+        .expect("the vector must come back");
+
+        assert_eq!(output, "[0.5,-1.0]");
+        let sent: serde_json::Value =
+            serde_json::from_slice(&body.recv().expect("the body")).expect("JSON body");
+        assert_eq!(
+            sent,
+            serde_json::json!({"model": "vec-underlying", "input": "café"})
+        );
+        server.join().expect("stub thread");
+    }
+
+    /// A key the embeddings protocol cannot honour is refused before any
+    /// request, naming the command file and the model.
+    #[test]
+    fn an_embeddings_command_declaring_a_chat_only_key_is_rejected() {
+        let config = embeddings_config("http://127.0.0.1:9".to_string());
+        let mut with_system = embeddings_spec();
+        with_system.system = Some("be brief".to_string());
+        let mut as_text = embeddings_spec();
+        as_text.output.format = crate::output::Format::Text;
+        for spec in [with_system, as_text] {
+            let (model, backend) = config.resolve("vec").expect("the fixture must resolve");
+            let err = check_protocol(&spec, model, backend).expect_err("must be rejected");
+            assert_eq!(err.exit_code(), 2);
+            let message = err.to_string();
+            assert!(message.contains("embed.md"), "got: {message}");
+            assert!(message.contains("\"vec\""), "got: {message}");
+        }
     }
 
     #[test]

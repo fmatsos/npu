@@ -37,6 +37,13 @@
         },
         "path": {
           "type": "string"
+        },
+        "protocol": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Protocol"
+            }
+          ]
         }
       },
       "required": [
@@ -57,6 +64,18 @@
           "enum": [
             "auto"
           ],
+          "type": "string"
+        }
+      ]
+    },
+    "Protocol": {
+      "oneOf": [
+        {
+          "const": "chat",
+          "type": "string"
+        },
+        {
+          "const": "embeddings",
           "type": "string"
         }
       ]

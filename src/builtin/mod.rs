@@ -129,6 +129,7 @@ mod tests {
                         crate::config::Operation {
                             method: "POST".to_string(),
                             path: format!("/{op}"),
+                            protocol: crate::config::Protocol::Chat,
                         },
                     )
                 })

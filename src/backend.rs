@@ -1,11 +1,10 @@
-//! Protocol adapter for `openai-compatible`, `chat` operation only.
+//! Protocol adapter for `openai-compatible`: one request shape and one
+//! answer extraction per [`crate::config::Protocol`] (`chat`,
+//! `embeddings`), chosen by the operation a model calls.
 //!
 //! Architecture decision: the core embeds knowledge
 //! of the `OpenAI` **protocol** (request body shape, response extraction
-//! path), not business semantics. `chat` is the only operation currently
-//! supported; the other `OpenAI` operations (`embeddings`,
-//! `audio_transcriptions`, ...) will extend this adapter without touching
-//! the domain model (`config.rs`).
+//! path), not business semantics.
 
 use std::time::Duration;
 
@@ -98,21 +97,22 @@ pub fn build_request(
         headers,
         generation,
     } = *request;
-    let operation = backend.operations.get(&model.operation).ok_or_else(|| {
-        crate::Error::Config(crate::error::ConfigError::bare(
-            Some(&backend.id),
-            format!(
-                "backend \"{}\" does not expose operation \"{}\" (available operations: {})",
-                backend.id,
-                model.operation,
-                crate::error::format_available(backend.operations.keys())
-            ),
-        ))
-    })?;
+    let operation = backend.operation_for(model)?;
 
     let url = join_url(base_url, &operation.path);
-    let schema = schema.filter(|_| backend.structured_output);
-    let body = build_chat_request(&model.model, messages, generation, schema);
+    let body = match operation.protocol {
+        crate::config::Protocol::Chat => {
+            let schema = schema.filter(|_| backend.structured_output);
+            build_chat_request(&model.model, messages, generation, schema)
+        }
+        // The rendered body is the one text embedded: an embeddings command
+        // declares no system message and no examples (`exec::check_protocol`),
+        // and the protocol has no sampling knob nor `response_format`.
+        crate::config::Protocol::Embeddings => serde_json::json!({
+            "model": model.model,
+            "input": messages.last().map_or("", |message| message.content.as_str()),
+        }),
+    };
 
     Ok(PreparedRequest {
         url,
@@ -146,17 +146,7 @@ pub fn chat(
         headers,
         generation,
     } = *request;
-    let operation = backend.operations.get(&model.operation).ok_or_else(|| {
-        crate::Error::Config(crate::error::ConfigError::bare(
-            Some(&backend.id),
-            format!(
-                "backend \"{}\" does not expose operation \"{}\" (available operations: {})",
-                backend.id,
-                model.operation,
-                crate::error::format_available(backend.operations.keys())
-            ),
-        ))
-    })?;
+    let operation = backend.operation_for(model)?;
 
     let PreparedRequest { url, body, .. } = build_request(backend, model, base_url, request)?;
     let mut body = body;
@@ -248,6 +238,7 @@ pub fn chat(
     handle_non_streamed_response(
         &backend.id,
         &url,
+        operation.protocol,
         status,
         &response_text,
         started.elapsed(),
@@ -259,9 +250,11 @@ pub fn chat(
 /// content/`finish_reason`/`usage` extraction and the "answered" info log.
 /// Split out of `chat` only to keep it under the crate's line-count lint —
 /// no behavior is different from what used to be inlined there.
+#[allow(clippy::too_many_arguments)]
 fn handle_non_streamed_response(
     backend_id: &str,
     url: &str,
+    protocol: crate::config::Protocol,
     status: ureq::http::StatusCode,
     response_text: &str,
     elapsed: std::time::Duration,
@@ -298,10 +291,24 @@ fn handle_non_streamed_response(
         ))
     })?;
 
-    let content = extract_chat_content(&response_json).ok_or_else(|| {
+    let (content, expected) = match protocol {
+        crate::config::Protocol::Chat => (
+            extract_chat_content(&response_json),
+            "choices[0].message.content",
+        ),
+        // The vector, as the JSON document the output contract validates.
+        crate::config::Protocol::Embeddings => (
+            response_json
+                .pointer("/data/0/embedding")
+                .filter(|embedding| embedding.is_array())
+                .map(Value::to_string),
+            "data[0].embedding",
+        ),
+    };
+    let content = content.ok_or_else(|| {
         backend_err(format!(
             "response from backend \"{backend_id}\" ({url}) has no usable content (expected \
-             choices[0].message.content); body received: {}",
+             {expected}); body received: {}",
             truncate(response_text, ERROR_BODY_TRUNCATE_AT)
         ))
     })?;
@@ -1043,6 +1050,7 @@ mod tests {
                 Operation {
                     method: "POST".to_string(),
                     path: "/v1/chat/completions".to_string(),
+                    protocol: crate::config::Protocol::Chat,
                 },
             )]
             .into_iter()

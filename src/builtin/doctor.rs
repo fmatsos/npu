@@ -264,7 +264,17 @@ fn check_commands_model(
         .map(|spec| {
             let path = spec.path.join("/");
             let status = if config.models.contains_key(&spec.model) {
-                Status::Ok
+                // An unresolved backend is the model check's failure, not
+                // this command's.
+                let checked = config
+                    .resolve(&spec.model)
+                    .map_or(Ok(()), |(model, backend)| {
+                        crate::exec::check_protocol(spec, model, backend)
+                    });
+                match checked {
+                    Ok(()) => Status::Ok,
+                    Err(err) => Status::Failed(err.to_string()),
+                }
             } else {
                 Status::Failed(format!(
                     "model \"{}\" not found (referenced by command \"{path}\"; available \

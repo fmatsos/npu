@@ -40,6 +40,11 @@ max_tokens = 512
 | `fallback` | no | another model `id`, retried once on a backend failure |
 | `[generation]` | no | `temperature`, `max_tokens`, `seed`, `top_p`, `stop`, `[generation.extra]` |
 
+A model whose operation has `protocol = "embeddings"` takes no `fallback` and
+no `[generation]`, and a fallback must speak the same protocol as its model
+(rejected at load time). Its commands declare `format = "json"`: the answer
+is the vector.
+
 `id` and `model` are different things on purpose: `id` is the stable alias
 your commands reference, `model` is whatever the server happens to call the
 weights today. Swapping the weights is then a one-line edit that no command

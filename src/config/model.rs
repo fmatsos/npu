@@ -60,6 +60,17 @@ pub struct Generation {
 }
 
 impl Generation {
+    /// Whether no key at all is declared.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.temperature.is_none()
+            && self.max_tokens.is_none()
+            && self.seed.is_none()
+            && self.top_p.is_none()
+            && self.stop.is_none()
+            && self.extra.is_none()
+    }
+
     /// Merges `command` (a command's own `[generation]` override, if any)
     /// onto `model`'s: the ONLY field-by-field merge in the project — an
     /// explicit, documented exception to "replacement, never merge"
@@ -247,6 +258,57 @@ pub struct Model {
     /// `npu backend tune` rewrites.
     #[serde(skip)]
     pub source: PathBuf,
+}
+
+/// Validates what a model's protocol allows: an `embeddings` model takes
+/// no `fallback` (two models' vectors cannot be compared) and no
+/// `[generation]` (there is nothing to sample), and a fallback must speak
+/// the same protocol as its primary. A protocol that does not resolve
+/// (`None`) is not judged here.
+pub(crate) fn validate_protocol(
+    model: &Model,
+    protocol: Option<super::Protocol>,
+    fallback_protocol: Option<super::Protocol>,
+    source: &Path,
+) -> crate::Result<()> {
+    let reject = |message: String| {
+        Err(crate::Error::Config(crate::error::ConfigError::in_file(
+            source,
+            Some(&model.id),
+            message,
+        )))
+    };
+    match protocol {
+        Some(super::Protocol::Embeddings) => {
+            if model.fallback.is_some() {
+                return reject(format!(
+                    "model \"{}\" calls an embeddings operation and declares a fallback: \
+                     vectors from two models cannot be compared, remove \"fallback\"",
+                    model.id
+                ));
+            }
+            if !model.generation.is_empty() {
+                return reject(format!(
+                    "model \"{}\" calls an embeddings operation, which samples nothing: \
+                     remove its [generation] table",
+                    model.id
+                ));
+            }
+        }
+        Some(super::Protocol::Chat) | None => {}
+    }
+    if let (Some(protocol), Some(fallback_protocol)) = (protocol, fallback_protocol)
+        && protocol != fallback_protocol
+    {
+        return reject(format!(
+            "model \"{}\" speaks {} but its fallback \"{}\" speaks {}",
+            model.id,
+            protocol.as_str(),
+            model.fallback.as_deref().unwrap_or_default(),
+            fallback_protocol.as_str()
+        ));
+    }
+    Ok(())
 }
 
 /// Validates a model's `fallback`: it must name another loaded model.
