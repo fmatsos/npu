@@ -39,6 +39,7 @@ anything written to a pipe or a file.
 - [`npu --version`](#npu-version)
 - [`npu update`](#npu-update)
 - [Verbosity](#verbosity)
+- [Execution statistics](#execution-statistics)
 - [Degraded mode](#degraded-mode)
 
 ---
@@ -871,6 +872,41 @@ carriage return, and `--verbose error` means silence. Indicators never touch std
 
 The name `verbose` and the short letter `-v` are consequently reserved: a command declaring
 `[args.verbose]` or `short = "v"` is rejected at load time, naming the argument.
+
+---
+
+## Execution statistics
+
+With `NPU_STATS_FILE` set to a path, every run of a configured command appends one JSON line to
+that file, created if needed: from the CLI, from [`npu config test`](testing.md) (one line per
+run of a case) and from [`npu mcp serve`](mcp.md) (one line per tool call). A `--dry-run` sends no
+request and writes nothing.
+
+```json
+{"timestamp_ms":1790000000000,"command":"classify","model_requested":"qwen-npu","model_answered":"qwen-gpu","fallback_used":true,"backend":"ovms-gpu","duration_ms":1840,"prompt_tokens":212,"completion_tokens":14,"finish_reason":"stop","exit_code":0}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `timestamp_ms` | when the run started, in milliseconds since the Unix epoch |
+| `command` | the command path, segments joined by `/` |
+| `case` | the `config test` case name; absent outside `config test` |
+| `model_requested` | the model the command (or `--model`) named |
+| `model_answered` | the model that answered: the fallback, when it took over |
+| `fallback_used` | whether the fallback answered |
+| `backend` | the backend that answered, or the requested model's backend when none did |
+| `duration_ms` | time spent reaching the backend and waiting for the answer, fallback included |
+| `prompt_tokens`, `completion_tokens` | the backend's `usage`, when it reports one |
+| `finish_reason` | the backend's `finish_reason`, when it reports one |
+| `exit_code` | the invocation's exit code |
+
+A field the run never got to know is `null`: a run that failed before reaching the backend has no
+`backend`, one whose backend failed has no `model_answered`. A record never holds the prompt, the
+answer or a header value.
+
+The line is appended after the answer is written, in a single write, so concurrent runs sharing a
+file do not interleave. A file that cannot be written is a warning on stderr: the exit code and
+stdout stay what they would have been.
 
 ---
 

@@ -44,3 +44,5 @@ are counted after the command's output contract, and are zero if no run produced
 output. The runner finishes the suite when expectations fail (exit `4`). Malformed cases
 (exit `2`) and backend errors (exit `3`) stop the suite with empty stdout. A dry run prints
 the rendered messages for each case and never contacts the backend.
+With `NPU_STATS_FILE` set, every run of a case also appends a
+[statistics record](cli.md#execution-statistics) carrying the case name.

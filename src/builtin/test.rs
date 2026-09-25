@@ -421,7 +421,9 @@ pub(crate) fn run(
         let mut message = None;
         for _ in 0..repeat {
             let model = model_override.unwrap_or(&case.command.model);
-            match crate::exec::execute_test_case(
+            let mut record = crate::stats::Record::new(case.command, model);
+            record.case = Some(case.name.clone());
+            let result = crate::exec::execute_test_case(
                 case.command,
                 config,
                 model,
@@ -429,7 +431,11 @@ pub(crate) fn run(
                 &case.input,
                 env,
                 logger,
-            ) {
+                &mut record,
+            );
+            record.finish(&result);
+            crate::stats::append(env, &record, logger);
+            match result {
                 Ok(output) => {
                     outputs.insert(output.clone());
                     if case.expect.exit_code != 0 {

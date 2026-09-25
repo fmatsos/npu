@@ -22,6 +22,7 @@ pub mod progress;
 pub mod prompt;
 pub mod runtime;
 pub mod scope;
+mod stats;
 pub mod style;
 #[cfg(feature = "hardware-tooling")]
 pub mod tune;

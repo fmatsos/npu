@@ -286,8 +286,20 @@ fn spawn_stub_server_with_finish_reason(
 /// waits for it to finish and returns its complete output (code, stdout,
 /// stderr).
 fn run_npu(scope: &Path, args: &[&str], stdin_data: &str) -> Output {
+    run_npu_with_env(scope, args, stdin_data, &[])
+}
+
+/// [`run_npu`] with extra variables set on the child.
+fn run_npu_with_env(
+    scope: &Path,
+    args: &[&str],
+    stdin_data: &str,
+    vars: &[(&str, &Path)],
+) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_npu"))
         .args(args)
+        .env_remove("NPU_STATS_FILE")
+        .envs(vars.iter().copied())
         .current_dir(scope)
         // Configuration scope isolation: only
         // <scope>/.npu (via the current directory) must be visible. `HOME`
@@ -779,4 +791,46 @@ fn extract_writes_the_pointed_value_and_a_missing_one_fails_with_exit_code_four(
             assert!(stderr.contains(pointer), "must name the pointer: {stderr}");
         }
     }
+}
+
+/// `NPU_STATS_FILE` gets one JSON line per invocation, a failed one
+/// included; a file that cannot be written changes neither the exit code
+/// nor stdout.
+#[test]
+fn stats_file_gets_one_line_per_invocation_and_an_unwritable_one_changes_nothing() {
+    let scope = fixture_scope("stats");
+    let stats = scope.join("stats.jsonl");
+    for (content, code) in [("{\"category\": \"bug\"}", 0), ("not JSON", 4)] {
+        let (addr, server) = spawn_stub_server(content.to_string());
+        write_scope(&scope, addr, "format = \"json\"");
+        let output = run_npu_with_env(&scope, &["e2e-cmd"], "x", &[("NPU_STATS_FILE", &stats)]);
+        server.join().expect("the server thread must not panic");
+        assert_eq!(output.status.code(), Some(code));
+    }
+    let text = std::fs::read_to_string(&stats).expect("the stats file was written");
+    let records: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each line is one JSON document"))
+        .collect();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0]["command"], "e2e-cmd");
+    assert_eq!(records[0]["model_requested"], "test-model");
+    assert_eq!(records[0]["model_answered"], "test-model");
+    assert_eq!(records[0]["backend"], "stub");
+    assert_eq!(records[0]["fallback_used"], false);
+    assert_eq!(records[0]["exit_code"], 0);
+    assert!(records[0]["duration_ms"].is_u64());
+    assert_eq!(records[1]["exit_code"], 4);
+
+    let (addr, server) = spawn_stub_server("{\"category\": \"bug\"}".to_string());
+    write_scope(&scope, addr, "format = \"json\"");
+    // A directory cannot be opened for appending.
+    let output = run_npu_with_env(&scope, &["e2e-cmd"], "x", &[("NPU_STATS_FILE", &scope)]);
+    server.join().expect("the server thread must not panic");
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"category\":\"bug\"}\n"
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("NPU_STATS_FILE"));
 }

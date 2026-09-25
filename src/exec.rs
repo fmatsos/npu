@@ -423,6 +423,7 @@ fn prepare_command<'a>(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_prepared(
     spec: &crate::command::CommandSpec,
     config: &crate::config::Config,
@@ -430,6 +431,7 @@ fn run_prepared(
     env: &dyn Fn(&str) -> Option<String>,
     logger: crate::log::Logger,
     stream: Option<TokenSink<'_>>,
+    record: &mut crate::stats::Record,
 ) -> crate::Result<(String, String, String)> {
     let ask = Ask {
         messages: &prepared.messages,
@@ -437,8 +439,23 @@ fn run_prepared(
         stream,
         command_generation: spec.generation.as_ref(),
     };
-    let (answer, answered_by) =
-        chat_with_fallback(config, prepared.model, prepared.backend, &ask, env, logger)?;
+    record.backend = Some(prepared.backend.id.clone());
+    let started = std::time::Instant::now();
+    let answered = chat_with_fallback(config, prepared.model, prepared.backend, &ask, env, logger);
+    record.duration_ms = Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+    let (answer, answered_by) = answered?;
+    let fallback_used = answered_by != prepared.model.id;
+    if fallback_used {
+        record.backend = config
+            .resolve(&answered_by)
+            .ok()
+            .map(|(_, backend)| backend.id.clone());
+    }
+    record.model_answered = Some(answered_by.clone());
+    record.fallback_used = Some(fallback_used);
+    record.finish_reason.clone_from(&answer.finish_reason);
+    record.prompt_tokens = answer.usage.as_ref().map(|usage| usage.prompt_tokens);
+    record.completion_tokens = answer.usage.as_ref().map(|usage| usage.completion_tokens);
     reject_truncation(&answer, &answered_by, spec, config, prepared.model)?;
     let raw = strip_reasoning_and_log(&answer.content, spec.output.strip_reasoning, logger);
     let output = crate::output::finalize(&spec.output, &raw, &spec.file)?;
@@ -477,6 +494,7 @@ pub(crate) fn execute_test_case(
     input: &str,
     env: &dyn Fn(&str) -> Option<String>,
     logger: crate::log::Logger,
+    record: &mut crate::stats::Record,
 ) -> crate::Result<String> {
     let prepared = prepare_command(
         spec,
@@ -488,7 +506,7 @@ pub(crate) fn execute_test_case(
         logger,
         false,
     )?;
-    run_prepared(spec, config, &prepared, env, logger, None).map(|(_, output, _)| output)
+    run_prepared(spec, config, &prepared, env, logger, None, record).map(|(_, output, _)| output)
 }
 
 /// Runs a configured command for a non-CLI caller, without writing to stdout.
@@ -500,7 +518,8 @@ pub(crate) fn execute_mcp_command(
     logger: crate::log::Logger,
 ) -> crate::Result<String> {
     let env = |name: &str| std::env::var(name).ok();
-    let prepared = prepare_command(
+    let mut record = crate::stats::Record::new(spec, &spec.model);
+    let result = prepare_command(
         spec,
         config,
         &spec.model,
@@ -509,8 +528,14 @@ pub(crate) fn execute_mcp_command(
         || Ok(input.to_string()),
         logger,
         true,
-    )?;
-    run_prepared(spec, config, &prepared, &env, logger, None).map(|(_, output, _)| output)
+    )
+    .and_then(|prepared| {
+        run_prepared(spec, config, &prepared, &env, logger, None, &mut record)
+            .map(|(_, output, _)| output)
+    });
+    record.finish(&result);
+    crate::stats::append(&env, &record, logger);
+    result
 }
 
 /// Executes the pipeline of an already-resolved BUSINESS command (`spec`),
@@ -546,13 +571,52 @@ pub(crate) fn execute_business_command(
     ) -> crate::Result<String>,
     stdout_is_terminal: bool,
 ) -> crate::Result<()> {
-    let dry_run = leaf_matches.get_flag("dry-run");
     // `--model` is applied BEFORE resolving and BEFORE reading the input: an
     // unknown override must fail exactly like an unknown model in the
     // command file would, with the network and the input never touched.
     let model_id: &str = leaf_matches
         .get_one::<String>("model")
         .map_or(spec.model.as_str(), String::as_str);
+    let mut record = crate::stats::Record::new(spec, model_id);
+    let result = run_business_command(
+        spec,
+        config,
+        leaf_matches,
+        model_id,
+        logger,
+        env,
+        read_input,
+        stdout_is_terminal,
+        &mut record,
+    );
+    // A dry run sends no request: there is nothing to record.
+    if !leaf_matches.get_flag("dry-run") {
+        // The answer is out before the record is: a slow or failing stats
+        // file never delays or alters what a pipe reads.
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        record.finish(&result);
+        crate::stats::append(env, &record, logger);
+    }
+    result
+}
+
+/// [`execute_business_command`] without the statistics record around it.
+#[allow(clippy::too_many_arguments)]
+fn run_business_command(
+    spec: &crate::command::CommandSpec,
+    config: &crate::config::Config,
+    leaf_matches: &clap::ArgMatches,
+    model_id: &str,
+    logger: crate::log::Logger,
+    env: &dyn Fn(&str) -> Option<String>,
+    read_input: &dyn Fn(
+        &crate::command::InputMode,
+        Option<&std::path::Path>,
+    ) -> crate::Result<String>,
+    stdout_is_terminal: bool,
+    record: &mut crate::stats::Record,
+) -> crate::Result<()> {
+    let dry_run = leaf_matches.get_flag("dry-run");
     logger.info(&format!(
         "command \"{}\" -> model \"{}\" from {}{}",
         spec.path.join("/"),
@@ -644,6 +708,7 @@ pub(crate) fn execute_business_command(
         env,
         logger,
         streaming.then_some(&print_token as TokenSink<'_>),
+        record,
     )?;
     logger.info(&format!(
         "output contract honoured ({}): {} characters written to stdout",
@@ -948,6 +1013,69 @@ mod tests {
 
         assert_eq!(output.content, "from the fallback");
         assert_eq!(answered_by, "big");
+        primary_server.join().expect("primary stub thread");
+        fallback_server.join().expect("fallback stub thread");
+    }
+
+    /// The statistics record names the model and backend that ANSWERED,
+    /// and carries the answer's usage and finish reason.
+    #[test]
+    fn the_stats_record_names_the_fallback_that_answered_and_its_usage() {
+        let (primary_url, primary_server) = stub_backend("500 Internal Server Error", "{}");
+        let (fallback_url, fallback_server) = stub_backend(
+            "200 OK",
+            r#"{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+                "usage":{"prompt_tokens":7,"completion_tokens":2}}"#,
+        );
+        let mut config = config::Config::default();
+        config
+            .backends
+            .insert("npu".to_string(), backend_at("npu", primary_url));
+        config
+            .backends
+            .insert("gpu".to_string(), backend_at("gpu", fallback_url));
+        config
+            .models
+            .insert("small".to_string(), model_on("small", "npu", Some("big")));
+        config
+            .models
+            .insert("big".to_string(), model_on("big", "gpu", None));
+        let spec = crate::command::CommandSpec {
+            path: vec!["x".to_string()],
+            description: String::new(),
+            model: "small".to_string(),
+            input: crate::command::InputMode::Stdin,
+            prompt: "{{ input }}".to_string(),
+            args: std::collections::BTreeMap::new(),
+            output: crate::output::OutputSpec::default(),
+            schemas: std::collections::BTreeMap::new(),
+            partials: std::collections::BTreeMap::new(),
+            system: None,
+            examples: Vec::new(),
+            generation: None,
+            file: std::path::PathBuf::from("x.md"),
+        };
+        let mut record = crate::stats::Record::new(&spec, "small");
+
+        execute_test_case(
+            &spec,
+            &config,
+            "small",
+            &std::collections::BTreeMap::new(),
+            "hello",
+            &|_: &str| None,
+            log::Logger::new(log::Level::Error),
+            &mut record,
+        )
+        .expect("the fallback must answer");
+
+        assert_eq!(record.model_answered.as_deref(), Some("big"));
+        assert_eq!(record.fallback_used, Some(true));
+        assert_eq!(record.backend.as_deref(), Some("gpu"));
+        assert_eq!(record.prompt_tokens, Some(7));
+        assert_eq!(record.completion_tokens, Some(2));
+        assert_eq!(record.finish_reason.as_deref(), Some("stop"));
+        assert!(record.duration_ms.is_some());
         primary_server.join().expect("primary stub thread");
         fallback_server.join().expect("fallback stub thread");
     }
