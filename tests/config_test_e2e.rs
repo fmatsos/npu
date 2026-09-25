@@ -307,13 +307,17 @@ fn local_case_replaces_same_named_user_case() {
         "args = { kind = \"ticket\" }\ninput = \"other\"\n[expect]\ncontains = [\"other\"]\n",
     );
     std::fs::rename(user.join(".npu"), user.join("npu")).expect("make XDG user scope");
-    let result = Command::new(env!("CARGO_BIN_EXE_npu"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_npu"));
+    command
         .args(["config", "test", "--dry-run", "--json"])
         .current_dir(&root)
-        .env("HOME", &root)
-        .env("XDG_CONFIG_HOME", &user)
-        .output()
-        .expect("run npu");
+        .env("HOME", &root);
+    if cfg!(windows) {
+        command.env("APPDATA", &user).env_remove("XDG_CONFIG_HOME");
+    } else {
+        command.env("XDG_CONFIG_HOME", &user).env_remove("APPDATA");
+    }
+    let result = command.output().expect("run npu");
     assert_eq!(
         result.status.code(),
         Some(0),
