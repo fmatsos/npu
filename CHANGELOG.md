@@ -4,6 +4,16 @@ Every notable change to `npu`, newest first. Versions follow
 [semantic versioning](https://semver.org); pre-1.0, a breaking change bumps
 the minor.
 
+## [0.7.1] - 2026-09-25
+
+### Fixed
+
+- The MCP pipeline error-envelope integration test now reaches the configured-command pipeline
+  instead of passing an undeclared CLI argument and testing clap's usage envelope
+  ([`d3856e6`](https://github.com/fmatsos/npu/commit/d3856e6ca8b1873751f1a0e33c236e0a7fa7771d))
+
+**Full changelog**: [`v0.7.0...v0.7.1`](https://github.com/fmatsos/npu/compare/v0.7.0...v0.7.1)
+
 ## [0.7.0] - 2026-09-25
 
 ### Added
