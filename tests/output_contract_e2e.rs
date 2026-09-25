@@ -748,3 +748,35 @@ fn truncated_answer_with_allow_truncated_succeeds_end_to_end() {
     let stdout = String::from_utf8(output.stdout).expect("stdout must be valid UTF-8");
     assert_eq!(stdout, "truncated ans\n");
 }
+
+/// `extract` writes the pointed value: a string bare, anything else as
+/// compact JSON; a pointer the document lacks is exit 4 with nothing on
+/// stdout.
+#[test]
+fn extract_writes_the_pointed_value_and_a_missing_one_fails_with_exit_code_four() {
+    let document = "{\"category\": \"bug\", \"tags\": [\"a\"]}";
+    for (pointer, expected) in [
+        ("/category", Some("bug\n")),
+        ("/tags", Some("[\"a\"]\n")),
+        ("/missing", None),
+    ] {
+        let (addr, server) = spawn_stub_server(document.to_string());
+        let scope = fixture_scope("extract");
+        write_scope(
+            &scope,
+            addr,
+            &format!("format = \"json\"\nextract = \"{pointer}\""),
+        );
+        let output = run_npu(&scope, &["e2e-cmd"], "whatever");
+        server.join().expect("the server thread must not panic");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if let Some(stdout) = expected {
+            assert!(output.status.success(), "{pointer}: stderr: {stderr}");
+            assert_eq!(String::from_utf8_lossy(&output.stdout), stdout);
+        } else {
+            assert_eq!(output.status.code(), Some(4), "{pointer}: stderr: {stderr}");
+            assert!(output.stdout.is_empty());
+            assert!(stderr.contains(pointer), "must name the pointer: {stderr}");
+        }
+    }
+}

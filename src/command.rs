@@ -249,6 +249,10 @@ struct RawOutputSpec {
     /// (see `exec::execute_business_command`). `false` by default.
     #[serde(default)]
     strip_reasoning: bool,
+    /// A JSON pointer: stdout gets the pointed value instead of the whole
+    /// document. JSON only.
+    #[serde(default)]
+    extract: Option<String>,
 }
 
 /// `[input]` section of the frontmatter.
@@ -784,12 +788,20 @@ fn convert_output(
                      format = \"json\"",
                 ));
             }
+            if raw.extract.is_some() {
+                return Err(crate::Error::config(
+                    "[output]: \"extract\" only makes sense with format = \"json\" (a JSON \
+                     pointer cannot select anything in plain text); remove \"extract\" or set \
+                     format = \"json\"",
+                ));
+            }
             Ok(crate::output::OutputSpec {
                 format: crate::output::Format::Text,
                 schema: None,
                 max_lines: raw.max_lines,
                 allow_truncated: raw.allow_truncated,
                 strip_reasoning: raw.strip_reasoning,
+                extract: None,
             })
         }
         crate::output::Format::Json => {
@@ -799,6 +811,14 @@ fn convert_output(
                      command declares format = \"json\", counted in structure, not lines); \
                      remove \"max_lines\" or set format = \"text\"",
                 ));
+            }
+            if let Some(pointer) = raw.extract.as_deref()
+                && !pointer.starts_with('/')
+            {
+                return Err(crate::Error::config(format!(
+                    "[output]: extract = \"{pointer}\" is not a JSON pointer to a value \
+                     inside the document; it must start with \"/\", e.g. \"/category\""
+                )));
             }
             let schema = raw
                 .schema
@@ -810,6 +830,7 @@ fn convert_output(
                 max_lines: None,
                 allow_truncated: raw.allow_truncated,
                 strip_reasoning: raw.strip_reasoning,
+                extract: raw.extract,
             })
         }
     }
@@ -2246,6 +2267,25 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("max_lines"), "got: {message}");
         assert!(message.contains("json"), "got: {message}");
+    }
+
+    #[test]
+    fn output_extract_is_rejected_with_text_or_without_a_leading_slash() {
+        for output in [
+            "format = \"text\"\nextract = \"/a\"",
+            "format = \"json\"\nextract = \"a\"",
+            "format = \"json\"\nextract = \"\"",
+        ] {
+            let source = format!("---\nmodel = \"qwen-fast\"\n\n[output]\n{output}\n---\nprompt\n");
+            let err = parse(&source, vec!["x".to_string()], &test_scope_root())
+                .expect_err("an unusable extract must be rejected at load time");
+            assert!(matches!(err, crate::Error::Config(_)), "{output}");
+            assert!(err.to_string().contains("extract"), "{output}: {err}");
+        }
+        let source = "---\nmodel = \"qwen-fast\"\n\n[output]\nformat = \"json\"\nextract = \"/a/0\"\n\
+             ---\nprompt\n";
+        let spec = parse(source, vec!["x".to_string()], &test_scope_root()).expect("valid");
+        assert_eq!(spec.output.extract.as_deref(), Some("/a/0"));
     }
 
     #[test]

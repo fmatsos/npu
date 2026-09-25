@@ -497,6 +497,7 @@ mod tests {
             max_lines: None,
             allow_truncated: false,
             strip_reasoning: false,
+            extract: None,
         };
         let config = crate::config::Config::default();
 
@@ -724,6 +725,7 @@ mod tests {
                 max_lines: None,
                 allow_truncated: false,
                 strip_reasoning: false,
+                extract: None,
             },
             schemas: std::collections::BTreeMap::new(),
             partials: std::collections::BTreeMap::new(),
@@ -763,6 +765,7 @@ mod tests {
             max_lines: Some(1),
             allow_truncated: false,
             strip_reasoning: false,
+            extract: None,
         };
 
         let json_text =

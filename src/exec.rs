@@ -650,6 +650,10 @@ pub(crate) fn execute_business_command(
         spec.output.format.as_str(),
         output.chars().count()
     ));
+    let output = match spec.output.extract.as_deref() {
+        Some(pointer) => crate::output::extract(pointer, &output, &spec.file)?,
+        None => output,
+    };
 
     write_final_output(
         started.get(),

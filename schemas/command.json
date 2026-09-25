@@ -122,6 +122,9 @@
           "default": false,
           "type": "boolean"
         },
+        "extract": {
+          "type": "string"
+        },
         "format": {
           "$ref": "#/definitions/Format"
         },

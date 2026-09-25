@@ -74,6 +74,10 @@ pub struct OutputSpec {
     /// answer before the rest of the pipeline (fences, parsing, schema, or
     /// trim/`max_lines`) runs. `false` by default. See [`strip_reasoning`].
     pub strip_reasoning: bool,
+    /// A JSON pointer (`format = "json"` only, starting with `/`): the CLI
+    /// writes the pointed value instead of the whole document. See
+    /// [`extract`].
+    pub extract: Option<String>,
 }
 
 /// Maximum number of characters kept in the response excerpt quoted by a
@@ -287,6 +291,28 @@ fn finalize_json(schema: Option<&Path>, raw: &str, command_file: &Path) -> crate
 
     serde_json::to_string(&value)
         .map_err(|err| crate::Error::output(format!("JSON output serialization failed: {err}")))
+}
+
+/// The value `pointer` selects in `output`, the compact document
+/// [`finalize`] returned: a string bare, anything else as compact JSON.
+///
+/// Applied by the CLI only, after the whole document was validated: an MCP
+/// client's `structuredContent` must keep matching the advertised output
+/// schema, and a test case's pointers address the whole document. A
+/// pointer the document does not resolve is the model's failure, not the
+/// configuration's: `Error::Output`.
+pub fn extract(pointer: &str, output: &str, command_file: &Path) -> crate::Result<String> {
+    use crate::error::InFile;
+    let value: serde_json::Value = serde_json::from_str(output)
+        .map_err(|err| crate::Error::output(format!("JSON output could not be re-read: {err}")))?;
+    match value.pointer(pointer) {
+        Some(serde_json::Value::String(text)) => Ok(text.clone()),
+        Some(other) => Ok(other.to_string()),
+        None => Err(crate::Error::output(format!(
+            "[output].extract = \"{pointer}\": the model's document has no value there"
+        )))
+        .in_file(command_file),
+    }
 }
 
 /// Compiles the JSON schema located at `path` into a reusable validator.
@@ -540,6 +566,7 @@ mod tests {
             max_lines: None,
             allow_truncated: false,
             strip_reasoning: false,
+            extract: None,
         };
         let out =
             finalize(&spec, "  \n  hello world  \n\n", &test_command_file()).expect("must succeed");
@@ -554,6 +581,7 @@ mod tests {
             max_lines: Some(2),
             allow_truncated: false,
             strip_reasoning: false,
+            extract: None,
         };
         let out = finalize(&spec, "line 1\nline 2", &test_command_file()).expect("must succeed");
         assert_eq!(out, "line 1\nline 2");
@@ -567,6 +595,7 @@ mod tests {
             max_lines: Some(1),
             allow_truncated: false,
             strip_reasoning: false,
+            extract: None,
         };
         let err = finalize(&spec, "line 1\nline 2", &test_command_file()).expect_err("must fail");
         assert!(matches!(err, crate::Error::Output(_)));
@@ -580,6 +609,7 @@ mod tests {
             max_lines: Some(2),
             allow_truncated: false,
             strip_reasoning: false,
+            extract: None,
         };
         // 2 non-empty lines, 2 empty lines (one of which has only
         // whitespace): must not exceed max_lines = 2.
@@ -596,6 +626,7 @@ mod tests {
             max_lines: None,
             allow_truncated: false,
             strip_reasoning: false,
+            extract: None,
         };
         let out =
             finalize(&spec, "l1\nl2\nl3\nl4\nl5", &test_command_file()).expect("must succeed");
@@ -612,6 +643,7 @@ mod tests {
             max_lines: None,
             allow_truncated: false,
             strip_reasoning: false,
+            extract: None,
         };
         let out =
             finalize(&spec, "{\n  \"a\": 1\n}\n", &test_command_file()).expect("must succeed");
@@ -626,6 +658,7 @@ mod tests {
             max_lines: None,
             allow_truncated: false,
             strip_reasoning: false,
+            extract: None,
         };
         let out = finalize(
             &spec,
@@ -644,6 +677,7 @@ mod tests {
             max_lines: None,
             allow_truncated: false,
             strip_reasoning: false,
+            extract: None,
         };
         let err = finalize(&spec, "not JSON at all", &test_command_file()).expect_err("must fail");
         assert!(matches!(err, crate::Error::Output(_)));
@@ -667,6 +701,7 @@ mod tests {
             max_lines: None,
             allow_truncated: false,
             strip_reasoning: false,
+            extract: None,
         };
         // Emojis (4 bytes each) rather than "é" (2 bytes): with a 2-byte
         // step, a regression that sliced by byte index would have a
@@ -694,6 +729,7 @@ mod tests {
             max_lines: None,
             allow_truncated: false,
             strip_reasoning: false,
+            extract: None,
         };
         let out = finalize(
             &spec,
@@ -728,6 +764,7 @@ mod tests {
             max_lines: None,
             allow_truncated: false,
             strip_reasoning: false,
+            extract: None,
         };
         let out = finalize(
             &spec,
@@ -758,6 +795,7 @@ mod tests {
             max_lines: None,
             allow_truncated: false,
             strip_reasoning: false,
+            extract: None,
         };
         // "confidence" missing (required) AND "category" of the wrong type:
         // two distinct violations.
@@ -779,6 +817,7 @@ mod tests {
             max_lines: None,
             allow_truncated: false,
             strip_reasoning: false,
+            extract: None,
         };
         let err = finalize(&spec, "{\"a\": 1}", &test_command_file()).expect_err("must fail");
         assert!(
@@ -796,6 +835,7 @@ mod tests {
             max_lines: None,
             allow_truncated: false,
             strip_reasoning: false,
+            extract: None,
         };
         let err = finalize(&spec, "{\"a\": 1}", &test_command_file()).expect_err("must fail");
         assert!(
@@ -814,6 +854,7 @@ mod tests {
             max_lines: Some(0),
             allow_truncated: false,
             strip_reasoning: false,
+            extract: None,
         };
         let err = finalize(&spec, "one line", &test_command_file()).expect_err("must fail");
         assert!(matches!(err, crate::Error::Output(_)));

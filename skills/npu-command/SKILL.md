@@ -213,8 +213,12 @@ max_lines = 1                          # text only
   is content and is left alone. stdout gets the compact serialisation of the
   parsed value, so it is always valid JSON.
 - `max_lines` exceeded is a **failure** (exit `4`), never a silent truncation.
+- `extract = "/category"` (JSON only, a pointer starting with `/`) writes
+  that one value instead of the document — a string bare — after the whole
+  document passed the schema; a pointer the answer lacks is exit `4`. CLI
+  stdout only: MCP and `npu config test` see the whole document.
 - Rejected at load: `schema` with `format = "text"`, `max_lines` with
-  `format = "json"`, any unknown key.
+  `format = "json"`, `extract` with `format = "text"`, any unknown key.
 
 The schema is compiled only when the command actually runs, so a broken schema
 on a command nobody invokes does not break the rest of the CLI. `npu doctor`

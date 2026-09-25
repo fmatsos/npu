@@ -16,7 +16,8 @@ literal `"mcp.input"` property. It remains distinct from a configured `input` ar
 Unknown, missing, or incorrectly typed properties are rejected before a backend request.
 
 Successful calls return the finalized command output as text. JSON output is additionally
-returned in `structuredContent`. Pipeline failures have `isError: true` and a structured
+returned in `structuredContent`, always the whole document: `[output].extract` applies to the
+CLI only. Pipeline failures have `isError: true` and a structured
 error envelope in `structuredContent`. If configuration loading fails, discovery explains
 the error and recommends `npu doctor`; `tools/list` is empty. Restart the server after
 editing configuration.

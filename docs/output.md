@@ -45,11 +45,13 @@ schema = "schemas/classification.json"
 | `max_lines` | integer | none | text only |
 | `allow_truncated` | boolean | `false` | accept an answer cut short by `max_tokens`; see [Truncated answers](#truncated-answers) |
 | `strip_reasoning` | boolean | `false` | remove a leading `<think>...</think>` block; see [Reasoning models](#reasoning-models) |
+| `extract` | JSON pointer | none | JSON only; stdout gets one value; see [Extracting one value](#extracting-one-value) |
 
 Rejected at load time, naming the command file:
 
 - `schema` together with `format = "text"` — a schema means nothing for free text;
 - `max_lines` together with `format = "json"` — likewise;
+- `extract` together with `format = "text"`, or an `extract` not starting with `/`;
 - any unknown key under `[output]`.
 
 `format = "json"` **without** a schema is allowed: the response is then only checked for being
@@ -232,6 +234,29 @@ JSON whatever the model wrapped around it:
 ```sh
 cat ticket.md | npu classify | jq .category
 ```
+
+### Extracting one value
+
+A shell pipeline usually wants one value, not a document. `extract` names it with a JSON pointer:
+
+```toml
+[output]
+format = "json"
+schema = "classification"
+extract = "/category"
+```
+
+```sh
+category=$(cat ticket.md | npu classify)   # hardware, not {"category":"hardware",...}
+```
+
+The schema is still validated on the **whole** document; only then is the pointed value written:
+a string bare, without quotes, anything else as compact JSON. A pointer the document does not
+resolve is an output failure (exit `4`), naming the pointer.
+
+`extract` shapes the CLI's stdout only. An MCP client still receives the whole document, which
+is what the tool's advertised output schema describes, and the expectations of
+[`npu config test`](testing.md) address the whole document too.
 
 ---
 

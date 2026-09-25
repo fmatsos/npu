@@ -36,6 +36,7 @@ struct DescribeOutput<'a> {
     max_lines: Option<usize>,
     allow_truncated: bool,
     strip_reasoning: bool,
+    extract: Option<&'a str>,
 }
 
 /// Where a command comes from: the file that won, and the scope root it was
@@ -243,6 +244,7 @@ pub fn describe(
             max_lines: spec.output.max_lines,
             allow_truncated: spec.output.allow_truncated,
             strip_reasoning: spec.output.strip_reasoning,
+            extract: spec.output.extract.as_deref(),
         },
         system: spec.system.as_deref(),
         partials: spec
