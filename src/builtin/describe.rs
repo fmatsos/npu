@@ -139,6 +139,8 @@ struct Describe<'a> {
     /// The raw `system` template, or `null` when the command declares none
     /// — never resolved: `describe` documents the file, it does not run it.
     system: Option<&'a str>,
+    /// `[partials]`: each id mapped to the file it resolved to.
+    partials: std::collections::BTreeMap<&'a str, String>,
     /// Only the COUNT of `[[examples]]`: their content can carry business
     /// data an agent listing commands should not have to receive.
     examples: usize,
@@ -243,6 +245,11 @@ pub fn describe(
             strip_reasoning: spec.output.strip_reasoning,
         },
         system: spec.system.as_deref(),
+        partials: spec
+            .partials
+            .iter()
+            .map(|(id, path)| (id.as_str(), path.display().to_string()))
+            .collect(),
         examples: spec.examples.len(),
         generation: model.map(|model| {
             DescribeGeneration::from(&crate::config::Generation::merged(

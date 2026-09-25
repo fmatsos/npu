@@ -257,18 +257,20 @@ fn build_messages(
     args: &std::collections::BTreeMap<String, String>,
     env: &dyn Fn(&str) -> Option<String>,
     schemas: &std::collections::BTreeMap<String, String>,
+    partials: &std::collections::BTreeMap<String, String>,
 ) -> crate::Result<Vec<crate::backend::Message>> {
     let mut messages = Vec::with_capacity(1 + spec.examples.len() * 2 + 1);
     if let Some(system) = &spec.system {
-        let rendered = crate::prompt::render(system, "", args, env, schemas)?;
+        let rendered = crate::prompt::render(system, "", args, env, schemas, partials)?;
         messages.push(crate::backend::Message {
             role: "system".to_string(),
             content: rendered,
         });
     }
     for example in &spec.examples {
-        let user = crate::prompt::render(&example.user, "", args, env, schemas)?;
-        let assistant = crate::prompt::render(&example.assistant, "", args, env, schemas)?;
+        let user = crate::prompt::render(&example.user, "", args, env, schemas, partials)?;
+        let assistant =
+            crate::prompt::render(&example.assistant, "", args, env, schemas, partials)?;
         messages.push(crate::backend::Message {
             role: "user".to_string(),
             content: user,
@@ -375,13 +377,18 @@ fn prepare_command<'a>(
             Ok((id.clone(), document.to_string()))
         })
         .collect::<crate::Result<std::collections::BTreeMap<_, _>>>()?;
-    crate::prompt::preflight(&spec.prompt, args, env, &schemas)?;
+    let partials = spec
+        .partials
+        .iter()
+        .map(|(id, path)| Ok((id.clone(), crate::prompt::read_partial(path, &spec.file)?)))
+        .collect::<crate::Result<std::collections::BTreeMap<_, _>>>()?;
+    crate::prompt::preflight(&spec.prompt, args, env, &schemas, &partials)?;
     if let Some(system) = &spec.system {
-        crate::prompt::preflight(system, args, env, &schemas)?;
+        crate::prompt::preflight(system, args, env, &schemas, &partials)?;
     }
     for example in &spec.examples {
-        crate::prompt::preflight(&example.user, args, env, &schemas)?;
-        crate::prompt::preflight(&example.assistant, args, env, &schemas)?;
+        crate::prompt::preflight(&example.user, args, env, &schemas, &partials)?;
+        crate::prompt::preflight(&example.assistant, args, env, &schemas, &partials)?;
     }
     preflight_headers(config, model, backend, env)?;
     let mut resolved_args = args.clone();
@@ -399,8 +406,15 @@ fn prepare_command<'a>(
     }
     let input = read_input()?;
     logger.info(&format!("input: {} characters read", input.chars().count()));
-    let prompt = crate::prompt::render(&spec.prompt, &input, &resolved_args, env, &schemas)?;
-    let messages = build_messages(spec, &prompt, &resolved_args, env, &schemas)?;
+    let prompt = crate::prompt::render(
+        &spec.prompt,
+        &input,
+        &resolved_args,
+        env,
+        &schemas,
+        &partials,
+    )?;
+    let messages = build_messages(spec, &prompt, &resolved_args, env, &schemas, &partials)?;
     Ok(PreparedCommand {
         model,
         backend,
@@ -722,6 +736,7 @@ mod tests {
             args: std::collections::BTreeMap::new(),
             output: text_output_spec(),
             schemas: std::collections::BTreeMap::new(),
+            partials: std::collections::BTreeMap::new(),
             system: None,
             examples: Vec::new(),
             generation: None,
@@ -1008,6 +1023,7 @@ mod tests {
             args: std::collections::BTreeMap::new(),
             output: crate::output::OutputSpec::default(),
             schemas: std::collections::BTreeMap::new(),
+            partials: std::collections::BTreeMap::new(),
             system: None,
             examples: Vec::new(),
             generation: None,
@@ -1092,6 +1108,7 @@ mod tests {
             args: std::collections::BTreeMap::new(),
             output: crate::output::OutputSpec::default(),
             schemas: std::collections::BTreeMap::new(),
+            partials: std::collections::BTreeMap::new(),
             system: None,
             examples: Vec::new(),
             generation: None,
@@ -1150,6 +1167,7 @@ mod tests {
             args: std::collections::BTreeMap::new(),
             output: crate::output::OutputSpec::default(),
             schemas: std::collections::BTreeMap::new(),
+            partials: std::collections::BTreeMap::new(),
             system: None,
             examples: Vec::new(),
             generation: None,
@@ -1275,6 +1293,7 @@ mod tests {
             args: std::collections::BTreeMap::new(),
             output: crate::output::OutputSpec::default(),
             schemas: std::collections::BTreeMap::new(),
+            partials: std::collections::BTreeMap::new(),
             system: None,
             examples: Vec::new(),
             generation: None,
@@ -1335,6 +1354,7 @@ mod tests {
             args: std::collections::BTreeMap::new(),
             output: crate::output::OutputSpec::default(),
             schemas: std::collections::BTreeMap::new(),
+            partials: std::collections::BTreeMap::new(),
             system: Some("be terse".to_string()),
             examples: vec![crate::command::Example {
                 user: "ticket: printer on fire".to_string(),
@@ -1406,6 +1426,7 @@ mod tests {
             args: std::collections::BTreeMap::new(),
             output: crate::output::OutputSpec::default(),
             schemas: std::collections::BTreeMap::new(),
+            partials: std::collections::BTreeMap::new(),
             system: Some("{{ env.NPU_TEST_UNSET_SYSTEM_VAR }}".to_string()),
             examples: Vec::new(),
             generation: None,
@@ -1471,6 +1492,7 @@ mod tests {
             args: std::collections::BTreeMap::new(),
             output,
             schemas: std::collections::BTreeMap::new(),
+            partials: std::collections::BTreeMap::new(),
             system: None,
             examples: Vec::new(),
             generation: None,
@@ -1507,5 +1529,161 @@ mod tests {
         );
 
         server.join().expect("stub server thread");
+    }
+
+    fn partial_fixture(name: &str, files: &[(&str, &[u8])]) -> std::path::PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-fixtures")
+            .join(format!("exec-{name}-{n}"));
+        std::fs::create_dir_all(&dir).expect("fixture directory");
+        for (file, content) in files {
+            std::fs::write(dir.join(file), content).expect("fixture file");
+        }
+        dir
+    }
+
+    fn spec_with_partial(
+        partial: std::path::PathBuf,
+        prompt: &str,
+        system: Option<&str>,
+        examples: Vec<crate::command::Example>,
+    ) -> crate::command::CommandSpec {
+        crate::command::CommandSpec {
+            path: vec!["x".to_string()],
+            description: "desc x".to_string(),
+            model: "qwen-fast".to_string(),
+            input: crate::command::InputMode::Stdin,
+            prompt: prompt.to_string(),
+            args: std::collections::BTreeMap::new(),
+            output: crate::output::OutputSpec::default(),
+            schemas: std::collections::BTreeMap::new(),
+            partials: std::collections::BTreeMap::from([("style".to_string(), partial)]),
+            system: system.map(str::to_string),
+            examples,
+            generation: None,
+            file: std::path::PathBuf::from("commands/x.md"),
+        }
+    }
+
+    /// A partial is inserted verbatim wherever it is referenced: body,
+    /// `system` and an example turn alike.
+    #[test]
+    fn a_partial_is_inserted_in_the_body_the_system_and_an_example() {
+        let dir = partial_fixture("partial-ok", &[("style.md", b"Be terse.")]);
+        let (url, server, rx) = stub_backend_capturing_body(
+            r#"{"choices":[{"message":{"role":"assistant","content":"ok"}}]}"#,
+        );
+        let mut config = config::Config::default();
+        config
+            .backends
+            .insert("b".to_string(), backend_at("b", url));
+        config
+            .models
+            .insert("qwen-fast".to_string(), model_on("qwen-fast", "b", None));
+        let specs = vec![spec_with_partial(
+            dir.join("style.md"),
+            "{{ partials.style }} {{ input }}",
+            Some("{{ partials.style }}"),
+            vec![crate::command::Example {
+                user: "{{ partials.style }}".to_string(),
+                assistant: "ok".to_string(),
+            }],
+        )];
+        let cli = crate::cli::build_cli(&specs);
+        let matches = cli
+            .try_get_matches_from(["npu", "x"])
+            .expect("the command line must be accepted");
+        let (_, leaf_matches) = crate::cli::selected_path(&matches);
+        let read_input =
+            |_: &crate::command::InputMode, _: Option<&std::path::Path>| Ok("body".to_string());
+
+        execute_business_command(
+            &specs[0],
+            &config,
+            leaf_matches,
+            log::Logger::new(log::Level::Error),
+            &|_: &str| None,
+            &read_input,
+            false,
+        )
+        .expect("must succeed");
+
+        let captured = rx.recv().expect("the stub must report the captured body");
+        let body: serde_json::Value =
+            serde_json::from_slice(&captured).expect("the body must be JSON");
+        let contents: Vec<&str> = body["messages"]
+            .as_array()
+            .expect("messages array")
+            .iter()
+            .map(|message| message["content"].as_str().expect("text content"))
+            .collect();
+        assert_eq!(contents, ["Be terse.", "Be terse.", "ok", "Be terse. body"]);
+        server.join().expect("stub server thread");
+    }
+
+    /// A missing, non-UTF-8 or templated partial is a configuration error
+    /// raised BEFORE the input is read, naming the command file and the
+    /// partial file.
+    #[test]
+    #[allow(clippy::panic)] // the panic is the assertion: read_input must not run.
+    fn a_broken_partial_fails_before_read_input_naming_both_files() {
+        let dir = partial_fixture(
+            "partial-bad",
+            &[
+                ("templated.md", b"Hi {{ input }}"),
+                ("latin1.md", b"caf\xe9"),
+            ],
+        );
+        let mut config = config::Config::default();
+        config.backends.insert(
+            "b".to_string(),
+            backend_at("b", "http://127.0.0.1:9".to_string()),
+        );
+        config
+            .models
+            .insert("qwen-fast".to_string(), model_on("qwen-fast", "b", None));
+
+        for partial in [
+            dir.join("missing.md"),
+            dir.join("templated.md"),
+            dir.join("latin1.md"),
+        ] {
+            let specs = vec![spec_with_partial(
+                partial.clone(),
+                "{{ partials.style }}",
+                None,
+                Vec::new(),
+            )];
+            let cli = crate::cli::build_cli(&specs);
+            let matches = cli
+                .try_get_matches_from(["npu", "x"])
+                .expect("the command line must be accepted");
+            let (_, leaf_matches) = crate::cli::selected_path(&matches);
+            let read_input = |_: &crate::command::InputMode, _: Option<&std::path::Path>| {
+                panic!("read_input must not be called when a partial is broken")
+            };
+
+            let err = execute_business_command(
+                &specs[0],
+                &config,
+                leaf_matches,
+                log::Logger::new(log::Level::Error),
+                &|_: &str| None,
+                &read_input,
+                false,
+            )
+            .expect_err("a broken partial must be rejected");
+
+            assert!(matches!(err, Error::Config(_)));
+            let message = err.to_string();
+            assert!(message.contains("commands/x.md"), "got: {message}");
+            assert!(
+                message.contains(&partial.display().to_string()),
+                "got: {message}"
+            );
+        }
     }
 }

@@ -62,6 +62,7 @@ fn discovers_translate_fixture_with_declared_language_arg() {
         &translate.prompt,
         &declared,
         &std::collections::BTreeSet::new(),
+        &std::collections::BTreeSet::new(),
     )
     .expect("the translate prompt must pass static placeholder validation");
 }

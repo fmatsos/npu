@@ -148,8 +148,8 @@ fn run_args(
     let mut args = BTreeMap::new();
     args.insert("model".to_string(), model.model.clone());
 
-    let render =
-        |template: &String| crate::prompt::render(template, "", &args, env, &BTreeMap::new());
+    let none = BTreeMap::new();
+    let render = |template: &String| crate::prompt::render(template, "", &args, env, &none, &none);
 
     let mut out = vec![
         "run".to_string(),

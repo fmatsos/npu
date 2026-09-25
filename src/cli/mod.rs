@@ -366,6 +366,7 @@ mod tests {
             // no limit) is neutral for them.
             output: crate::output::OutputSpec::default(),
             schemas: std::collections::BTreeMap::new(),
+            partials: std::collections::BTreeMap::new(),
             system: None,
             examples: Vec::new(),
             generation: None,

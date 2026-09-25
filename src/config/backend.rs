@@ -246,6 +246,16 @@ fn validate_runtime_template(template: &str, backend_id: &str, source: &Path) ->
                     ),
                 )));
             }
+            crate::prompt::Placeholder::Partial(id) => {
+                return Err(crate::Error::Config(crate::error::ConfigError::in_file(
+                    source,
+                    Some(backend_id),
+                    format!(
+                        "backend \"{backend_id}\": [runtime] references {{{{ partials.{id} }}}}, \
+                         which has no meaning for a runtime start"
+                    ),
+                )));
+            }
         }
     }
     Ok(())
@@ -594,8 +604,9 @@ pub fn resolve_headers(
 ) -> crate::Result<BTreeMap<String, String>> {
     let mut resolved = BTreeMap::new();
     for (name, template) in &backend.headers {
-        let value = crate::prompt::render(template, "", &BTreeMap::new(), env, &BTreeMap::new())
-            .map_err(|err| match err {
+        let none = BTreeMap::new();
+        let value = crate::prompt::render(template, "", &none, env, &none, &none).map_err(
+            |err| match err {
                 crate::Error::Config(config_err) => {
                     crate::Error::Config(crate::error::ConfigError::in_file(
                         &backend.source,
@@ -607,7 +618,8 @@ pub fn resolve_headers(
                     ))
                 }
                 other => other,
-            })?;
+            },
+        )?;
         // RFC 9110 field-value: visible characters, space and HTAB; every
         // other control byte (CR, LF, NUL, VT, DEL...) is refused here, as
         // a configuration error, rather than by the HTTP client later.

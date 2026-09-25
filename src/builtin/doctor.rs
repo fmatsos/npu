@@ -299,7 +299,8 @@ fn check_commands_model(
 /// schema — both explicitly allowed by `command::convert_output`)
 /// produces no output-schema [`Check`]: there is nothing to check. Each
 /// entry of its `[schemas]` table gets one check of its own, compiled the
-/// same way: a schema pasted into a prompt must be one too.
+/// same way: a schema pasted into a prompt must be one too. Each
+/// `[partials]` entry gets one as well: present, UTF-8, placeholder-free.
 fn check_commands_output_schema(commands: &[crate::command::CommandSpec]) -> Vec<Check> {
     let check = |label: String, schema_path: &std::path::Path, file: &std::path::Path| Check {
         kind: CheckKind::Config,
@@ -327,7 +328,19 @@ fn check_commands_output_schema(commands: &[crate::command::CommandSpec]) -> Vec
                     &spec.file,
                 )
             });
-            output.into_iter().chain(declared).collect::<Vec<_>>()
+            let partials = spec.partials.iter().map(move |(id, partial_path)| Check {
+                kind: CheckKind::Config,
+                label: format!("command \"{}\": partial \"{id}\"", spec.path.join("/")),
+                status: match crate::prompt::read_partial(partial_path, &spec.file) {
+                    Ok(_text) => Status::Ok,
+                    Err(err) => Status::Failed(err.to_string()),
+                },
+            });
+            output
+                .into_iter()
+                .chain(declared)
+                .chain(partials)
+                .collect::<Vec<_>>()
         })
         .collect()
 }

@@ -1,8 +1,8 @@
 //! Prompt interpolation.
 //!
 //! Recognized placeholders: `{{ input }}`, `{{ args.<name> }}`, `{{ env.NAME }}`,
-//! `{{ schemas.<id> }}`.
-//! A CLOSED placeholder (`{{ ... }}`) whose name matches none of these four
+//! `{{ schemas.<id> }}`, `{{ partials.<id> }}`.
+//! A CLOSED placeholder (`{{ ... }}`) whose name matches none of these five
 //! forms is a configuration error, never copied through as-is: a
 //! misspelled `{{ args.langauge }}` must fail loudly rather than being
 //! sent to the model as literal text: a key read then ignored is a defect.
@@ -25,10 +25,14 @@ pub enum Placeholder {
     /// A schema declared in the command's `[schemas]` table, substituted
     /// with the schema document itself.
     Schema(String),
+    /// A fragment declared in the command's `[partials]` table, inserted
+    /// verbatim.
+    Partial(String),
 }
 
 /// Recognized placeholder forms, for error messages.
-const ACCEPTED_FORMS: &str = "\"input\", \"args.<name>\", \"env.<NAME>\" or \"schemas.<id>\"";
+const ACCEPTED_FORMS: &str =
+    "\"input\", \"args.<name>\", \"env.<NAME>\", \"schemas.<id>\" or \"partials.<id>\"";
 
 /// A template fragment after a first scanning pass.
 ///
@@ -143,6 +147,11 @@ fn parse_placeholder(raw: &str) -> crate::Result<Placeholder> {
             .map(Placeholder::Schema)
             .ok_or_else(|| unknown_placeholder(raw));
     }
+    if let Some(rest) = trimmed.strip_prefix("partials.") {
+        return parse_named(rest)
+            .map(Placeholder::Partial)
+            .ok_or_else(|| unknown_placeholder(raw));
+    }
 
     Err(unknown_placeholder(raw))
 }
@@ -164,7 +173,8 @@ pub fn placeholders(template: &str) -> crate::Result<Vec<Placeholder>> {
 
 /// Statically checks that a template only references `input`, a DECLARED
 /// argument (present in `declared_args`), a DECLARED schema (present in
-/// `declared_schemas`, the command's `[schemas]` table), or `env.X` (any syntactically
+/// `declared_schemas`, the command's `[schemas]` table), a DECLARED partial
+/// (`declared_partials`, its `[partials]` table), or `env.X` (any syntactically
 /// valid name: the PRESENCE of an environment variable is only
 /// checked at render time, never here). Called when the command is loaded.
 ///
@@ -175,6 +185,7 @@ pub fn validate(
     template: &str,
     declared_args: &BTreeSet<String>,
     declared_schemas: &BTreeSet<String>,
+    declared_partials: &BTreeSet<String>,
 ) -> crate::Result<()> {
     for placeholder in placeholders(template)? {
         match placeholder {
@@ -190,6 +201,13 @@ pub fn validate(
                     "unknown schema \"{id}\" referenced by {{{{ schemas.{id} }}}}: declared \
                      in [schemas]: {}",
                     crate::error::format_available(declared_schemas.iter())
+                )));
+            }
+            Placeholder::Partial(id) if !declared_partials.contains(&id) => {
+                return Err(crate::Error::config(format!(
+                    "unknown partial \"{id}\" referenced by {{{{ partials.{id} }}}}: declared \
+                     in [partials]: {}",
+                    crate::error::format_available(declared_partials.iter())
                 )));
             }
             _ => {}
@@ -238,6 +256,59 @@ fn resolve_schema<'a>(
     })
 }
 
+/// Resolves the text of a partial referenced by `{{ partials.ID }}`, or the
+/// configuration error naming it. Shared by [`render`] and [`preflight`]
+/// for the same reason as [`resolve_arg`].
+fn resolve_partial<'a>(
+    id: &str,
+    partials: &'a BTreeMap<String, String>,
+) -> crate::Result<&'a String> {
+    partials.get(id).ok_or_else(|| {
+        crate::Error::config(format!(
+            "partial \"{id}\" referenced by {{{{ partials.{id} }}}} but missing from the \
+             partials loaded"
+        ))
+    })
+}
+
+/// Reads the partial at `path`, declared by `command_file`. Missing,
+/// unreadable or non-UTF-8 is `Error::Config` naming both files, like a
+/// missing schema: the file is part of the configuration, not the input.
+///
+/// A partial is inserted verbatim, so it may not contain a closed
+/// placeholder of its own: one level, no recursion. Rendering never
+/// rescans what it inserted anyway; this rejects the author's mistake of
+/// expecting it to.
+pub(crate) fn read_partial(
+    path: &std::path::Path,
+    command_file: &std::path::Path,
+) -> crate::Result<String> {
+    let in_command = |message: String| {
+        crate::Error::Config(crate::error::ConfigError {
+            message,
+            file: Some(command_file.to_path_buf()),
+            id: None,
+        })
+    };
+    let text = std::fs::read_to_string(path).map_err(|err| {
+        in_command(format!(
+            "partial \"{}\" not found or unreadable: {err}",
+            path.display()
+        ))
+    })?;
+    if let Some(Token::Placeholder(raw)) = scan(&text)
+        .into_iter()
+        .find(|token| matches!(token, Token::Placeholder(_)))
+    {
+        return Err(in_command(format!(
+            "partial \"{}\" contains the placeholder {{{{{raw}}}}}: a partial is inserted \
+             verbatim and may not reference anything itself",
+            path.display()
+        )));
+    }
+    Ok(text)
+}
+
 /// Checks, BEFORE any reading of the input, that everything the prompt
 /// references and that is knowable WITHOUT the input (a declared argument
 /// `{{ args.NAME }}`, an environment variable `{{ env.NAME }}`) is indeed
@@ -268,6 +339,7 @@ pub fn preflight(
     args: &BTreeMap<String, String>,
     env: &dyn Fn(&str) -> Option<String>,
     schemas: &BTreeMap<String, String>,
+    partials: &BTreeMap<String, String>,
 ) -> crate::Result<()> {
     for placeholder in placeholders(template)? {
         match placeholder {
@@ -280,6 +352,9 @@ pub fn preflight(
             }
             Placeholder::Schema(id) => {
                 resolve_schema(&id, schemas)?;
+            }
+            Placeholder::Partial(id) => {
+                resolve_partial(&id, partials)?;
             }
         }
     }
@@ -302,6 +377,8 @@ pub fn preflight(
 ///   defined but empty): substituted with an empty string, not an error.
 /// - `{{ schemas.ID }}` → `schemas[ID]`, the schema document as read from
 ///   its file. Missing from the map: `Error::Config` naming the schema.
+/// - `{{ partials.ID }}` → `partials[ID]`, the fragment as read from its
+///   file ([`read_partial`]). Missing from the map: `Error::Config`.
 ///
 /// The substitution is never reapplied to its own result: the
 /// template is fully scanned BEFORE any substitution (`scan`), so
@@ -313,6 +390,7 @@ pub fn render(
     args: &BTreeMap<String, String>,
     env: &dyn Fn(&str) -> Option<String>,
     schemas: &BTreeMap<String, String>,
+    partials: &BTreeMap<String, String>,
 ) -> crate::Result<String> {
     let mut result = String::new();
 
@@ -334,6 +412,7 @@ pub fn render(
                     result.push_str(&value);
                 }
                 Placeholder::Schema(id) => result.push_str(resolve_schema(&id, schemas)?),
+                Placeholder::Partial(id) => result.push_str(resolve_partial(&id, partials)?),
             },
         }
     }
@@ -345,6 +424,36 @@ pub fn render(
 #[allow(clippy::expect_used)] // tolerated in tests (cf. Cargo.toml [lints.clippy]).
 mod tests {
     use super::*;
+
+    // The tests below predate `[partials]` and declare none: these shadow
+    // the glob import with an empty partials table. Partials tests call
+    // `super::` directly.
+    fn validate(
+        template: &str,
+        args: &BTreeSet<String>,
+        schemas: &BTreeSet<String>,
+    ) -> crate::Result<()> {
+        super::validate(template, args, schemas, &BTreeSet::new())
+    }
+
+    fn preflight(
+        template: &str,
+        args: &BTreeMap<String, String>,
+        env: &dyn Fn(&str) -> Option<String>,
+        schemas: &BTreeMap<String, String>,
+    ) -> crate::Result<()> {
+        super::preflight(template, args, env, schemas, &BTreeMap::new())
+    }
+
+    fn render(
+        template: &str,
+        input: &str,
+        args: &BTreeMap<String, String>,
+        env: &dyn Fn(&str) -> Option<String>,
+        schemas: &BTreeMap<String, String>,
+    ) -> crate::Result<String> {
+        super::render(template, input, args, env, schemas, &BTreeMap::new())
+    }
 
     // -- placeholders() -----------------------------------------------------
 

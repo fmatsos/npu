@@ -198,3 +198,47 @@ fn dry_run_on_a_builtin_is_a_clap_usage_error() {
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
 }
+
+/// `--dry-run` shows the prompt with its partial inserted, and `doctor`
+/// names a command whose partial is missing.
+#[test]
+fn dry_run_shows_the_inserted_partial_and_doctor_flags_a_missing_one() {
+    let scope = fixture_scope("partial");
+    write_scope(&scope, "NPU_TEST_DRY_RUN_SECRET");
+    // Without the header, whose variable this test does not set.
+    write(
+        &scope,
+        ".npu/backends/stub.toml",
+        "id = \"stub\"\nbase_url = \"http://127.0.0.1:9\"\ntype = \"openai-compatible\"\n\
+         [operations.chat]\nmethod = \"POST\"\npath = \"/v1/chat/completions\"\n",
+    );
+    write(
+        &scope,
+        ".npu/commands/styled.md",
+        "---\nmodel = \"test-model\"\n[partials]\nstyle = \"style\"\n---\n\
+         {{ partials.style }} {{ input }}\n",
+    );
+    write(&scope, ".npu/partials/style.md", "Be terse.");
+    write(
+        &scope,
+        ".npu/commands/orphan.md",
+        "---\nmodel = \"test-model\"\n[partials]\nstyle = \"gone\"\n---\n\
+         {{ partials.style }}\n",
+    );
+
+    let output = run_npu(&scope, &["styled", "--dry-run"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("dry-run report must be valid JSON");
+    assert_eq!(report["body"]["messages"][0]["content"], "Be terse. hello");
+
+    let output = run_npu(&scope, &["doctor"]);
+    assert_eq!(output.status.code(), Some(2));
+    let report = String::from_utf8(output.stdout).expect("stdout must be UTF-8");
+    assert!(report.contains("orphan"), "got: {report}");
+    assert!(report.contains("gone.md"), "got: {report}");
+}

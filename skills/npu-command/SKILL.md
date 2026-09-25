@@ -1,6 +1,6 @@
 ---
 name: npu-command
-description: Writes and fixes `npu` command files (`.npu/commands/*.md`) — the Markdown file whose TOML frontmatter is fenced by three dashes (the `+++` of earlier versions is rejected) and whose path becomes the CLI command name. Covers frontmatter keys, input modes, `[args.*]` flags, the three prompt placeholders (`{{ input }}`, `{{ args.x }}`, `{{ env.X }}`), the `[output]` contract with JSON Schema, reserved command names, and the load-time rejections that catch a typo before it silently reaches the model.
+description: Writes and fixes `npu` command files (`.npu/commands/*.md`) — the Markdown file whose TOML frontmatter is fenced by three dashes (the `+++` of earlier versions is rejected) and whose path becomes the CLI command name. Covers frontmatter keys, input modes, `[args.*]` flags, the five prompt placeholders (`{{ input }}`, `{{ args.x }}`, `{{ env.X }}`, `{{ schemas.id }}`, `{{ partials.id }}`), the `[output]` contract with JSON Schema, reserved command names, and the load-time rejections that catch a typo before it silently reaches the model.
 when_to_use: >
   Trigger on "add an npu command", "write a prompt for npu", "add a flag to
   this command", "make this command return JSON", "nest npu commands", or on
@@ -134,7 +134,8 @@ Default values, repeated flags and boolean flags do not exist yet.
 
 ## Prompt templating
 
-Four placeholders, no conditions, no loops, no expressions, no includes.
+Five placeholders, no conditions, no loops, no expressions; the only include
+is a partial, inserted verbatim.
 
 | Placeholder | Resolves to |
 | --- | --- |
@@ -142,6 +143,7 @@ Four placeholders, no conditions, no loops, no expressions, no includes.
 | `{{ args.name }}` | a declared argument's value |
 | `{{ env.NAME }}` | an environment variable |
 | `{{ schemas.id }}` | a schema declared in `[schemas]`, as compact JSON |
+| `{{ partials.id }}` | a text fragment declared in `[partials]`, verbatim |
 
 Whitespace inside the braces is free. Substitution is never re-applied to
 substituted content, so an argument whose value contains `{{ input }}` passes
@@ -159,6 +161,21 @@ Two constraints worth knowing before writing a prompt:
 - **An argument referenced by the prompt must be `required = true`.** The
   prompt cannot be rendered without it, so declaring it optional contradicts
   the file. It is rejected rather than silently promoted.
+
+A fragment shared between commands (style guide, glossary) goes in a partial
+instead of being copied into each file:
+
+```toml
+[partials]                             # ids usable as {{ partials.<id> }}
+style = "style-guide"                  # NAME -> <scope root>/partials/style-guide.md,
+                                       # or a path relative to the scope root, or absolute
+```
+
+Same resolution and laziness as `[schemas]`: an undeclared id fails at load
+time; a missing, non-UTF-8 file fails with exit `2` when the command runs,
+naming both files. A partial is inserted verbatim and may not contain
+`{{ ... }}` itself. To use a different fragment in a project, override the
+command, not the partial file.
 
 ## Output contract
 

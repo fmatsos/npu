@@ -82,6 +82,10 @@ pub struct CommandSpec {
     /// as `[output].schema`, see [`resolve_schema_path`]). Read lazily, when
     /// the command runs — never at load time.
     pub schemas: BTreeMap<String, std::path::PathBuf>,
+    /// `[partials]` table: each id the prompt may reference through
+    /// `{{ partials.<id> }}`, mapped to its resolved path. Read lazily, like
+    /// `schemas`, and inserted verbatim.
+    pub partials: BTreeMap<String, std::path::PathBuf>,
     /// Optional `system` frontmatter key: a templated system-role message
     /// sent before the examples and the rendered body. Same placeholders as
     /// the body (`{{ args.* }}`, `{{ env.* }}`, `{{ schemas.* }}`), except
@@ -196,6 +200,10 @@ pub(crate) struct Frontmatter {
     /// [`resolve_schema_path`].
     #[serde(default)]
     schemas: BTreeMap<String, String>,
+    /// `[partials]` table: `<id> = "<name or path>"`, a bare name resolving
+    /// to `partials/<name>.md` (see [`convert_partials`]).
+    #[serde(default)]
+    partials: BTreeMap<String, String>,
     /// Optional `system` key: see [`CommandSpec::system`]'s doc.
     #[serde(default)]
     system: Option<String>,
@@ -704,24 +712,37 @@ fn convert_args(raw: BTreeMap<String, RawArgSpec>) -> crate::Result<BTreeMap<Str
 /// you're fixing an oversight: that would reintroduce exactly the bug
 /// this design eliminates.
 fn resolve_schema_path(declared: &str, scope_root: &std::path::Path) -> std::path::PathBuf {
+    resolve_declared_path(declared, scope_root, "schemas", "json")
+}
+
+/// [`resolve_schema_path`]'s rule for any file a command declares by name:
+/// a bare name is `<scope_root>/<dir>/<name>.<extension>`, a relative path
+/// is joined to `scope_root`, an absolute one is used as-is. `[partials]`
+/// uses it with `partials`/`md`.
+fn resolve_declared_path(
+    declared: &str,
+    scope_root: &std::path::Path,
+    dir: &str,
+    extension: &str,
+) -> std::path::PathBuf {
     let declared_path = std::path::Path::new(declared);
     if declared_path.is_absolute() {
         declared_path.to_path_buf()
-    } else if is_schema_name(declared) {
-        scope_root.join("schemas").join(format!("{declared}.json"))
+    } else if is_bare_name(declared, extension) {
+        scope_root.join(dir).join(format!("{declared}.{extension}"))
     } else {
         scope_root.join(declared_path)
     }
 }
 
-/// Whether `declared` is a bare schema NAME rather than a path: no path
-/// separator and no `.json` suffix. Purely syntactic, like
+/// Whether `declared` is a bare NAME rather than a path: no path separator
+/// and no `.<extension>` suffix. Purely syntactic, like
 /// [`resolve_schema_path`].
-fn is_schema_name(declared: &str) -> bool {
+fn is_bare_name(declared: &str, extension: &str) -> bool {
     !declared.contains(['/', '\\'])
         && !std::path::Path::new(declared)
             .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+            .is_some_and(|ext| ext.eq_ignore_ascii_case(extension))
 }
 
 /// Converts the raw `[output]` section of the frontmatter
@@ -815,6 +836,27 @@ fn convert_schemas(
         .collect()
 }
 
+/// Converts the raw `[partials]` table into resolved paths, with the same
+/// id rule as [`convert_schemas`]. Like a schema, the file is only read
+/// when the command runs (`prompt::read_partial`).
+fn convert_partials(
+    raw: BTreeMap<String, String>,
+    scope_root: &std::path::Path,
+) -> crate::Result<BTreeMap<String, std::path::PathBuf>> {
+    raw.into_iter()
+        .map(|(id, declared)| {
+            if id.is_empty() || !id.chars().all(crate::prompt::is_valid_name_char) {
+                return Err(crate::Error::config(format!(
+                    "[partials]: invalid partial id \"{id}\": only ASCII letters, digits, '_' \
+                     and '-' are accepted"
+                )));
+            }
+            let path = resolve_declared_path(&declared, scope_root, "partials", "md");
+            Ok((id, path))
+        })
+        .collect()
+}
+
 /// Validates a `system`/`[[examples]]` template: the same unknown-argument
 /// and unknown-schema checks as the body ([`crate::prompt::validate`]),
 /// plus a rejection of `{{ input }}` — which has no meaning outside the
@@ -825,8 +867,9 @@ fn validate_message_template(
     label: &str,
     declared_args: &BTreeSet<String>,
     declared_schemas: &BTreeSet<String>,
+    declared_partials: &BTreeSet<String>,
 ) -> crate::Result<()> {
-    crate::prompt::validate(template, declared_args, declared_schemas)?;
+    crate::prompt::validate(template, declared_args, declared_schemas, declared_partials)?;
     for placeholder in crate::prompt::placeholders(template)? {
         if matches!(placeholder, crate::prompt::Placeholder::Input) {
             return Err(crate::Error::config(format!(
@@ -953,7 +996,18 @@ pub fn parse(
     let declared: BTreeSet<String> = args.keys().cloned().collect();
     let schemas = convert_schemas(frontmatter.schemas, scope_root)?;
     let declared_schemas: BTreeSet<String> = schemas.keys().cloned().collect();
-    crate::prompt::validate(&prompt, &declared, &declared_schemas)?;
+    let partials = convert_partials(frontmatter.partials, scope_root)?;
+    let declared_partials: BTreeSet<String> = partials.keys().cloned().collect();
+    crate::prompt::validate(&prompt, &declared, &declared_schemas, &declared_partials)?;
+    let validate_message = |template: &str, label: &str| {
+        validate_message_template(
+            template,
+            label,
+            &declared,
+            &declared_schemas,
+            &declared_partials,
+        )
+    };
 
     // `system` and each `[[examples]]` turn are templated exactly like the
     // body, with one restriction: `{{ input }}` has no meaning there (the
@@ -969,7 +1023,7 @@ pub fn parse(
                      content",
                 ));
             }
-            validate_message_template(&raw, "system", &declared, &declared_schemas)?;
+            validate_message(&raw, "system")?;
             Some(raw)
         }
     };
@@ -987,13 +1041,8 @@ pub fn parse(
             }
             let label_user = format!("examples[{index}].user");
             let label_assistant = format!("examples[{index}].assistant");
-            validate_message_template(&raw.user, &label_user, &declared, &declared_schemas)?;
-            validate_message_template(
-                &raw.assistant,
-                &label_assistant,
-                &declared,
-                &declared_schemas,
-            )?;
+            validate_message(&raw.user, &label_user)?;
+            validate_message(&raw.assistant, &label_assistant)?;
             Ok(Example {
                 user: raw.user,
                 assistant: raw.assistant,
@@ -1058,6 +1107,7 @@ pub fn parse(
         args,
         output,
         schemas,
+        partials,
         system,
         examples,
         generation: frontmatter.generation,
@@ -1267,6 +1317,32 @@ mod tests {
             .expect("failed to create intermediate directories");
         std::fs::write(&file, format!("---\nmodel = \"{model}\"\n---\n{prompt}\n"))
             .expect("failed to write fixture");
+    }
+
+    /// A `[partials]` table belongs to its command: a bare name resolves
+    /// under the scope root the command file was found in, never under a
+    /// more local scope that happens to have a file of the same name.
+    #[test]
+    fn a_partial_resolves_under_its_own_command_scope_not_a_more_local_one() {
+        let general = fixture_dir("partials-general");
+        let local = fixture_dir("partials-local");
+        let command = general.join("commands").join("classify.md");
+        std::fs::create_dir_all(command.parent().expect("file has a parent"))
+            .expect("failed to create intermediate directories");
+        std::fs::write(
+            &command,
+            "---\nmodel = \"m\"\n[partials]\nstyle = \"style\"\n---\n{{ partials.style }}\n",
+        )
+        .expect("failed to write fixture");
+        std::fs::create_dir_all(local.join("commands")).expect("local commands directory");
+
+        let specs =
+            discover_scopes(&[general.clone(), local]).expect("discover_scopes should succeed");
+
+        assert_eq!(
+            specs[0].partials.get("style"),
+            Some(&general.join("partials").join("style.md"))
+        );
     }
 
     #[test]
@@ -2041,6 +2117,52 @@ mod tests {
     fn schemas_table_invalid_id_is_config_error_naming_it() {
         let source =
             "---\nmodel = \"qwen-fast\"\n\n[schemas]\n\"bad.id\" = \"report\"\n---\nprompt\n";
+        let err = parse(source, vec!["x".to_string()], &test_scope_root())
+            .expect_err("an id no placeholder can reference must be rejected");
+
+        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(err.to_string().contains("bad.id"));
+    }
+
+    #[test]
+    fn partials_table_resolves_against_the_command_scope_root_and_is_referenceable() {
+        let root = test_scope_root();
+        let source = "---\nmodel = \"qwen-fast\"\nsystem = \"{{ partials.style }}\"\n\n\
+                      [partials]\nstyle = \"style-guide\"\nglossary = \"shared/glossary.md\"\n\n\
+                      [[examples]]\nuser = \"{{ partials.glossary }}\"\nassistant = \"ok\"\n\
+                      ---\n{{ partials.style }} {{ input }}\n";
+        let spec =
+            parse(source, vec!["x".to_string()], &root).expect("declared partials should parse");
+
+        assert_eq!(
+            spec.partials.get("style"),
+            Some(&root.join("partials").join("style-guide.md"))
+        );
+        assert_eq!(
+            spec.partials.get("glossary"),
+            Some(&root.join("shared").join("glossary.md"))
+        );
+    }
+
+    #[test]
+    fn an_undeclared_partial_is_config_error_naming_it_in_body_system_or_example() {
+        for source in [
+            "---\nmodel = \"qwen-fast\"\n---\n{{ partials.style }}\n",
+            "---\nmodel = \"qwen-fast\"\nsystem = \"{{ partials.style }}\"\n---\nbody\n",
+            "---\nmodel = \"qwen-fast\"\n[[examples]]\nuser = \"{{ partials.style }}\"\n\
+             assistant = \"ok\"\n---\nbody\n",
+        ] {
+            let err = parse(source, vec!["x".to_string()], &test_scope_root())
+                .expect_err("an undeclared partial must be rejected at load time");
+            assert!(matches!(err, crate::Error::Config(_)));
+            assert!(err.to_string().contains("style"), "got: {err}");
+        }
+    }
+
+    #[test]
+    fn partials_table_invalid_id_is_config_error_naming_it() {
+        let source =
+            "---\nmodel = \"qwen-fast\"\n\n[partials]\n\"bad.id\" = \"style\"\n---\nprompt\n";
         let err = parse(source, vec!["x".to_string()], &test_scope_root())
             .expect_err("an id no placeholder can reference must be rejected");
 

@@ -167,6 +167,13 @@
     "output": {
       "$ref": "#/definitions/RawOutputSpec"
     },
+    "partials": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "type": "object"
+    },
     "schemas": {
       "additionalProperties": {
         "type": "string"

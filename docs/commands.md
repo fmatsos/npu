@@ -93,6 +93,7 @@ cat README.md | npu translate --language french
 | `[args.<name>]` | table | none | see [CLI arguments](#cli-arguments) |
 | `[output]` | table | text, no limit | see [Output contracts](output.md) |
 | `[schemas]` | table | none | `<id> = "<name or path>"`, for `{{ schemas.<id> }}` — see [Schemas in the prompt](output.md#schemas-in-the-prompt) |
+| `[partials]` | table | none | `<id> = "<name or path>"`, for `{{ partials.<id> }}` — see [Partials](#partials) |
 | `system` | string | none | a system-role message sent before the examples and the body — see [System prompt and examples](#system-prompt-and-examples) |
 | `[[examples]]` | array of tables | none | fixed few-shot `user`/`assistant` turns — see [System prompt and examples](#system-prompt-and-examples) |
 | `[generation]` | table | none | overrides the model's own `[generation]`, key by key — see [Generation parameters](configuration.md#generation-parameters) |
@@ -169,8 +170,9 @@ Default values and repeated or boolean flags are not supported in 0.1.0.
 
 ## Prompt templating
 
-Templating is deliberately minimal. There are no conditions, no loops, no expressions and no
-includes — the goal is configuration that stays deterministic and statically inspectable.
+Templating is deliberately minimal. There are no conditions, no loops and no expressions, and the
+only include is a partial inserted verbatim. The goal is configuration that stays deterministic
+and statically inspectable.
 
 | Placeholder | Resolves to |
 | --- | --- |
@@ -178,6 +180,7 @@ includes — the goal is configuration that stays deterministic and statically i
 | `{{ args.name }}` | the value of a declared argument |
 | `{{ env.NAME }}` | an environment variable |
 | `{{ schemas.id }}` | a schema declared in `[schemas]`, as JSON |
+| `{{ partials.id }}` | a text fragment declared in `[partials]`, verbatim |
 
 Whitespace inside the braces is flexible: `{{input}}`, `{{ input }}` and `{{  input  }}` are the
 same. Substitution is never re-applied to substituted content, so an argument value containing
@@ -185,6 +188,33 @@ same. Substitution is never re-applied to substituted content, so an argument va
 
 An environment variable that is **set but empty** is legitimate and renders as an empty string.
 One that is **unset** is an error.
+
+### Partials
+
+A fragment shared by several commands, such as a style guide, a glossary or a paragraph on JSON
+discipline, lives in its own file and is declared by each command that uses it:
+
+```toml
+[partials]
+style = "style-guide"            # bare name: <scope root>/partials/style-guide.md
+glossary = "shared/glossary.md"  # a path relative to the scope root, or an absolute one
+```
+
+`{{ partials.style }}` then inserts the file's text, in the body, in `system` or in an example.
+The rules are those of [`[schemas]`](output.md#schemas-in-the-prompt):
+
+- The scope root is the one the command file was found in. The table belongs to the command, so
+  a project that wants its own version of a shared partial overrides the command, not the
+  partial.
+- An id the table does not declare is rejected at load time.
+- The file is read only when the command runs, before its input is read. Missing, unreadable or
+  not UTF-8, it is a configuration error (exit `2`) naming the command file and the partial.
+  `npu doctor` checks every declared partial in advance.
+- A partial is inserted **verbatim** and may not contain a closed placeholder itself: one level,
+  no recursion. A partial containing `{{ input }}` is rejected, naming the partial file.
+
+`npu describe` lists a command's partials with their resolved paths, and `--dry-run` shows the
+rendered request with the partials inserted.
 
 ### Two deliberate constraints
 
@@ -235,7 +265,7 @@ message. **A command declaring neither key sends exactly what it always has** �
 message.
 
 Both `system` and every example field are templated with the same placeholders as the body
-(`{{ args.* }}`, `{{ env.* }}`, `{{ schemas.* }}`), with one exception: **`{{ input }}` is
+(`{{ args.* }}`, `{{ env.* }}`, `{{ schemas.* }}`, `{{ partials.* }}`), with one exception: **`{{ input }}` is
 rejected there at load time.** The input is the user's own turn, rendered separately as the last
 message — referencing it from `system` or an example would not mean what it looks like it means.
 

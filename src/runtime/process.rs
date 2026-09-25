@@ -487,7 +487,8 @@ fn render_one(
 ) -> crate::Result<String> {
     let mut args = std::collections::BTreeMap::new();
     args.insert("model".to_string(), model.model.clone());
-    crate::prompt::render(template, "", &args, env, &std::collections::BTreeMap::new())
+    let none = std::collections::BTreeMap::new();
+    crate::prompt::render(template, "", &args, env, &none, &none)
 }
 
 /// The same, over a list.
